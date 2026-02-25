@@ -141,8 +141,8 @@ fn read_codex_config_file(path: &Path) -> Result<Option<CodexConfigToml>, String
         return Ok(None);
     }
 
-    let raw =
-        fs::read_to_string(path).map_err(|error| format!("failed to read `{}`: {error}", path.display()))?;
+    let raw = fs::read_to_string(path)
+        .map_err(|error| format!("failed to read `{}`: {error}", path.display()))?;
 
     toml::from_str::<CodexConfigToml>(&raw)
         .map(Some)
@@ -243,7 +243,10 @@ pub(crate) async fn load_runtime_config_from_codex() -> Result<RuntimeCodexConfi
         let program_data = env::var_os("ProgramData")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
-        let system_file = program_data.join("OpenAI").join("Codex").join("config.toml");
+        let system_file = program_data
+            .join("OpenAI")
+            .join("Codex")
+            .join("config.toml");
         if let Some(config) = read_codex_config_file(&system_file)? {
             merge_codex_config(&mut merged, config);
         }
@@ -269,7 +272,8 @@ pub(crate) async fn load_runtime_config_from_codex() -> Result<RuntimeCodexConfi
         }
     }
 
-    if let Some(config) = read_codex_config_file(&resolved_cwd.join(".codex").join("config.toml"))? {
+    if let Some(config) = read_codex_config_file(&resolved_cwd.join(".codex").join("config.toml"))?
+    {
         merge_codex_config(&mut merged, config);
     }
 

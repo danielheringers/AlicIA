@@ -59,6 +59,7 @@ pub(crate) fn format_non_tui_status(
     thread_id: Option<&str>,
     cwd: &Path,
     runtime: &RuntimeCodexConfig,
+    transport: crate::SessionTransport,
     rate_limits: Option<&StatusRateLimitSnapshot>,
 ) -> String {
     let pid_display = pid
@@ -68,9 +69,13 @@ pub(crate) fn format_non_tui_status(
         .filter(|value| !value.trim().is_empty())
         .unwrap_or("n/a");
 
+    let mode_line = match transport {
+        crate::SessionTransport::Native => "mode: native-runtime",
+    };
+
     let mut lines = vec![
         "/status".to_string(),
-        "mode: sdk-bridge".to_string(),
+        mode_line.to_string(),
         format!("session: #{session_id} (pid {pid_display})"),
         format!("thread: {thread_display}"),
         format!("workspace: {}", cwd.display()),

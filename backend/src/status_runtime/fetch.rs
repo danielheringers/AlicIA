@@ -79,7 +79,11 @@ pub(crate) fn fetch_rate_limits_for_status(
         "id": "alicia-rate-limits",
     });
 
-    for payload in [initialize_request, initialized_notification, read_limits_request] {
+    for payload in [
+        initialize_request,
+        initialized_notification,
+        read_limits_request,
+    ] {
         if write_json_line(&mut stdin, &payload).is_err() {
             let _ = child.kill();
             let _ = child.wait();

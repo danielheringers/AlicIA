@@ -48,7 +48,7 @@ interface UseAliciaBootstrapParams {
     model?: string,
     threadId?: string | null,
   ) => void
-  ensureBridgeSession: (forceNew?: boolean) => Promise<boolean>
+  ensureRuntimeSession: (forceNew?: boolean) => Promise<boolean>
   refreshModelsCatalog: (notifyOnError?: boolean) => Promise<CodexModel[]>
   refreshThreadList: (options?: {
     activeThreadId?: string | null
@@ -78,7 +78,7 @@ export function useAliciaBootstrap({
   setInitializingStatus,
   setInitializing,
   setActiveSessionEntry,
-  ensureBridgeSession,
+  ensureRuntimeSession,
   refreshModelsCatalog,
   refreshThreadList,
   refreshMcpServers,
@@ -115,7 +115,7 @@ export function useAliciaBootstrap({
           return
         }
 
-        setBootStatus("Connecting runtime bridge...")
+        setBootStatus("Connecting runtime transport...")
         codexUnlistenRef.current = await listenToCodexEvents(handleCodexEvent)
         terminalUnlistenRef.current = await listenToTerminalEvents(handleTerminalEvent)
         reportBoot("Runtime event listeners attached")
@@ -171,7 +171,7 @@ export function useAliciaBootstrap({
           )
         } else {
           setBootStatus("Starting Codex session...")
-          hasActiveSession = await ensureBridgeSession(false)
+          hasActiveSession = await ensureRuntimeSession(false)
         }
 
         if (hasActiveSession) {
@@ -237,9 +237,3 @@ export function useAliciaBootstrap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 }
-
-
-
-
-
-

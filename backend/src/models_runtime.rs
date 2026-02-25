@@ -86,7 +86,11 @@ fn parse_codex_model(value: &Value) -> Option<CodexModel> {
     let default_reasoning_effort = object
         .get("defaultReasoningEffort")
         .and_then(Value::as_str)
-        .or_else(|| object.get("default_reasoning_effort").and_then(Value::as_str))
+        .or_else(|| {
+            object
+                .get("default_reasoning_effort")
+                .and_then(Value::as_str)
+        })
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
@@ -171,9 +175,7 @@ pub fn fetch_models_for_picker(binary: &str, cwd: &Path) -> Result<Vec<CodexMode
 
     let mut child = command.spawn().map_err(|error| {
         if error.kind() == ErrorKind::NotFound {
-            format!(
-                "failed to spawn app-server for model/list: executable not found ({error})"
-            )
+            format!("failed to spawn app-server for model/list: executable not found ({error})")
         } else {
             format!("failed to spawn app-server for model/list: {error}")
         }
@@ -264,7 +266,7 @@ pub fn fetch_models_for_picker(binary: &str, cwd: &Path) -> Result<Vec<CodexMode
                 let now = Instant::now();
                 if now >= deadline {
                     return Err(
-                        "timed out waiting for model/list response from app-server".to_string(),
+                        "timed out waiting for model/list response from app-server".to_string()
                     );
                 }
                 let remaining = deadline.saturating_duration_since(now);
@@ -315,5 +317,3 @@ pub fn fetch_models_for_picker(binary: &str, cwd: &Path) -> Result<Vec<CodexMode
     let _ = child.wait();
     result
 }
-
-

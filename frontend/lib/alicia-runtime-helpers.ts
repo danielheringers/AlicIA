@@ -525,7 +525,7 @@ export function parseMcpListOutput(output: string): McpServer[] {
     if (value === "oAuth" || value === "oauth" || value === "o_auth") {
       return "oauth"
     }
-    return "unsupported"
+    return "not_logged_in"
   }
 
   const statusFromAuth = (
@@ -630,7 +630,7 @@ export function parseMcpListOutput(output: string): McpServer[] {
         status,
         transport: /sse/i.test(line) ? "sse" : "stdio",
         tools: [],
-        authStatus: "unsupported",
+        authStatus: "not_logged_in",
         statusReason: null,
       }
     })

@@ -7,37 +7,44 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, MutexGuard};
 use tauri::{AppHandle, State};
+use tokio::sync::Mutex as AsyncMutex;
 
-mod app_server_runtime;
 mod account_runtime;
+mod app_server_runtime;
+mod codex_event_translator;
+mod codex_native_runtime;
 mod command_runtime;
-mod bridge_runtime;
 mod config_runtime;
 mod events_runtime;
 mod launch_runtime;
 mod mcp_runtime;
 mod models_runtime;
-mod status_runtime;
 mod session_lifecycle_runtime;
 mod session_runtime;
 mod session_turn_runtime;
+mod status_runtime;
 mod terminal_runtime;
 use crate::account_runtime::{
     AccountLoginStartRequest, AccountLoginStartResponse, AccountLogoutResponse,
-    AccountRateLimitsReadResponse, AccountReadRequest, AccountReadResponse,
-    AppListRequest, AppListResponse,
+    AccountRateLimitsReadResponse, AccountReadRequest, AccountReadResponse, AppListRequest,
+    AppListResponse,
 };
 use crate::config_runtime::{load_runtime_config_from_codex, normalize_runtime_config};
-use crate::bridge_runtime::BridgeProcess;
 use crate::mcp_runtime::{
     McpLoginRequest, McpLoginResponse, McpReloadResponse, McpServerListResponse,
     McpStartupWarmupResponse,
 };
+#[cfg(feature = "native-codex-runtime")]
+use codex_core::CodexThread;
 
-pub(crate) use crate::launch_runtime::{default_codex_binary, resolve_binary_path, resolve_codex_launch};
-pub(crate) use crate::events_runtime::{emit_codex_event, emit_lifecycle, emit_stderr, emit_stdout, emit_terminal_data, emit_terminal_exit};
+pub(crate) use crate::events_runtime::{
+    emit_codex_event, emit_lifecycle, emit_stderr, emit_stdout, emit_terminal_data,
+    emit_terminal_exit,
+};
+pub(crate) use crate::launch_runtime::{
+    default_codex_binary, resolve_binary_path, resolve_codex_launch,
+};
 
-// Comentario de teste
 const CODEX_HELP_CLI_TREE: &str = r#"codex
   exec (alias: e)
     resume
@@ -186,6 +193,14 @@ struct RuntimeStatusResponse {
 #[serde(rename_all = "camelCase")]
 struct RuntimeCapabilitiesResponse {
     methods: HashMap<String, bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    contract: Option<RuntimeContractMetadata>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeContractMetadata {
+    version: String,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -275,6 +290,19 @@ struct CodexTurnRunResponse {
 #[serde(rename_all = "camelCase")]
 struct CodexThreadOpenResponse {
     thread_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexThreadCloseRequest {
+    thread_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexThreadCloseResponse {
+    thread_id: String,
+    removed: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -572,6 +600,55 @@ struct TerminalSession {
     child: Box<dyn portable_pty::Child + Send + Sync>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SessionTransport {
+    Native,
+}
+
+#[cfg(feature = "native-codex-runtime")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
+enum NativeApprovalKind {
+    CommandExecution,
+    FileChange,
+}
+
+#[cfg(feature = "native-codex-runtime")]
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+struct NativePendingApproval {
+    thread_id: String,
+    turn_id: String,
+    call_id: String,
+    kind: NativeApprovalKind,
+}
+
+#[cfg(feature = "native-codex-runtime")]
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+struct NativePendingUserInput {
+    thread_id: String,
+    turn_id: String,
+    call_id: String,
+}
+
+#[cfg(feature = "native-codex-runtime")]
+#[allow(dead_code)]
+struct NativeSessionHandles {
+    runtime: Arc<codex_native_runtime::NativeCodexRuntime>,
+    threads: HashMap<String, Arc<CodexThread>>,
+    active_turns: HashMap<String, String>,
+    pending_approvals: HashMap<String, NativePendingApproval>,
+    pending_user_inputs: HashMap<String, NativePendingUserInput>,
+    next_approval_id: u64,
+    next_user_input_id: u64,
+}
+
+#[allow(clippy::large_enum_variant)]
+enum ActiveSessionTransport {
+    Native(NativeSessionHandles),
+}
+
 struct ActiveSession {
     session_id: u64,
     pid: Option<u32>,
@@ -579,30 +656,47 @@ struct ActiveSession {
     cwd: PathBuf,
     thread_id: Option<String>,
     busy: bool,
-    bridge: BridgeProcess,
+    transport: ActiveSessionTransport,
 }
+
+impl ActiveSession {
+    fn transport(&self) -> SessionTransport {
+        let _ = &self.transport;
+        SessionTransport::Native
+    }
+}
+
 struct AppState {
     active_session: Mutex<Option<ActiveSession>>,
+    session_start_gate: AsyncMutex<()>,
     next_session_id: AtomicU64,
     runtime_config: Mutex<RuntimeCodexConfig>,
     next_event_seq: Arc<AtomicU64>,
     next_terminal_id: AtomicU64,
     terminals: Mutex<HashMap<u64, TerminalSession>>,
+    #[cfg(feature = "native-codex-runtime")]
+    native_codex_runtime: AsyncMutex<Option<Arc<codex_native_runtime::NativeCodexRuntime>>>,
+    #[cfg(feature = "native-codex-runtime")]
+    native_codex_runtime_init_gate: AsyncMutex<()>,
 }
 
 impl Default for AppState {
     fn default() -> Self {
         Self {
             active_session: Mutex::new(None),
+            session_start_gate: AsyncMutex::new(()),
             next_session_id: AtomicU64::new(1),
             runtime_config: Mutex::new(RuntimeCodexConfig::default()),
             next_event_seq: Arc::new(AtomicU64::new(1)),
             next_terminal_id: AtomicU64::new(1),
             terminals: Mutex::new(HashMap::new()),
+            #[cfg(feature = "native-codex-runtime")]
+            native_codex_runtime: AsyncMutex::new(None),
+            #[cfg(feature = "native-codex-runtime")]
+            native_codex_runtime_init_gate: AsyncMutex::new(()),
         }
     }
 }
-
 fn lock_active_session(state: &AppState) -> Result<MutexGuard<'_, Option<ActiveSession>>, String> {
     state
         .active_session
@@ -647,8 +741,17 @@ async fn codex_runtime_capabilities(
 ) -> Result<RuntimeCapabilitiesResponse, String> {
     crate::command_runtime::codex_runtime_capabilities_impl(state).await
 }
+
 #[tauri::command]
-async fn load_codex_default_config(state: State<'_, AppState>) -> Result<RuntimeCodexConfig, String> {
+async fn codex_native_runtime_diagnose(
+    state: State<'_, AppState>,
+) -> Result<codex_native_runtime::NativeCodexRuntimeDiagnoseResponse, String> {
+    crate::codex_native_runtime::codex_native_runtime_diagnose_impl(state).await
+}
+#[tauri::command]
+async fn load_codex_default_config(
+    state: State<'_, AppState>,
+) -> Result<RuntimeCodexConfig, String> {
     let loaded = load_runtime_config_from_codex().await?;
     let mut runtime = lock_runtime_config(state.inner())?;
     *runtime = loaded.clone();
@@ -691,10 +794,19 @@ async fn codex_turn_run(
 
 #[tauri::command]
 async fn codex_thread_open(
+    app: AppHandle,
     state: State<'_, AppState>,
     thread_id: Option<String>,
 ) -> Result<CodexThreadOpenResponse, String> {
-    crate::session_runtime::codex_thread_open_impl(state, thread_id).await
+    crate::session_runtime::codex_thread_open_impl(app, state, thread_id).await
+}
+
+#[tauri::command]
+async fn codex_thread_close(
+    state: State<'_, AppState>,
+    request: CodexThreadCloseRequest,
+) -> Result<CodexThreadCloseResponse, String> {
+    crate::session_runtime::codex_thread_close_impl(state, request).await
 }
 
 #[tauri::command]
@@ -780,18 +892,20 @@ async fn codex_review_start(
 
 #[tauri::command]
 async fn codex_approval_respond(
+    app: AppHandle,
     state: State<'_, AppState>,
     request: CodexApprovalRespondRequest,
 ) -> Result<(), String> {
-    crate::session_runtime::codex_approval_respond_impl(state, request).await
+    crate::session_runtime::codex_approval_respond_impl(app, state, request).await
 }
 
 #[tauri::command]
 async fn codex_user_input_respond(
+    app: AppHandle,
     state: State<'_, AppState>,
     request: CodexUserInputRespondRequest,
 ) -> Result<CodexUserInputRespondResponse, String> {
-    crate::session_runtime::codex_user_input_respond_impl(state, request).await
+    crate::session_runtime::codex_user_input_respond_impl(app, state, request).await
 }
 
 #[tauri::command]
@@ -813,31 +927,13 @@ async fn start_codex_session(
 }
 
 #[tauri::command]
-fn resize_codex_pty(
-    state: State<'_, AppState>,
-    _rows: u16,
-    _cols: u16,
-) -> Result<(), String> {
+fn resize_codex_pty(state: State<'_, AppState>, _rows: u16, _cols: u16) -> Result<(), String> {
     crate::session_runtime::resize_codex_pty_impl(state, _rows, _cols)
 }
 
 #[tauri::command]
 async fn stop_codex_session(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     crate::session_runtime::stop_codex_session_impl(app, state).await
-}
-
-#[tauri::command]
-async fn codex_bridge_start(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    config: Option<StartCodexSessionConfig>,
-) -> Result<StartCodexSessionResponse, String> {
-    crate::session_runtime::codex_bridge_start_impl(app, state, config).await
-}
-
-#[tauri::command]
-async fn codex_bridge_stop(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    crate::session_runtime::codex_bridge_stop_impl(app, state).await
 }
 
 #[tauri::command]
@@ -855,7 +951,10 @@ fn terminal_write(state: State<'_, AppState>, request: TerminalWriteRequest) -> 
 }
 
 #[tauri::command]
-fn terminal_resize(state: State<'_, AppState>, request: TerminalResizeRequest) -> Result<(), String> {
+fn terminal_resize(
+    state: State<'_, AppState>,
+    request: TerminalResizeRequest,
+) -> Result<(), String> {
     crate::terminal_runtime::terminal_resize_impl(state, request)
 }
 
@@ -869,7 +968,10 @@ fn terminal_kill(
 }
 
 #[tauri::command]
-fn run_codex_command(args: Vec<String>, cwd: Option<String>) -> Result<RunCodexCommandResponse, String> {
+fn run_codex_command(
+    args: Vec<String>,
+    cwd: Option<String>,
+) -> Result<RunCodexCommandResponse, String> {
     crate::command_runtime::run_codex_command_impl(args, cwd)
 }
 
@@ -880,7 +982,9 @@ fn git_commit_approved_review(
 ) -> Result<GitCommitApprovedReviewResponse, String> {
     let active_cwd = {
         let active = lock_active_session(state.inner())?;
-        active.as_ref().map(|session| session.cwd.to_string_lossy().to_string())
+        active
+            .as_ref()
+            .map(|session| session.cwd.to_string_lossy().to_string())
     };
 
     let Some(cwd) = active_cwd else {
@@ -921,12 +1025,15 @@ async fn codex_app_list(
     state: State<'_, AppState>,
     request: Option<AppListRequest>,
 ) -> Result<AppListResponse, String> {
-    crate::command_runtime::codex_app_list_impl(state, request.unwrap_or(AppListRequest {
-        cursor: None,
-        limit: None,
-        thread_id: None,
-        force_refetch: false,
-    }))
+    crate::command_runtime::codex_app_list_impl(
+        state,
+        request.unwrap_or(AppListRequest {
+            cursor: None,
+            limit: None,
+            thread_id: None,
+            force_refetch: false,
+        }),
+    )
     .await
 }
 
@@ -947,9 +1054,7 @@ async fn codex_account_login_start(
 }
 
 #[tauri::command]
-async fn codex_account_logout(
-    state: State<'_, AppState>,
-) -> Result<AccountLogoutResponse, String> {
+async fn codex_account_logout(state: State<'_, AppState>) -> Result<AccountLogoutResponse, String> {
     crate::command_runtime::codex_account_logout_impl(state).await
 }
 
@@ -1009,10 +1114,9 @@ fn main() {
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             start_codex_session,
-            codex_bridge_start,
-            codex_bridge_stop,
             codex_turn_run,
             codex_thread_open,
+            codex_thread_close,
             codex_thread_list,
             codex_thread_read,
             codex_thread_archive,
@@ -1030,6 +1134,7 @@ fn main() {
             codex_config_set,
             codex_runtime_status,
             codex_runtime_capabilities,
+            codex_native_runtime_diagnose,
             load_codex_default_config,
             send_codex_input,
             stop_codex_session,
@@ -1058,5 +1163,3 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
-
-

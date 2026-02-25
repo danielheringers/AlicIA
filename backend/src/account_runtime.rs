@@ -6,14 +6,22 @@ fn parse_u64(value: &Value) -> Option<u64> {
     value
         .as_u64()
         .or_else(|| value.as_i64().and_then(|raw| u64::try_from(raw).ok()))
-        .or_else(|| value.as_str().and_then(|raw| raw.trim().parse::<u64>().ok()))
+        .or_else(|| {
+            value
+                .as_str()
+                .and_then(|raw| raw.trim().parse::<u64>().ok())
+        })
 }
 
 fn parse_i64(value: &Value) -> Option<i64> {
     value
         .as_i64()
         .or_else(|| value.as_u64().and_then(|raw| i64::try_from(raw).ok()))
-        .or_else(|| value.as_str().and_then(|raw| raw.trim().parse::<i64>().ok()))
+        .or_else(|| {
+            value
+                .as_str()
+                .and_then(|raw| raw.trim().parse::<i64>().ok())
+        })
 }
 
 fn parse_f64(value: &Value) -> Option<f64> {
@@ -21,7 +29,11 @@ fn parse_f64(value: &Value) -> Option<f64> {
         .as_f64()
         .or_else(|| value.as_i64().map(|raw| raw as f64))
         .or_else(|| value.as_u64().map(|raw| raw as f64))
-        .or_else(|| value.as_str().and_then(|raw| raw.trim().parse::<f64>().ok()))
+        .or_else(|| {
+            value
+                .as_str()
+                .and_then(|raw| raw.trim().parse::<f64>().ok())
+        })
 }
 
 fn parse_bool(value: &Value) -> Option<bool> {
@@ -143,7 +155,7 @@ fn parse_app_record(value: &Value) -> Option<AppRecord> {
     })
 }
 
-pub fn parse_app_list_bridge_result(result: &Value, fallback_elapsed_ms: u64) -> AppListResponse {
+pub fn parse_app_list_runtime_result(result: &Value, fallback_elapsed_ms: u64) -> AppListResponse {
     let mut data = result
         .get("data")
         .and_then(Value::as_array)
@@ -156,8 +168,11 @@ pub fn parse_app_list_bridge_result(result: &Value, fallback_elapsed_ms: u64) ->
         .unwrap_or_default();
     data.sort_by(|left, right| left.name.cmp(&right.name));
 
-    let next_cursor =
-        parse_optional_string(result.get("nextCursor").or_else(|| result.get("next_cursor")));
+    let next_cursor = parse_optional_string(
+        result
+            .get("nextCursor")
+            .or_else(|| result.get("next_cursor")),
+    );
     let total = result
         .get("total")
         .and_then(parse_u64)
@@ -207,8 +222,7 @@ fn parse_account_record(value: &Value) -> Option<AccountRecord> {
         .map(|raw| normalize_account_type(&raw))
         .unwrap_or_else(|| "unknown".to_string());
     let email = parse_optional_string(entry.get("email"));
-    let plan_type =
-        parse_optional_string(entry.get("planType").or_else(|| entry.get("plan_type")));
+    let plan_type = parse_optional_string(entry.get("planType").or_else(|| entry.get("plan_type")));
 
     Some(AccountRecord {
         account_type,
@@ -217,7 +231,7 @@ fn parse_account_record(value: &Value) -> Option<AccountRecord> {
     })
 }
 
-pub fn parse_account_read_bridge_result(
+pub fn parse_account_read_runtime_result(
     result: &Value,
     fallback_elapsed_ms: u64,
 ) -> AccountReadResponse {
@@ -263,7 +277,7 @@ pub struct AccountLoginStartResponse {
     pub elapsed_ms: u64,
 }
 
-pub fn parse_account_login_start_bridge_result(
+pub fn parse_account_login_start_runtime_result(
     result: &Value,
     fallback_elapsed_ms: u64,
 ) -> AccountLoginStartResponse {
@@ -273,8 +287,7 @@ pub fn parse_account_login_start_bridge_result(
         .map(str::trim)
         .map(normalize_account_type)
         .unwrap_or_else(|| "unknown".to_string());
-    let login_id =
-        parse_optional_string(result.get("loginId").or_else(|| result.get("login_id")));
+    let login_id = parse_optional_string(result.get("loginId").or_else(|| result.get("login_id")));
     let auth_url = parse_optional_string(result.get("authUrl").or_else(|| result.get("auth_url")));
     let started = result.get("started").and_then(parse_bool).unwrap_or(true);
     let elapsed_ms = result
@@ -299,7 +312,7 @@ pub struct AccountLogoutResponse {
     pub elapsed_ms: u64,
 }
 
-pub fn parse_account_logout_bridge_result(
+pub fn parse_account_logout_runtime_result(
     result: &Value,
     fallback_elapsed_ms: u64,
 ) -> AccountLogoutResponse {
@@ -384,10 +397,7 @@ fn parse_credits_snapshot(value: &Value) -> Option<AccountCreditsSnapshot> {
         .or_else(|| entry.get("has_credits"))
         .and_then(parse_bool)
         .unwrap_or(false);
-    let unlimited = entry
-        .get("unlimited")
-        .and_then(parse_bool)
-        .unwrap_or(false);
+    let unlimited = entry.get("unlimited").and_then(parse_bool).unwrap_or(false);
     let balance = parse_optional_string(entry.get("balance"));
 
     Some(AccountCreditsSnapshot {
@@ -405,8 +415,7 @@ fn parse_rate_limit_snapshot(value: &Value) -> Option<AccountRateLimitSnapshotRe
     let primary = entry.get("primary").and_then(parse_rate_limit_window);
     let secondary = entry.get("secondary").and_then(parse_rate_limit_window);
     let credits = entry.get("credits").and_then(parse_credits_snapshot);
-    let plan_type =
-        parse_optional_string(entry.get("planType").or_else(|| entry.get("plan_type")));
+    let plan_type = parse_optional_string(entry.get("planType").or_else(|| entry.get("plan_type")));
 
     Some(AccountRateLimitSnapshotRecord {
         limit_id,
@@ -418,7 +427,7 @@ fn parse_rate_limit_snapshot(value: &Value) -> Option<AccountRateLimitSnapshotRe
     })
 }
 
-pub fn parse_account_rate_limits_bridge_result(
+pub fn parse_account_rate_limits_runtime_result(
     result: &Value,
     fallback_elapsed_ms: u64,
 ) -> AccountRateLimitsReadResponse {

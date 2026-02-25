@@ -46,7 +46,7 @@ export interface McpServer {
   transport: "stdio" | "sse" | "streamable-http"
   status: "connected" | "disconnected" | "error" | "connecting"
   statusReason?: string | null
-  authStatus?: "unsupported" | "not_logged_in" | "bearer_token" | "oauth"
+  authStatus?: "not_logged_in" | "bearer_token" | "oauth"
   tools: string[]
   url?: string
 }

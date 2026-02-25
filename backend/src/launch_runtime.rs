@@ -87,17 +87,14 @@ fn fallback_windows_npm_binary(_binary: &str) -> Option<PathBuf> {
 fn fallback_codex_js_path() -> Option<PathBuf> {
     let cwd = env::current_dir().ok()?;
     let candidates = [
-        cwd.join("Alicia").join("codex-cli").join("dist").join("index.js"),
+        cwd.join("Alicia")
+            .join("codex-cli")
+            .join("dist")
+            .join("index.js"),
         cwd.join("codex-cli").join("dist").join("index.js"),
     ];
 
-    for candidate in candidates {
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-
-    None
+    candidates.into_iter().find(|candidate| candidate.is_file())
 }
 
 fn resolve_codex_entrypoint(binary: &str) -> Option<PathBuf> {
@@ -157,7 +154,10 @@ pub(crate) fn resolve_codex_launch(
     }
 
     if needs_cmd_wrapper(&resolved_binary) {
-        let mut resolved_args = vec!["/c".to_string(), resolved_binary.to_string_lossy().to_string()];
+        let mut resolved_args = vec![
+            "/c".to_string(),
+            resolved_binary.to_string_lossy().to_string(),
+        ];
         resolved_args.extend(args.iter().cloned());
         return Ok(("cmd".to_string(), resolved_args));
     }

@@ -12,6 +12,8 @@ import type {
   CodexThreadCompactStartResponse,
   CodexThreadForkRequest,
   CodexThreadForkResponse,
+  CodexThreadCloseRequest,
+  CodexThreadCloseResponse,
   CodexThreadListRequest,
   CodexThreadListResponse,
   CodexThreadOpenResponse,
@@ -67,14 +69,19 @@ export async function loadCodexDefaultConfig(): Promise<RuntimeCodexConfig> {
   return invoke<RuntimeCodexConfig>('load_codex_default_config')
 }
 
-export async function codexBridgeStart(
+const RUNTIME_SESSION_START_COMMAND = 'start_codex_session'
+const RUNTIME_SESSION_STOP_COMMAND = 'stop_codex_session'
+
+export async function codexRuntimeSessionStart(
   config?: StartCodexSessionConfig,
 ): Promise<StartCodexSessionResponse> {
-  return invoke<StartCodexSessionResponse>('codex_bridge_start', { config })
+  return invoke<StartCodexSessionResponse>(RUNTIME_SESSION_START_COMMAND, {
+    config,
+  })
 }
 
-export async function codexBridgeStop(): Promise<void> {
-  await invoke('codex_bridge_stop')
+export async function codexRuntimeSessionStop(): Promise<void> {
+  await invoke(RUNTIME_SESSION_STOP_COMMAND)
 }
 
 export async function startCodexSession(
@@ -114,6 +121,12 @@ export async function codexThreadOpen(
   threadId?: string,
 ): Promise<CodexThreadOpenResponse> {
   return invoke<CodexThreadOpenResponse>('codex_thread_open', { threadId })
+}
+
+export async function codexThreadClose(
+  request: CodexThreadCloseRequest,
+): Promise<CodexThreadCloseResponse> {
+  return invoke<CodexThreadCloseResponse>('codex_thread_close', { request })
 }
 
 export async function codexThreadList(

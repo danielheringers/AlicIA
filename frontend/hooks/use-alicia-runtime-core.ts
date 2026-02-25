@@ -1,6 +1,7 @@
 import {
   useCallback,
   useMemo,
+  useRef,
   type Dispatch,
   type MutableRefObject,
   type SetStateAction,
@@ -23,8 +24,8 @@ import {
   codexAppList,
   codexAccountRateLimitsRead,
   codexAccountRead,
-  codexBridgeStart,
-  codexBridgeStop,
+  codexRuntimeSessionStart,
+  codexRuntimeSessionStop,
   codexModelsList,
   codexMcpList,
   codexThreadList,
@@ -478,49 +479,74 @@ export function useAliciaRuntimeCore({
     [availableModels.length, modelsLoading, refreshModelsCatalog, setAliciaState],
   )
 
-  const ensureBridgeSession = useCallback(
+  const ensureRuntimeSessionInFlightRef = useRef<Promise<boolean> | null>(null)
+  const runtimeRef = useRef(runtime)
+  runtimeRef.current = runtime
+
+  const ensureRuntimeSession = useCallback(
     async (forceNew = false): Promise<boolean> => {
-      if (!runtime.connected) {
-        return false
+      const currentInFlight = ensureRuntimeSessionInFlightRef.current
+      if (currentInFlight) {
+        if (!forceNew) {
+          return currentInFlight
+        }
+        await currentInFlight
       }
-      try {
-        if (forceNew && runtime.sessionId != null) {
-          await codexBridgeStop()
-          threadIdRef.current = null
-          seenEventSeqRef.current.clear()
-          streamedAgentTextRef.current.clear()
+
+      const inFlight = (async (): Promise<boolean> => {
+        const latestRuntime = runtimeRef.current
+        if (!latestRuntime.connected) {
+          return false
+        }
+
+        try {
+          if (forceNew && latestRuntime.sessionId != null) {
+            await codexRuntimeSessionStop()
+            threadIdRef.current = null
+            seenEventSeqRef.current.clear()
+            streamedAgentTextRef.current.clear()
+            setRuntime((prev) => ({
+              ...prev,
+              state: "idle",
+              sessionId: null,
+              pid: null,
+            }))
+          }
+
+          if (!forceNew && latestRuntime.sessionId != null) {
+            return true
+          }
+
+          setRuntime((prev) => ({ ...prev, state: "starting" }))
+          const started = await codexRuntimeSessionStart()
           setRuntime((prev) => ({
             ...prev,
-            state: "idle",
-            sessionId: null,
-            pid: null,
+            state: "running",
+            sessionId: started.sessionId,
+            pid: started.pid,
           }))
-        }
-        if (!forceNew && runtime.sessionId != null) {
+          setActiveSessionEntry(started.sessionId, aliciaState.model)
+          addMessage("system", `[session] started #${started.sessionId}`)
           return true
+        } catch (error) {
+          setRuntime((prev) => ({ ...prev, state: "error" }))
+          addMessage("system", `[session] failed to start: ${String(error)}`)
+          return false
         }
-        setRuntime((prev) => ({ ...prev, state: "starting" }))
-        const started = await codexBridgeStart()
-        setRuntime((prev) => ({
-          ...prev,
-          state: "running",
-          sessionId: started.sessionId,
-          pid: started.pid,
-        }))
-        setActiveSessionEntry(started.sessionId, aliciaState.model)
-        addMessage("system", `[session] started #${started.sessionId}`)
-        return true
-      } catch (error) {
-        setRuntime((prev) => ({ ...prev, state: "error" }))
-        addMessage("system", `[session] failed to start: ${String(error)}`)
-        return false
+      })()
+
+      ensureRuntimeSessionInFlightRef.current = inFlight
+      try {
+        return await inFlight
+      } finally {
+        if (ensureRuntimeSessionInFlightRef.current === inFlight) {
+          ensureRuntimeSessionInFlightRef.current = null
+        }
       }
     },
     [
       addMessage,
       aliciaState.model,
-      runtime.connected,
-      runtime.sessionId,
       seenEventSeqRef,
       setActiveSessionEntry,
       setRuntime,
@@ -607,7 +633,7 @@ export function useAliciaRuntimeCore({
     refreshAppsAndAuth,
     refreshModelsCatalog,
     openModelPanel,
-    ensureBridgeSession,
+    ensureRuntimeSession,
     createTerminalTab,
     closeTerminalTab,
     currentModelLabel,

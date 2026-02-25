@@ -75,8 +75,13 @@ export type RuntimeMethod = (typeof RUNTIME_METHODS)[number]
 
 export type RuntimeMethodCapabilities = Record<RuntimeMethod, boolean>
 
+export interface RuntimeContractMetadata {
+  version: string
+}
+
 export interface RuntimeCapabilitiesResponse {
   methods: RuntimeMethodCapabilities
+  contract?: RuntimeContractMetadata
   disabledByFlag?: string[]
 }
 
@@ -158,7 +163,7 @@ export interface McpServerRecord {
   transport: 'stdio' | 'sse' | 'streamable-http'
   status: 'connected' | 'disconnected' | 'error' | 'connecting'
   statusReason?: string | null
-  authStatus?: 'unsupported' | 'not_logged_in' | 'bearer_token' | 'oauth'
+  authStatus?: 'not_logged_in' | 'bearer_token' | 'oauth'
   tools: string[]
   url?: string
 }
@@ -346,6 +351,15 @@ export interface CodexTurnRunResponse {
 
 export interface CodexThreadOpenResponse {
   threadId: string
+}
+
+export interface CodexThreadCloseRequest {
+  threadId: string
+}
+
+export interface CodexThreadCloseResponse {
+  threadId: string
+  removed: boolean
 }
 
 export type CodexThreadSortKey = 'created_at' | 'updated_at'

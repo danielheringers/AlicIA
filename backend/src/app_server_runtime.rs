@@ -1,5 +1,4 @@
 use serde_json::{json, Value};
-use std::collections::HashSet;
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::path::Path;
 use std::process::{ChildStdin, Command, Stdio};
@@ -12,14 +11,22 @@ use crate::resolve_codex_launch;
 pub(crate) fn write_json_line(stdin: &mut ChildStdin, payload: &Value) -> Result<(), String> {
     let serialized = serde_json::to_string(payload)
         .map_err(|error| format!("failed to encode json-rpc payload: {error}"))?;
-    writeln!(stdin, "{serialized}")
-        .map_err(|error| format!("failed to write json-rpc payload to app-server stdin: {error}"))?;
+    writeln!(stdin, "{serialized}").map_err(|error| {
+        format!("failed to write json-rpc payload to app-server stdin: {error}")
+    })?;
     stdin
         .flush()
         .map_err(|error| format!("failed to flush app-server stdin: {error}"))
 }
 
-pub(crate) fn fetch_mcp_statuses_for_startup(binary: &str, cwd: &Path) -> Result<Vec<String>, String> {
+#[cfg(feature = "native-codex-runtime")]
+pub(crate) fn request_app_server_method(
+    binary: &str,
+    cwd: &Path,
+    method: &str,
+    params: Value,
+    timeout: Duration,
+) -> Result<Value, String> {
     let app_server_args = vec!["app-server".to_string()];
     let (program, resolved_args) = resolve_codex_launch(binary, &app_server_args)?;
 
@@ -32,20 +39,20 @@ pub(crate) fn fetch_mcp_statuses_for_startup(binary: &str, cwd: &Path) -> Result
 
     let mut child = command.spawn().map_err(|error| {
         if error.kind() == ErrorKind::NotFound {
-            format!("failed to spawn app-server for MCP warmup: executable not found ({error})")
+            format!("failed to spawn app-server for {method}: executable not found ({error})")
         } else {
-            format!("failed to spawn app-server for MCP warmup: {error}")
+            format!("failed to spawn app-server for {method}: {error}")
         }
     })?;
 
     let mut stdin = child
         .stdin
         .take()
-        .ok_or_else(|| "failed to capture app-server stdin for MCP warmup".to_string())?;
+        .ok_or_else(|| format!("failed to capture app-server stdin for {method}"))?;
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| "failed to capture app-server stdout for MCP warmup".to_string())?;
+        .ok_or_else(|| format!("failed to capture app-server stdout for {method}"))?;
 
     let (tx, rx) = mpsc::channel::<Value>();
     thread::spawn(move || {
@@ -72,16 +79,17 @@ pub(crate) fn fetch_mcp_statuses_for_startup(binary: &str, cwd: &Path) -> Result
         }
     });
 
-    let result: Result<Vec<String>, String> = (|| {
+    let request_id = format!("alicia-request-{}", method.replace('/', "-"));
+    let result = (|| {
         write_json_line(
             &mut stdin,
             &json!({
                 "method": "initialize",
-                "id": "alicia-mcp-init",
+                "id": "alicia-init",
                 "params": {
                     "clientInfo": {
-                        "name": "alicia-mcp-startup",
-                        "title": "Alicia MCP Startup",
+                        "name": "alicia-command-runtime",
+                        "title": "Alicia Command Runtime",
                         "version": "0.1.0",
                     },
                     "capabilities": {
@@ -97,94 +105,47 @@ pub(crate) fn fetch_mcp_statuses_for_startup(binary: &str, cwd: &Path) -> Result
                 "params": {},
             }),
         )?;
+        write_json_line(
+            &mut stdin,
+            &json!({
+                "method": method,
+                "id": request_id.clone(),
+                "params": params,
+            }),
+        )?;
 
-        let mut ready_servers = HashSet::<String>::new();
-        let mut cursor: Option<String> = None;
-        let mut page: u32 = 0;
-
+        let deadline = Instant::now() + timeout;
         loop {
-            page += 1;
-            let request_id = format!("alicia-mcp-status-{page}");
-            write_json_line(
-                &mut stdin,
-                &json!({
-                    "method": "mcpServerStatus/list",
-                    "id": request_id.clone(),
-                    "params": {
-                        "limit": 100,
-                        "cursor": cursor.clone(),
-                    },
-                }),
-            )?;
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(format!(
+                    "timed out waiting for app-server `{method}` response"
+                ));
+            }
+            let remaining = deadline.saturating_duration_since(now);
+            let message = rx
+                .recv_timeout(remaining)
+                .map_err(|_| format!("timed out waiting for app-server `{method}` response"))?;
 
-            let deadline = Instant::now() + Duration::from_secs(90);
-            let response_message = loop {
-                let now = Instant::now();
-                if now >= deadline {
-                    return Err(
-                        "timed out waiting for mcpServerStatus/list response from app-server"
-                            .to_string(),
-                    );
-                }
-                let remaining = deadline.saturating_duration_since(now);
-                let message = rx.recv_timeout(remaining).map_err(|_| {
-                    "timed out waiting for mcpServerStatus/list response from app-server"
-                        .to_string()
-                })?;
+            if message.get("id").and_then(Value::as_str) != Some(request_id.as_str()) {
+                continue;
+            }
 
-                if message
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .is_some_and(|value| value == request_id)
-                {
-                    break message;
-                }
-            };
-
-            if let Some(error_value) = response_message.get("error") {
+            if let Some(error_value) = message.get("error") {
                 let message = error_value
                     .get("message")
                     .and_then(Value::as_str)
                     .or_else(|| error_value.as_str())
-                    .unwrap_or("unknown app-server mcpServerStatus/list error");
-                return Err(format!("mcpServerStatus/list request failed: {message}"));
+                    .unwrap_or("unknown app-server error");
+                return Err(format!("app-server `{method}` request failed: {message}"));
             }
 
-            let result_value = response_message
+            let result = message
                 .get("result")
-                .ok_or_else(|| "mcpServerStatus/list response missing `result`".to_string())?;
-
-            if let Some(entries) = result_value.get("data").and_then(Value::as_array) {
-                for entry in entries {
-                    if let Some(name) = entry
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                    {
-                        ready_servers.insert(name.to_string());
-                    }
-                }
-            }
-
-            let next_cursor = result_value
-                .get("nextCursor")
-                .and_then(Value::as_str)
-                .or_else(|| result_value.get("next_cursor").and_then(Value::as_str))
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string);
-
-            if let Some(next_cursor) = next_cursor {
-                cursor = Some(next_cursor);
-            } else {
-                break;
-            }
+                .cloned()
+                .ok_or_else(|| format!("app-server `{method}` response missing `result`"))?;
+            return Ok(result);
         }
-
-        let mut ready_servers = ready_servers.into_iter().collect::<Vec<_>>();
-        ready_servers.sort();
-        Ok(ready_servers)
     })();
 
     let _ = child.kill();

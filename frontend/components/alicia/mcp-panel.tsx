@@ -100,7 +100,7 @@ function commandFailureMessage(result: {
 }
 
 function authBadgeLabel(server: McpServer): string {
-  const authStatus = server.authStatus ?? "unsupported"
+  const authStatus = server.authStatus ?? "not_logged_in"
   if (authStatus === "not_logged_in") {
     return "oauth required"
   }
@@ -114,13 +114,15 @@ function authBadgeLabel(server: McpServer): string {
 }
 
 function canLogin(server: McpServer): boolean {
-  return server.transport === "streamable-http" && server.authStatus === "not_logged_in"
+  const authStatus = server.authStatus ?? "not_logged_in"
+  return server.transport === "streamable-http" && authStatus === "not_logged_in"
 }
 
 function canLogout(server: McpServer): boolean {
+  const authStatus = server.authStatus ?? "not_logged_in"
   return (
     server.transport === "streamable-http" &&
-    (server.authStatus === "oauth" || server.authStatus === "bearer_token")
+    (authStatus === "oauth" || authStatus === "bearer_token")
   )
 }
 

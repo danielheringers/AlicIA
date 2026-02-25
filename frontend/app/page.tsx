@@ -16,7 +16,7 @@ import { TerminalPane } from "@/components/alicia/terminal-pane"
 import { type AliciaState } from "@/lib/alicia-types"
 import {
   codexApprovalRespond,
-  codexBridgeStop,
+  codexRuntimeSessionStop,
   codexUserInputRespond,
   isTauriRuntime,
   pickImageFile,
@@ -439,7 +439,7 @@ export default function AliciaTerminal() {
     refreshAppsAndAuth,
     refreshModelsCatalog,
     openModelPanel,
-    ensureBridgeSession,
+    ensureRuntimeSession,
     createTerminalTab,
     closeTerminalTab,
     currentModelLabel,
@@ -526,7 +526,7 @@ export default function AliciaTerminal() {
     setInitializingStatus,
     setInitializing,
     setActiveSessionEntry,
-    ensureBridgeSession,
+    ensureRuntimeSession,
     refreshModelsCatalog,
     refreshThreadList,
     refreshMcpServers,
@@ -545,7 +545,7 @@ export default function AliciaTerminal() {
   } = useAliciaActions({
     addMessage,
     aliciaState,
-    ensureBridgeSession,
+    ensureRuntimeSession,
     pendingImages,
     pendingMentions,
     setPendingImages,
@@ -792,22 +792,28 @@ export default function AliciaTerminal() {
               setPendingUserInput(null)
               setTurnDiff(null)
               setTurnPlan(null)
-              void ensureBridgeSession(true)
+              void ensureRuntimeSession(true)
               void refreshWorkspaceChanges()
             }}
             onStopSession={() => {
-              void codexBridgeStop()
-              reviewRoutingRef.current = false
-              setPendingApprovals([])
-              setPendingUserInput(null)
-              setTurnDiff(null)
-              setTurnPlan(null)
-              setRuntime((prev) => ({
-                ...prev,
-                state: "idle",
-                sessionId: null,
-                pid: null,
-              }))
+              void (async () => {
+                try {
+                  await codexRuntimeSessionStop()
+                  reviewRoutingRef.current = false
+                  setPendingApprovals([])
+                  setPendingUserInput(null)
+                  setTurnDiff(null)
+                  setTurnPlan(null)
+                  setRuntime((prev) => ({
+                    ...prev,
+                    state: "idle",
+                    sessionId: null,
+                    pid: null,
+                  }))
+                } catch (error) {
+                  addMessage("system", `[session] failed to stop: ${String(error)}`)
+                }
+              })()
             }}
             onResumeSession={() => {
               void openSessionPanel("resume")
@@ -986,7 +992,7 @@ export default function AliciaTerminal() {
             setPendingUserInput(null)
             setTurnDiff(null)
             setTurnPlan(null)
-            void ensureBridgeSession(true)
+            void ensureRuntimeSession(true)
             void refreshWorkspaceChanges()
           }}
           onClose={() => setAliciaState((prev) => ({ ...prev, activePanel: null }))}

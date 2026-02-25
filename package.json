@@ -2,7 +2,7 @@
   "name": "alicia",
   "private": true,
   "scripts": {
-    "setup": "pnpm --dir frontend install && pnpm --dir codex-bridge install",
+    "setup": "pnpm --dir frontend install",
     "dev": "node ./frontend/node_modules/@tauri-apps/cli/tauri.js dev --config ./backend/tauri.conf.json",
     "build": "node ./frontend/node_modules/@tauri-apps/cli/tauri.js build --config ./backend/tauri.conf.json"
   },

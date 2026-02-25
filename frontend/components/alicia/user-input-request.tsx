@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { Check, Circle, CircleDot } from "lucide-react"
+import { Check, Circle, CircleDot, TextCursorInput } from "lucide-react"
 
 import type { UserInputRequestState } from "@/lib/alicia-runtime-helpers"
 
@@ -80,6 +80,8 @@ export function UserInputRequest({
       <div className="space-y-3">
         {request.questions.map((question) => {
           const selectedLabel = selectedByQuestionId[question.id] ?? ""
+          const isFreeText = question.options.length === 0
+
           return (
             <fieldset key={question.id} className="rounded border border-panel-border p-2">
               {question.header && (
@@ -88,44 +90,68 @@ export function UserInputRequest({
                 </legend>
               )}
               <p className="text-xs text-terminal-fg">{question.question}</p>
-              <div className="mt-2 space-y-1.5">
-                {question.options.map((option, optionIndex) => {
-                  const optionKey = `${question.id}-${optionIndex}`
-                  const selected = option.label === selectedLabel
-                  return (
-                    <button
-                      key={optionKey}
-                      type="button"
-                      onClick={() => {
-                        setSelectedByQuestionId((previous) => ({
-                          ...previous,
-                          [question.id]: option.label,
-                        }))
-                      }}
-                      className={`w-full rounded border px-2 py-1.5 text-left transition-colors ${
-                        selected
-                          ? "border-terminal-cyan/60 bg-terminal-cyan/12"
-                          : "border-panel-border hover:bg-background/40"
-                      }`}
-                      aria-pressed={selected}
-                    >
-                      <span className="flex items-center gap-2 text-xs text-terminal-fg">
-                        {selected ? (
-                          <CircleDot className="h-3.5 w-3.5 text-terminal-cyan" />
-                        ) : (
-                          <Circle className="h-3.5 w-3.5 text-muted-foreground" />
-                        )}
-                        <span className="font-medium">{option.label}</span>
-                      </span>
-                      {option.description && (
-                        <span className="mt-0.5 block text-xs text-muted-foreground">
-                          {option.description}
+
+              {isFreeText ? (
+                <label className="mt-2 block">
+                  <span className="sr-only">Answer for {question.question}</span>
+                  <span className="mb-1 inline-flex items-center gap-1 text-xs text-muted-foreground">
+                    <TextCursorInput className="h-3.5 w-3.5" />
+                    Type your answer
+                  </span>
+                  <input
+                    type="text"
+                    value={selectedLabel}
+                    onChange={(event) => {
+                      const nextValue = event.currentTarget.value
+                      setSelectedByQuestionId((previous) => ({
+                        ...previous,
+                        [question.id]: nextValue,
+                      }))
+                    }}
+                    className="w-full rounded border border-panel-border bg-background/70 px-2 py-1.5 text-xs text-terminal-fg outline-none transition-colors placeholder:text-muted-foreground/70 focus:border-terminal-cyan/60"
+                    placeholder="Type your answer"
+                  />
+                </label>
+              ) : (
+                <div className="mt-2 space-y-1.5">
+                  {question.options.map((option, optionIndex) => {
+                    const optionKey = `${question.id}-${optionIndex}`
+                    const selected = option.label === selectedLabel
+                    return (
+                      <button
+                        key={optionKey}
+                        type="button"
+                        onClick={() => {
+                          setSelectedByQuestionId((previous) => ({
+                            ...previous,
+                            [question.id]: option.label,
+                          }))
+                        }}
+                        className={`w-full rounded border px-2 py-1.5 text-left transition-colors ${
+                          selected
+                            ? "border-terminal-cyan/60 bg-terminal-cyan/12"
+                            : "border-panel-border hover:bg-background/40"
+                        }`}
+                        aria-pressed={selected}
+                      >
+                        <span className="flex items-center gap-2 text-xs text-terminal-fg">
+                          {selected ? (
+                            <CircleDot className="h-3.5 w-3.5 text-terminal-cyan" />
+                          ) : (
+                            <Circle className="h-3.5 w-3.5 text-muted-foreground" />
+                          )}
+                          <span className="font-medium">{option.label}</span>
                         </span>
-                      )}
-                    </button>
-                  )
-                })}
-              </div>
+                        {option.description && (
+                          <span className="mt-0.5 block text-xs text-muted-foreground">
+                            {option.description}
+                          </span>
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
             </fieldset>
           )
         })}
@@ -142,7 +168,7 @@ export function UserInputRequest({
 
             const answers = Object.fromEntries(
               request.questions.map((question) => {
-                const selected = selectedByQuestionId[question.id] ?? ""
+                const selected = selectedByQuestionId[question.id]?.trim() ?? ""
                 return [question.id, { answers: selected ? [selected] : [] }]
               }),
             )

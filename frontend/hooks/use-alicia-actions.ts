@@ -29,7 +29,7 @@ import {
 } from "@/lib/alicia-runtime-helpers"
 import {
   codexAccountLogout,
-  codexBridgeStop,
+  codexRuntimeSessionStop,
   codexConfigGet,
   codexConfigSet,
   codexReviewStart,
@@ -59,7 +59,7 @@ interface UseAliciaActionsParams {
     channel?: MessageChannel,
   ) => void
   aliciaState: AliciaState
-  ensureBridgeSession: (forceNew?: boolean) => Promise<boolean>
+  ensureRuntimeSession: (forceNew?: boolean) => Promise<boolean>
   pendingImages: string[]
   pendingMentions: string[]
   setPendingImages: Dispatch<SetStateAction<string[]>>
@@ -249,7 +249,7 @@ function parseReviewFileSlashArgs(argsRaw: string): ParsedReviewSlash {
 export function useAliciaActions({
   addMessage,
   aliciaState,
-  ensureBridgeSession,
+  ensureRuntimeSession,
   pendingImages,
   pendingMentions,
   setPendingImages,
@@ -278,6 +278,8 @@ export function useAliciaActions({
     sessionId: string
     action: "resume" | "fork" | "switch"
   } | null>(null)
+
+  const ensureSession = ensureRuntimeSession
 
   const supportsRuntimeMethod = useCallback(
     (method: RuntimeMethod): boolean =>
@@ -309,7 +311,7 @@ export function useAliciaActions({
         .join("\n")
       addMessage("user", preview)
 
-      if (!(await ensureBridgeSession(false))) {
+      if (!(await ensureSession(false))) {
         return
       }
 
@@ -337,7 +339,7 @@ export function useAliciaActions({
     },
     [
       addMessage,
-      ensureBridgeSession,
+      ensureSession,
       pendingImages,
       pendingMentions,
       setPendingImages,
@@ -420,7 +422,7 @@ export function useAliciaActions({
       }
       if (normalizedName === "/new") {
         threadIdRef.current = null
-        await ensureBridgeSession(true)
+        await ensureSession(true)
         return
       }
       if (normalizedName === "/diff") {
@@ -439,7 +441,7 @@ export function useAliciaActions({
       }
 
       if (normalizedName === "/status") {
-        if (!(await ensureBridgeSession(false))) {
+        if (!(await ensureSession(false))) {
           return
         }
         try {
@@ -453,7 +455,7 @@ export function useAliciaActions({
         setAliciaState((prev) => ({ ...prev, activePanel: "review" }))
         await refreshWorkspaceChanges()
 
-        if (!(await ensureBridgeSession(false))) {
+        if (!(await ensureSession(false))) {
           return
         }
 
@@ -530,7 +532,7 @@ export function useAliciaActions({
         return
       }
       if (normalizedName === "/agent") {
-        if (!(await ensureBridgeSession(false))) {
+        if (!(await ensureSession(false))) {
           return
         }
 
@@ -735,7 +737,7 @@ export function useAliciaActions({
         return
       }
       if (normalizedName === "/logout") {
-        if (!(await ensureBridgeSession(false))) {
+        if (!(await ensureSession(false))) {
           return
         }
 
@@ -773,7 +775,7 @@ export function useAliciaActions({
         return
       }
       if (normalizedName === "/quit" || normalizedName === "/exit") {
-        await codexBridgeStop()
+        await codexRuntimeSessionStop()
         setRuntime((prev) => ({
           ...prev,
           state: "idle",
@@ -787,7 +789,7 @@ export function useAliciaActions({
     [
       addMessage,
       aliciaState.runtimeCapabilities,
-      ensureBridgeSession,
+      ensureSession,
       markUnsupportedRuntimeMethod,
       openModelPanel,
       openSessionPanel,
@@ -893,7 +895,7 @@ export function useAliciaActions({
       let historyError: string | null = null
 
       try {
-        if (!(await ensureBridgeSession(false))) {
+        if (!(await ensureSession(false))) {
           return
         }
 
@@ -987,7 +989,7 @@ export function useAliciaActions({
     },
     [
       addMessage,
-      ensureBridgeSession,
+      ensureSession,
       markUnsupportedRuntimeMethod,
       refreshThreadList,
       sessionActionPending,
@@ -1013,4 +1015,3 @@ export function useAliciaActions({
     sessionActionPending,
   }
 }
-

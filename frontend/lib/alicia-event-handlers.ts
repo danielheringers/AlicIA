@@ -401,10 +401,6 @@ export function createCodexEventHandler({
             })
             .filter((option): option is NonNullable<typeof option> => option !== null)
 
-          if (options.length === 0) {
-            return null
-          }
-
           return {
             id,
             header:

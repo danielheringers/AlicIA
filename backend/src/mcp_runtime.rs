@@ -31,7 +31,8 @@ pub struct McpServerListResponse {
     pub elapsed_ms: u64,
 }
 
-pub fn parse_mcp_startup_warmup_bridge_result(
+#[allow(dead_code)]
+pub fn parse_mcp_startup_warmup_runtime_result(
     result: &Value,
     fallback_elapsed_ms: u64,
 ) -> McpStartupWarmupResponse {
@@ -60,7 +61,11 @@ pub fn parse_mcp_startup_warmup_bridge_result(
                 .as_u64()
                 .and_then(|count| usize::try_from(count).ok())
                 .or_else(|| value.as_i64().and_then(|count| usize::try_from(count).ok()))
-                .or_else(|| value.as_str().and_then(|raw| raw.trim().parse::<usize>().ok()))
+                .or_else(|| {
+                    value
+                        .as_str()
+                        .and_then(|raw| raw.trim().parse::<usize>().ok())
+                })
         })
         .unwrap_or(ready_servers.len());
 
@@ -71,7 +76,11 @@ pub fn parse_mcp_startup_warmup_bridge_result(
             value
                 .as_u64()
                 .or_else(|| value.as_i64().and_then(|millis| u64::try_from(millis).ok()))
-                .or_else(|| value.as_str().and_then(|raw| raw.trim().parse::<u64>().ok()))
+                .or_else(|| {
+                    value
+                        .as_str()
+                        .and_then(|raw| raw.trim().parse::<u64>().ok())
+                })
         })
         .unwrap_or(fallback_elapsed_ms);
 
@@ -126,7 +135,8 @@ fn make_unique_mcp_server_id(base_id: &str, seen_ids: &mut HashMap<String, usize
     }
 }
 
-pub fn parse_mcp_server_list_bridge_result(
+#[allow(dead_code)]
+pub fn parse_mcp_server_list_runtime_result(
     result: &Value,
     fallback_elapsed_ms: u64,
 ) -> McpServerListResponse {
@@ -186,15 +196,14 @@ pub fn parse_mcp_server_list_bridge_result(
                         .map(str::trim)
                         .filter(|value| !value.is_empty())
                         .map(|value| match value {
-                            "unsupported" | "not_logged_in" | "bearer_token" | "oauth" => {
-                                value.to_string()
-                            }
+                            "not_logged_in" | "bearer_token" | "oauth" => value.to_string(),
+                            "unsupported" => "not_logged_in".to_string(),
                             "notLoggedIn" => "not_logged_in".to_string(),
                             "bearerToken" => "bearer_token".to_string(),
                             "oAuth" => "oauth".to_string(),
-                            _ => "unsupported".to_string(),
+                            _ => "not_logged_in".to_string(),
                         })
-                        .unwrap_or_else(|| "unsupported".to_string());
+                        .unwrap_or_else(|| "not_logged_in".to_string());
 
                     let status_reason = entry
                         .get("statusReason")
@@ -204,19 +213,34 @@ pub fn parse_mcp_server_list_bridge_result(
                         .filter(|value| !value.is_empty())
                         .map(str::to_string);
 
-                    let mut tools = entry
-                        .get("tools")
-                        .and_then(Value::as_array)
-                        .map(|tools| {
-                            tools
-                                .iter()
-                                .filter_map(Value::as_str)
-                                .map(str::trim)
-                                .filter(|tool| !tool.is_empty())
-                                .map(str::to_string)
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
+                    let mut tools = match entry.get("tools") {
+                        Some(Value::Array(tools)) => tools
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::trim)
+                            .filter(|tool| !tool.is_empty())
+                            .map(str::to_string)
+                            .collect::<Vec<_>>(),
+                        Some(Value::Object(tools)) => tools
+                            .iter()
+                            .filter_map(|(key, tool)| {
+                                tool.get("name")
+                                    .and_then(Value::as_str)
+                                    .map(str::trim)
+                                    .filter(|name| !name.is_empty())
+                                    .map(str::to_string)
+                                    .or_else(|| {
+                                        let normalized_key = key.trim();
+                                        if normalized_key.is_empty() {
+                                            None
+                                        } else {
+                                            Some(normalized_key.to_string())
+                                        }
+                                    })
+                            })
+                            .collect::<Vec<_>>(),
+                        _ => Vec::new(),
+                    };
                     tools.sort();
                     tools.dedup();
 
@@ -250,7 +274,11 @@ pub fn parse_mcp_server_list_bridge_result(
                 .as_u64()
                 .and_then(|count| usize::try_from(count).ok())
                 .or_else(|| value.as_i64().and_then(|count| usize::try_from(count).ok()))
-                .or_else(|| value.as_str().and_then(|raw| raw.trim().parse::<usize>().ok()))
+                .or_else(|| {
+                    value
+                        .as_str()
+                        .and_then(|raw| raw.trim().parse::<usize>().ok())
+                })
         })
         .unwrap_or(data.len());
 
@@ -261,41 +289,17 @@ pub fn parse_mcp_server_list_bridge_result(
             value
                 .as_u64()
                 .or_else(|| value.as_i64().and_then(|millis| u64::try_from(millis).ok()))
-                .or_else(|| value.as_str().and_then(|raw| raw.trim().parse::<u64>().ok()))
+                .or_else(|| {
+                    value
+                        .as_str()
+                        .and_then(|raw| raw.trim().parse::<u64>().ok())
+                })
         })
         .unwrap_or(fallback_elapsed_ms);
 
     McpServerListResponse {
         data,
         total,
-        elapsed_ms,
-    }
-}
-
-pub fn mcp_servers_from_names(names: Vec<String>, elapsed_ms: u64) -> McpServerListResponse {
-    let mut seen_ids = HashMap::<String, usize>::new();
-    let mut data = names
-        .into_iter()
-        .map(|name| {
-            let base_id = normalize_mcp_server_id_base(&name);
-            let id = make_unique_mcp_server_id(&base_id, &mut seen_ids);
-            McpServerListEntry {
-                id,
-                name,
-                transport: "stdio".to_string(),
-                status: "connected".to_string(),
-                status_reason: None,
-                auth_status: "unsupported".to_string(),
-                tools: Vec::new(),
-                url: None,
-            }
-        })
-        .collect::<Vec<_>>();
-    data.sort_by(|a, b| a.name.cmp(&b.name));
-
-    McpServerListResponse {
-        total: data.len(),
-        data,
         elapsed_ms,
     }
 }
@@ -325,7 +329,11 @@ pub struct McpReloadResponse {
     pub elapsed_ms: u64,
 }
 
-pub fn parse_mcp_login_bridge_result(result: &Value, fallback_elapsed_ms: u64) -> McpLoginResponse {
+#[allow(dead_code)]
+pub fn parse_mcp_login_runtime_result(
+    result: &Value,
+    fallback_elapsed_ms: u64,
+) -> McpLoginResponse {
     let name = result
         .get("name")
         .and_then(Value::as_str)
@@ -354,7 +362,11 @@ pub fn parse_mcp_login_bridge_result(result: &Value, fallback_elapsed_ms: u64) -
             value
                 .as_u64()
                 .or_else(|| value.as_i64().and_then(|millis| u64::try_from(millis).ok()))
-                .or_else(|| value.as_str().and_then(|raw| raw.trim().parse::<u64>().ok()))
+                .or_else(|| {
+                    value
+                        .as_str()
+                        .and_then(|raw| raw.trim().parse::<u64>().ok())
+                })
         })
         .unwrap_or(fallback_elapsed_ms);
 
@@ -366,7 +378,8 @@ pub fn parse_mcp_login_bridge_result(result: &Value, fallback_elapsed_ms: u64) -
     }
 }
 
-pub fn parse_mcp_reload_bridge_result(
+#[allow(dead_code)]
+pub fn parse_mcp_reload_runtime_result(
     result: &Value,
     fallback_elapsed_ms: u64,
 ) -> McpReloadResponse {
@@ -382,12 +395,85 @@ pub fn parse_mcp_reload_bridge_result(
             value
                 .as_u64()
                 .or_else(|| value.as_i64().and_then(|millis| u64::try_from(millis).ok()))
-                .or_else(|| value.as_str().and_then(|raw| raw.trim().parse::<u64>().ok()))
+                .or_else(|| {
+                    value
+                        .as_str()
+                        .and_then(|raw| raw.trim().parse::<u64>().ok())
+                })
         })
         .unwrap_or(fallback_elapsed_ms);
 
     McpReloadResponse {
         reloaded,
         elapsed_ms,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_mcp_server_list_runtime_result;
+    use serde_json::json;
+
+    #[test]
+    fn parse_mcp_server_list_supports_tools_object() {
+        let result = json!({
+            "data": [
+                {
+                    "name": "playwright",
+                    "authStatus": "oAuth",
+                    "tools": {
+                        "browser_navigate": { "name": "browser.navigate" },
+                        "browser_click": {}
+                    }
+                }
+            ]
+        });
+
+        let parsed = parse_mcp_server_list_runtime_result(&result, 42);
+        assert_eq!(parsed.data.len(), 1);
+        assert_eq!(parsed.data[0].name, "playwright");
+        assert_eq!(parsed.data[0].auth_status, "oauth");
+        assert_eq!(
+            parsed.data[0].tools,
+            vec!["browser.navigate".to_string(), "browser_click".to_string()]
+        );
+        assert_eq!(parsed.elapsed_ms, 42);
+    }
+
+    #[test]
+    fn parse_mcp_server_list_supports_legacy_tools_array() {
+        let result = json!({
+            "data": [
+                {
+                    "name": "legacy",
+                    "tools": ["tool_a", "tool_b", "tool_a"]
+                }
+            ],
+            "elapsedMs": 12
+        });
+
+        let parsed = parse_mcp_server_list_runtime_result(&result, 5);
+        assert_eq!(parsed.data.len(), 1);
+        assert_eq!(
+            parsed.data[0].tools,
+            vec!["tool_a".to_string(), "tool_b".to_string()]
+        );
+        assert_eq!(parsed.elapsed_ms, 12);
+    }
+
+    #[test]
+    fn parse_mcp_server_list_normalizes_unsupported_auth_status() {
+        let result = json!({
+            "data": [
+                {
+                    "name": "legacy-auth",
+                    "authStatus": "unsupported"
+                }
+            ]
+        });
+
+        let parsed = parse_mcp_server_list_runtime_result(&result, 9);
+        assert_eq!(parsed.data.len(), 1);
+        assert_eq!(parsed.data[0].auth_status, "not_logged_in");
     }
 }

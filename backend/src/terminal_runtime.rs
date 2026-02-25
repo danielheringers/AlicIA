@@ -9,9 +9,9 @@ use std::thread;
 use tauri::{AppHandle, State};
 
 use crate::{
-    emit_terminal_data, emit_terminal_exit, resolve_binary_path, AppState,
-    TerminalCreateRequest, TerminalCreateResponse, TerminalKillRequest,
-    TerminalResizeRequest, TerminalSession, TerminalWriteRequest,
+    emit_terminal_data, emit_terminal_exit, resolve_binary_path, AppState, TerminalCreateRequest,
+    TerminalCreateResponse, TerminalKillRequest, TerminalResizeRequest, TerminalSession,
+    TerminalWriteRequest,
 };
 
 fn default_terminal_shell() -> String {
@@ -30,7 +30,7 @@ fn default_terminal_shell() -> String {
                 return comspec;
             }
         }
-        return "cmd.exe".to_string();
+        "cmd.exe".to_string()
     }
     #[cfg(not(windows))]
     {
@@ -229,4 +229,3 @@ pub(crate) fn terminal_kill_impl(
     emit_terminal_exit(&app, terminal.terminal_id, &state.next_event_seq, Some(-1));
     Ok(())
 }
-
