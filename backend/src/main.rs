@@ -19,6 +19,7 @@ mod events_runtime;
 mod launch_runtime;
 mod mcp_runtime;
 mod models_runtime;
+mod neuro_runtime;
 mod session_lifecycle_runtime;
 mod session_runtime;
 mod session_turn_runtime;
@@ -678,6 +679,8 @@ struct AppState {
     native_codex_runtime: AsyncMutex<Option<Arc<codex_native_runtime::NativeCodexRuntime>>>,
     #[cfg(feature = "native-codex-runtime")]
     native_codex_runtime_init_gate: AsyncMutex<()>,
+    neuro_runtime: AsyncMutex<Option<Arc<neuro_runtime::NeuroRuntime>>>,
+    neuro_runtime_init_gate: AsyncMutex<()>,
 }
 
 impl Default for AppState {
@@ -694,6 +697,8 @@ impl Default for AppState {
             native_codex_runtime: AsyncMutex::new(None),
             #[cfg(feature = "native-codex-runtime")]
             native_codex_runtime_init_gate: AsyncMutex::new(()),
+            neuro_runtime: AsyncMutex::new(None),
+            neuro_runtime_init_gate: AsyncMutex::new(()),
         }
     }
 }
@@ -748,6 +753,47 @@ async fn codex_native_runtime_diagnose(
 ) -> Result<codex_native_runtime::NativeCodexRuntimeDiagnoseResponse, String> {
     crate::codex_native_runtime::codex_native_runtime_diagnose_impl(state).await
 }
+
+#[tauri::command]
+async fn neuro_runtime_diagnose(
+    state: State<'_, AppState>,
+) -> Result<neuro_types::RuntimeDiagnoseResponse, neuro_types::NeuroRuntimeError> {
+    crate::neuro_runtime::neuro_runtime_diagnose_impl(state).await
+}
+
+#[tauri::command]
+async fn neuro_search_objects(
+    state: State<'_, AppState>,
+    query: String,
+    max_results: Option<u32>,
+) -> Result<Vec<neuro_types::AdtObjectSummary>, neuro_types::NeuroRuntimeError> {
+    crate::neuro_runtime::neuro_search_objects_impl(state, query, max_results).await
+}
+
+#[tauri::command]
+async fn neuro_get_source(
+    state: State<'_, AppState>,
+    object_uri: String,
+) -> Result<neuro_types::AdtSourceResponse, neuro_types::NeuroRuntimeError> {
+    crate::neuro_runtime::neuro_get_source_impl(state, object_uri).await
+}
+
+#[tauri::command]
+async fn neuro_update_source(
+    state: State<'_, AppState>,
+    request: neuro_types::AdtUpdateSourceRequest,
+) -> Result<neuro_types::AdtUpdateSourceResponse, neuro_types::NeuroRuntimeError> {
+    crate::neuro_runtime::neuro_update_source_impl(state, request).await
+}
+
+#[tauri::command]
+async fn neuro_ws_request(
+    state: State<'_, AppState>,
+    request: neuro_types::WsDomainRequest,
+) -> Result<neuro_types::WsMessageEnvelope<serde_json::Value>, neuro_types::NeuroRuntimeError> {
+    crate::neuro_runtime::neuro_ws_request_impl(state, request).await
+}
+
 #[tauri::command]
 async fn load_codex_default_config(
     state: State<'_, AppState>,
@@ -1135,6 +1181,11 @@ fn main() {
             codex_runtime_status,
             codex_runtime_capabilities,
             codex_native_runtime_diagnose,
+            neuro_runtime_diagnose,
+            neuro_search_objects,
+            neuro_get_source,
+            neuro_update_source,
+            neuro_ws_request,
             load_codex_default_config,
             send_codex_input,
             stop_codex_session,

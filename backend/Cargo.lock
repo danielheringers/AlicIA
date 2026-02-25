@@ -59,6 +59,10 @@ dependencies = [
  "codex-core",
  "codex-protocol",
  "codex-rmcp-client",
+ "neuro-adt-core",
+ "neuro-adt-ws",
+ "neuro-engine",
+ "neuro-types",
  "portable-pty 0.8.1",
  "rfd",
  "serde",
@@ -4711,6 +4715,52 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee6cda3051665f1fb8d9e08fc35c96d5a244fb1be711a03b71118828afc9a873"
 dependencies = [
  "jni-sys",
+]
+
+[[package]]
+name = "neuro-adt-core"
+version = "0.0.0"
+dependencies = [
+ "neuro-types",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "neuro-adt-ws"
+version = "0.0.0"
+dependencies = [
+ "futures",
+ "http",
+ "neuro-types",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite",
+ "uuid",
+]
+
+[[package]]
+name = "neuro-engine"
+version = "0.0.0"
+dependencies = [
+ "neuro-adt-core",
+ "neuro-adt-ws",
+ "neuro-types",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "neuro-types"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

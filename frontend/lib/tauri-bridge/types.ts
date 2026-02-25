@@ -69,6 +69,11 @@ export const RUNTIME_METHODS = [
   'account.rateLimits.read',
   'config.get',
   'config.set',
+  'neuro.runtime.diagnose',
+  'neuro.search.objects',
+  'neuro.get.source',
+  'neuro.update.source',
+  'neuro.ws.request',
 ] as const
 
 export type RuntimeMethod = (typeof RUNTIME_METHODS)[number]
@@ -83,6 +88,79 @@ export interface RuntimeCapabilitiesResponse {
   methods: RuntimeMethodCapabilities
   contract?: RuntimeContractMetadata
   disabledByFlag?: string[]
+}
+
+export type NeuroDiagnoseStatus = 'healthy' | 'degraded' | 'unavailable'
+
+export interface NeuroRuntimeDiagnoseComponent {
+  component: string
+  status: NeuroDiagnoseStatus
+  detail: string
+  latencyMs?: number | null
+}
+
+export interface NeuroRuntimeDiagnoseResponse {
+  timestampEpochSecs: number
+  overallStatus: NeuroDiagnoseStatus
+  components: NeuroRuntimeDiagnoseComponent[]
+  metadata: Record<string, unknown>
+}
+
+export interface NeuroAdtObjectSummary {
+  uri: string
+  name: string
+  objectType?: string | null
+  package?: string | null
+}
+
+export interface NeuroAdtSourceResponse {
+  objectUri: string
+  source: string
+  etag?: string | null
+}
+
+export interface NeuroAdtUpdateSourceRequest {
+  objectUri: string
+  source: string
+  etag?: string | null
+}
+
+export interface NeuroAdtUpdateSourceResponse {
+  objectUri: string
+  statusCode: number
+  etag?: string | null
+}
+
+export interface NeuroWsDomainRequest {
+  domain: string
+  action: string
+  payload: Record<string, unknown>
+}
+
+export interface NeuroWsMessageEnvelope {
+  id: string
+  domain: string
+  action: string
+  payload: Record<string, unknown>
+  ok?: boolean | null
+  error?: string | null
+}
+
+export type NeuroRuntimeErrorCode =
+  | 'adt_http_error'
+  | 'adt_auth_error'
+  | 'adt_csrf_error'
+  | 'ws_timeout'
+  | 'ws_unavailable'
+  | 'safety_violation'
+  | 'runtime_init_error'
+  | 'invalid_argument'
+  | 'unknown'
+
+export interface NeuroRuntimeCommandError {
+  code: NeuroRuntimeErrorCode
+  message: string
+  details?: Record<string, unknown> | null
 }
 
 export interface CodexReasoningEffortOption {

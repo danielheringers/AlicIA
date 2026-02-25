@@ -277,7 +277,7 @@ fn disable_methods_for_native_transport(methods: &mut HashMap<String, bool>) {
     }
 }
 
-const RUNTIME_CONTRACT_VERSION: &str = "alicia.runtime.capabilities.v1";
+const RUNTIME_CONTRACT_VERSION: &str = "alicia.runtime.capabilities.v2";
 
 const RUNTIME_METHOD_KEYS: &[&str] = &[
     "thread.open",
@@ -308,6 +308,11 @@ const RUNTIME_METHOD_KEYS: &[&str] = &[
     "account.rateLimits.read",
     "config.get",
     "config.set",
+    "neuro.runtime.diagnose",
+    "neuro.search.objects",
+    "neuro.get.source",
+    "neuro.update.source",
+    "neuro.ws.request",
 ];
 
 fn default_runtime_capabilities() -> HashMap<String, bool> {

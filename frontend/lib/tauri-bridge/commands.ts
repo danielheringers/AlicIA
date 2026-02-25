@@ -51,11 +51,195 @@ import type {
   RuntimeCodexConfig,
   RuntimeStatusResponse,
   RuntimeCapabilitiesResponse,
+  NeuroAdtObjectSummary,
+  NeuroAdtSourceResponse,
+  NeuroAdtUpdateSourceRequest,
+  NeuroAdtUpdateSourceResponse,
+  NeuroRuntimeCommandError,
+  NeuroRuntimeDiagnoseResponse,
+  NeuroWsDomainRequest,
+  NeuroWsMessageEnvelope,
   StartCodexSessionConfig,
   StartCodexSessionResponse,
   TerminalCreateRequest,
   TerminalCreateResponse,
 } from '@/lib/tauri-bridge/types'
+
+type RawNeuroDiagnoseStatus = 'healthy' | 'degraded' | 'unavailable'
+
+interface RawNeuroRuntimeDiagnoseComponent {
+  component: string
+  status: RawNeuroDiagnoseStatus
+  detail: string
+  latency_ms?: number | null
+}
+
+interface RawNeuroRuntimeDiagnoseResponse {
+  timestamp_epoch_secs: number
+  overall_status: RawNeuroDiagnoseStatus
+  components: RawNeuroRuntimeDiagnoseComponent[]
+  metadata: Record<string, unknown>
+}
+
+interface RawNeuroAdtObjectSummary {
+  uri: string
+  name: string
+  object_type?: string | null
+  package?: string | null
+}
+
+interface RawNeuroAdtSourceResponse {
+  object_uri: string
+  source: string
+  etag?: string | null
+}
+
+interface RawNeuroAdtUpdateSourceRequest {
+  object_uri: string
+  source: string
+  etag?: string | null
+}
+
+interface RawNeuroAdtUpdateSourceResponse {
+  object_uri: string
+  status_code: number
+  etag?: string | null
+}
+
+interface RawNeuroWsMessageEnvelope {
+  id: string
+  domain: string
+  action: string
+  payload: Record<string, unknown>
+  ok?: boolean | null
+  error?: string | null
+}
+
+interface RawNeuroRuntimeCommandError {
+  code: string
+  message: string
+  details?: Record<string, unknown> | null
+}
+
+function mapNeuroDiagnoseResponse(
+  raw: RawNeuroRuntimeDiagnoseResponse,
+): NeuroRuntimeDiagnoseResponse {
+  return {
+    timestampEpochSecs: raw.timestamp_epoch_secs,
+    overallStatus: raw.overall_status,
+    components: raw.components.map(component => ({
+      component: component.component,
+      status: component.status,
+      detail: component.detail,
+      latencyMs: component.latency_ms,
+    })),
+    metadata: raw.metadata ?? {},
+  }
+}
+
+function mapNeuroObjectSummary(raw: RawNeuroAdtObjectSummary): NeuroAdtObjectSummary {
+  return {
+    uri: raw.uri,
+    name: raw.name,
+    objectType: raw.object_type,
+    package: raw.package,
+  }
+}
+
+function mapNeuroSourceResponse(
+  raw: RawNeuroAdtSourceResponse,
+): NeuroAdtSourceResponse {
+  return {
+    objectUri: raw.object_uri,
+    source: raw.source,
+    etag: raw.etag,
+  }
+}
+
+function mapNeuroUpdateSourceResponse(
+  raw: RawNeuroAdtUpdateSourceResponse,
+): NeuroAdtUpdateSourceResponse {
+  return {
+    objectUri: raw.object_uri,
+    statusCode: raw.status_code,
+    etag: raw.etag,
+  }
+}
+
+function mapNeuroWsMessageEnvelope(raw: RawNeuroWsMessageEnvelope): NeuroWsMessageEnvelope {
+  return {
+    id: raw.id,
+    domain: raw.domain,
+    action: raw.action,
+    payload: raw.payload,
+    ok: raw.ok,
+    error: raw.error,
+  }
+}
+
+function parseJsonErrorMessage(message: string): RawNeuroRuntimeCommandError | null {
+  try {
+    const parsed = JSON.parse(message) as RawNeuroRuntimeCommandError
+    if (parsed && typeof parsed.code === 'string' && typeof parsed.message === 'string') {
+      return parsed
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+function normalizeNeuroRuntimeError(error: unknown): NeuroRuntimeCommandError {
+  const unknownFallback: NeuroRuntimeCommandError = {
+    code: 'unknown',
+    message: error instanceof Error ? error.message : String(error),
+    details: null,
+  }
+
+  if (error && typeof error === 'object') {
+    const candidate = error as Partial<RawNeuroRuntimeCommandError> & {
+      message?: unknown
+    }
+
+    if (typeof candidate.code === 'string' && typeof candidate.message === 'string') {
+      return {
+        code: candidate.code as NeuroRuntimeCommandError['code'],
+        message: candidate.message,
+        details: candidate.details ?? null,
+      }
+    }
+
+    if (typeof candidate.message === 'string') {
+      const parsed = parseJsonErrorMessage(candidate.message)
+      if (parsed) {
+        return {
+          code: parsed.code as NeuroRuntimeCommandError['code'],
+          message: parsed.message,
+          details: parsed.details ?? null,
+        }
+      }
+      return {
+        code: 'unknown',
+        message: candidate.message,
+        details: null,
+      }
+    }
+  }
+
+  if (typeof error === 'string') {
+    const parsed = parseJsonErrorMessage(error)
+    if (parsed) {
+      return {
+        code: parsed.code as NeuroRuntimeCommandError['code'],
+        message: parsed.message,
+        details: parsed.details ?? null,
+      }
+    }
+    return { code: 'unknown', message: error, details: null }
+  }
+
+  return unknownFallback
+}
 
 export async function codexRuntimeStatus(): Promise<RuntimeStatusResponse> {
   return invoke<RuntimeStatusResponse>('codex_runtime_status')
@@ -63,6 +247,68 @@ export async function codexRuntimeStatus(): Promise<RuntimeStatusResponse> {
 
 export async function codexRuntimeCapabilities(): Promise<RuntimeCapabilitiesResponse> {
   return invoke<RuntimeCapabilitiesResponse>('codex_runtime_capabilities')
+}
+
+export async function neuroRuntimeDiagnose(): Promise<NeuroRuntimeDiagnoseResponse> {
+  try {
+    const raw = await invoke<RawNeuroRuntimeDiagnoseResponse>('neuro_runtime_diagnose')
+    return mapNeuroDiagnoseResponse(raw)
+  } catch (error) {
+    throw normalizeNeuroRuntimeError(error)
+  }
+}
+
+export async function neuroSearchObjects(
+  query: string,
+  maxResults?: number,
+): Promise<NeuroAdtObjectSummary[]> {
+  try {
+    const raw = await invoke<RawNeuroAdtObjectSummary[]>('neuro_search_objects', {
+      query,
+      maxResults,
+    })
+    return raw.map(mapNeuroObjectSummary)
+  } catch (error) {
+    throw normalizeNeuroRuntimeError(error)
+  }
+}
+
+export async function neuroGetSource(objectUri: string): Promise<NeuroAdtSourceResponse> {
+  try {
+    const raw = await invoke<RawNeuroAdtSourceResponse>('neuro_get_source', { objectUri })
+    return mapNeuroSourceResponse(raw)
+  } catch (error) {
+    throw normalizeNeuroRuntimeError(error)
+  }
+}
+
+export async function neuroUpdateSource(
+  request: NeuroAdtUpdateSourceRequest,
+): Promise<NeuroAdtUpdateSourceResponse> {
+  try {
+    const payload: RawNeuroAdtUpdateSourceRequest = {
+      object_uri: request.objectUri,
+      source: request.source,
+      etag: request.etag ?? null,
+    }
+    const raw = await invoke<RawNeuroAdtUpdateSourceResponse>('neuro_update_source', {
+      request: payload,
+    })
+    return mapNeuroUpdateSourceResponse(raw)
+  } catch (error) {
+    throw normalizeNeuroRuntimeError(error)
+  }
+}
+
+export async function neuroWsRequest(
+  request: NeuroWsDomainRequest,
+): Promise<NeuroWsMessageEnvelope> {
+  try {
+    const raw = await invoke<RawNeuroWsMessageEnvelope>('neuro_ws_request', { request })
+    return mapNeuroWsMessageEnvelope(raw)
+  } catch (error) {
+    throw normalizeNeuroRuntimeError(error)
+  }
 }
 
 export async function loadCodexDefaultConfig(): Promise<RuntimeCodexConfig> {
