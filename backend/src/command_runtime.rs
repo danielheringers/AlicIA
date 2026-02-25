@@ -1461,4 +1461,22 @@ mod tests {
 
         assert_eq!(methods.get("tool.call.dynamic"), Some(&false));
     }
+
+    #[test]
+    fn runtime_capabilities_include_neuro_methods() {
+        let methods = default_runtime_capabilities();
+        for method in [
+            "neuro.runtime.diagnose",
+            "neuro.search.objects",
+            "neuro.get.source",
+            "neuro.update.source",
+            "neuro.ws.request",
+        ] {
+            assert_eq!(
+                methods.get(method),
+                Some(&true),
+                "neuro capability should stay enabled: {method}"
+            );
+        }
+    }
 }

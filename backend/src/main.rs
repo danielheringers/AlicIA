@@ -757,8 +757,13 @@ async fn codex_native_runtime_diagnose(
 #[tauri::command]
 async fn neuro_runtime_diagnose(
     state: State<'_, AppState>,
-) -> Result<neuro_types::RuntimeDiagnoseResponse, neuro_types::NeuroRuntimeError> {
-    crate::neuro_runtime::neuro_runtime_diagnose_impl(state).await
+) -> Result<neuro_types::NeuroCommandResponse<neuro_types::RuntimeDiagnoseResponse>, String> {
+    Ok(
+        match crate::neuro_runtime::neuro_runtime_diagnose_impl(state).await {
+            Ok(data) => neuro_types::NeuroCommandResponse::success(data),
+            Err(error) => neuro_types::NeuroCommandResponse::failure(error),
+        },
+    )
 }
 
 #[tauri::command]
@@ -766,32 +771,55 @@ async fn neuro_search_objects(
     state: State<'_, AppState>,
     query: String,
     max_results: Option<u32>,
-) -> Result<Vec<neuro_types::AdtObjectSummary>, neuro_types::NeuroRuntimeError> {
-    crate::neuro_runtime::neuro_search_objects_impl(state, query, max_results).await
+) -> Result<neuro_types::NeuroCommandResponse<Vec<neuro_types::AdtObjectSummary>>, String> {
+    Ok(
+        match crate::neuro_runtime::neuro_search_objects_impl(state, query, max_results).await {
+            Ok(data) => neuro_types::NeuroCommandResponse::success(data),
+            Err(error) => neuro_types::NeuroCommandResponse::failure(error),
+        },
+    )
 }
 
 #[tauri::command]
 async fn neuro_get_source(
     state: State<'_, AppState>,
     object_uri: String,
-) -> Result<neuro_types::AdtSourceResponse, neuro_types::NeuroRuntimeError> {
-    crate::neuro_runtime::neuro_get_source_impl(state, object_uri).await
+) -> Result<neuro_types::NeuroCommandResponse<neuro_types::AdtSourceResponse>, String> {
+    Ok(
+        match crate::neuro_runtime::neuro_get_source_impl(state, object_uri).await {
+            Ok(data) => neuro_types::NeuroCommandResponse::success(data),
+            Err(error) => neuro_types::NeuroCommandResponse::failure(error),
+        },
+    )
 }
 
 #[tauri::command]
 async fn neuro_update_source(
     state: State<'_, AppState>,
     request: neuro_types::AdtUpdateSourceRequest,
-) -> Result<neuro_types::AdtUpdateSourceResponse, neuro_types::NeuroRuntimeError> {
-    crate::neuro_runtime::neuro_update_source_impl(state, request).await
+) -> Result<neuro_types::NeuroCommandResponse<neuro_types::AdtUpdateSourceResponse>, String> {
+    Ok(
+        match crate::neuro_runtime::neuro_update_source_impl(state, request).await {
+            Ok(data) => neuro_types::NeuroCommandResponse::success(data),
+            Err(error) => neuro_types::NeuroCommandResponse::failure(error),
+        },
+    )
 }
 
 #[tauri::command]
 async fn neuro_ws_request(
     state: State<'_, AppState>,
     request: neuro_types::WsDomainRequest,
-) -> Result<neuro_types::WsMessageEnvelope<serde_json::Value>, neuro_types::NeuroRuntimeError> {
-    crate::neuro_runtime::neuro_ws_request_impl(state, request).await
+) -> Result<
+    neuro_types::NeuroCommandResponse<neuro_types::WsMessageEnvelope<serde_json::Value>>,
+    String,
+> {
+    Ok(
+        match crate::neuro_runtime::neuro_ws_request_impl(state, request).await {
+            Ok(data) => neuro_types::NeuroCommandResponse::success(data),
+            Err(error) => neuro_types::NeuroCommandResponse::failure(error),
+        },
+    )
 }
 
 #[tauri::command]
