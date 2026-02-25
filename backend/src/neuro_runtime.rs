@@ -9,8 +9,11 @@ use neuro_types::{
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::env;
+use std::future::Future;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::State;
 
 use crate::AppState;
@@ -19,6 +22,8 @@ const DEFAULT_ADT_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_WS_TIMEOUT_SECS: u64 = 15;
 const DEFAULT_ADT_CSRF_FETCH_PATH: &str = "/sap/bc/adt";
 const DEFAULT_ADT_SEARCH_PATH: &str = "/sap/bc/adt/discovery/search";
+const NEURO_COMMAND_TELEMETRY_EVENT: &str = "neuro.command";
+const NEURO_RUNTIME_INIT_TELEMETRY_EVENT: &str = "neuro.runtime_init";
 
 #[derive(Debug, Clone)]
 struct EnvValue {
@@ -139,6 +144,98 @@ impl NeuroRuntime {
 
         Ok(Self { config, engine })
     }
+}
+
+#[cfg(test)]
+fn telemetry_events() -> &'static Mutex<Vec<String>> {
+    static EVENTS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+    EVENTS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+#[cfg(test)]
+fn push_test_telemetry_event(event: String) {
+    telemetry_events()
+        .lock()
+        .expect("telemetry event lock poisoned")
+        .push(event);
+}
+
+#[cfg(test)]
+fn drain_test_telemetry_events() -> Vec<String> {
+    std::mem::take(
+        &mut *telemetry_events()
+            .lock()
+            .expect("telemetry event lock poisoned"),
+    )
+}
+
+fn emit_neuro_telemetry(payload: Value) {
+    let line = payload.to_string();
+    #[cfg(test)]
+    push_test_telemetry_event(line.clone());
+    eprintln!("[neuro-telemetry] {line}");
+}
+
+fn latency_millis(duration: Duration) -> u64 {
+    duration.as_millis().min(u64::MAX as u128) as u64
+}
+
+fn error_code_value(code: &NeuroRuntimeErrorCode) -> Value {
+    serde_json::to_value(code).unwrap_or_else(|_| json!(format!("{code:?}")))
+}
+
+fn emit_neuro_command_telemetry<T>(
+    command_name: &'static str,
+    duration: Duration,
+    result: &Result<T, NeuroRuntimeError>,
+) {
+    let mut payload = serde_json::Map::new();
+    payload.insert("event".to_string(), json!(NEURO_COMMAND_TELEMETRY_EVENT));
+    payload.insert("command".to_string(), json!(command_name));
+    payload.insert("success".to_string(), json!(result.is_ok()));
+    payload.insert("latencyMs".to_string(), json!(latency_millis(duration)));
+
+    if let Err(error) = result {
+        payload.insert("errorCode".to_string(), error_code_value(&error.code));
+        payload.insert("errorMessage".to_string(), json!(error.message.as_str()));
+    }
+
+    emit_neuro_telemetry(Value::Object(payload));
+}
+
+fn emit_neuro_runtime_init_telemetry(
+    status: &'static str,
+    duration: Duration,
+    error: Option<&NeuroRuntimeError>,
+) {
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "event".to_string(),
+        json!(NEURO_RUNTIME_INIT_TELEMETRY_EVENT),
+    );
+    payload.insert("status".to_string(), json!(status));
+    payload.insert("success".to_string(), json!(error.is_none()));
+    payload.insert("latencyMs".to_string(), json!(latency_millis(duration)));
+
+    if let Some(error) = error {
+        payload.insert("errorCode".to_string(), error_code_value(&error.code));
+        payload.insert("errorMessage".to_string(), json!(error.message.as_str()));
+    }
+
+    emit_neuro_telemetry(Value::Object(payload));
+}
+
+async fn run_with_neuro_command_telemetry<T, F>(
+    command_name: &'static str,
+    operation: F,
+) -> Result<T, NeuroRuntimeError>
+where
+    F: Future<Output = Result<T, NeuroRuntimeError>>,
+{
+    let started_at = Instant::now();
+    let result = operation.await;
+    emit_neuro_command_telemetry(command_name, started_at.elapsed(), &result);
+    result
 }
 
 fn first_non_empty_env(keys: &[&'static str]) -> Option<EnvValue> {
@@ -623,10 +720,13 @@ fn map_engine_error(error: NeuroEngineError) -> NeuroRuntimeError {
 }
 
 pub async fn get_or_init(state: &AppState) -> Result<Arc<NeuroRuntime>, NeuroRuntimeError> {
+    let started_at = Instant::now();
+
     if let Some(runtime) = {
         let cache = state.neuro_runtime.lock().await;
         cache.clone()
     } {
+        emit_neuro_runtime_init_telemetry("cache_hit", started_at.elapsed(), None);
         return Ok(runtime);
     }
 
@@ -636,39 +736,41 @@ pub async fn get_or_init(state: &AppState) -> Result<Arc<NeuroRuntime>, NeuroRun
         let cache = state.neuro_runtime.lock().await;
         cache.clone()
     } {
+        emit_neuro_runtime_init_telemetry("cache_hit_after_gate", started_at.elapsed(), None);
         return Ok(runtime);
     }
 
-    let initialized = NeuroRuntime::initialize()
-        .await
-        .map(Arc::new)
-        .map_err(|error| {
-            eprintln!(
-                "[neuro-runtime] failed to initialize neuro runtime: {}",
-                error.message
-            );
-            error
-        })?;
+    let initialized = match NeuroRuntime::initialize().await {
+        Ok(runtime) => Arc::new(runtime),
+        Err(error) => {
+            emit_neuro_runtime_init_telemetry("failed", started_at.elapsed(), Some(&error));
+            return Err(error);
+        }
+    };
 
     let mut cache = state.neuro_runtime.lock().await;
     *cache = Some(Arc::clone(&initialized));
+    emit_neuro_runtime_init_telemetry("initialized", started_at.elapsed(), None);
     Ok(initialized)
 }
 
 pub async fn neuro_runtime_diagnose_impl(
     state: State<'_, AppState>,
 ) -> Result<RuntimeDiagnoseResponse, NeuroRuntimeError> {
-    if let Some(runtime) = {
-        let cache = state.inner().neuro_runtime.lock().await;
-        cache.clone()
-    } {
-        return Ok(success_response(runtime, true).await);
-    }
+    run_with_neuro_command_telemetry("neuro_runtime_diagnose", async {
+        if let Some(runtime) = {
+            let cache = state.inner().neuro_runtime.lock().await;
+            cache.clone()
+        } {
+            return Ok(success_response(runtime, true).await);
+        }
 
-    match get_or_init(state.inner()).await {
-        Ok(runtime) => Ok(success_response(runtime, false).await),
-        Err(error) => Ok(init_error_response(error)),
-    }
+        match get_or_init(state.inner()).await {
+            Ok(runtime) => Ok(success_response(runtime, false).await),
+            Err(error) => Ok(init_error_response(error)),
+        }
+    })
+    .await
 }
 
 pub async fn neuro_search_objects_impl(
@@ -676,62 +778,85 @@ pub async fn neuro_search_objects_impl(
     query: String,
     max_results: Option<u32>,
 ) -> Result<Vec<neuro_types::AdtObjectSummary>, NeuroRuntimeError> {
-    let runtime = get_or_init(state.inner()).await?;
-    runtime
-        .engine
-        .search(query.as_str(), max_results)
-        .await
-        .map_err(map_engine_error)
+    run_with_neuro_command_telemetry("neuro_search_objects", async {
+        let runtime = get_or_init(state.inner()).await?;
+        runtime
+            .engine
+            .search(query.as_str(), max_results)
+            .await
+            .map_err(map_engine_error)
+    })
+    .await
 }
 
 pub async fn neuro_get_source_impl(
     state: State<'_, AppState>,
     object_uri: String,
 ) -> Result<neuro_types::AdtSourceResponse, NeuroRuntimeError> {
-    let runtime = get_or_init(state.inner()).await?;
-    runtime
-        .engine
-        .get_source(object_uri.as_str())
-        .await
-        .map_err(map_engine_error)
+    run_with_neuro_command_telemetry("neuro_get_source", async {
+        let runtime = get_or_init(state.inner()).await?;
+        runtime
+            .engine
+            .get_source(object_uri.as_str())
+            .await
+            .map_err(map_engine_error)
+    })
+    .await
 }
 
 pub async fn neuro_update_source_impl(
     state: State<'_, AppState>,
     request: neuro_types::AdtUpdateSourceRequest,
 ) -> Result<neuro_types::AdtUpdateSourceResponse, NeuroRuntimeError> {
-    let runtime = get_or_init(state.inner()).await?;
-    runtime
-        .engine
-        .update_source(request)
-        .await
-        .map_err(map_engine_error)
+    run_with_neuro_command_telemetry("neuro_update_source", async {
+        let runtime = get_or_init(state.inner()).await?;
+        runtime
+            .engine
+            .update_source(request)
+            .await
+            .map_err(map_engine_error)
+    })
+    .await
 }
 
 pub async fn neuro_ws_request_impl(
     state: State<'_, AppState>,
     request: WsDomainRequest,
 ) -> Result<WsMessageEnvelope<Value>, NeuroRuntimeError> {
-    let runtime = get_or_init(state.inner()).await?;
-    runtime
-        .engine
-        .send_domain_request(
-            request.domain.as_str(),
-            request.action.as_str(),
-            request.payload,
-        )
-        .await
-        .map_err(map_engine_error)
+    run_with_neuro_command_telemetry("neuro_ws_request", async {
+        let runtime = get_or_init(state.inner()).await?;
+        runtime
+            .engine
+            .send_domain_request(
+                request.domain.as_str(),
+                request.action.as_str(),
+                request.payload,
+            )
+            .await
+            .map_err(map_engine_error)
+    })
+    .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
+    use std::time::Duration;
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn telemetry_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn take_single_telemetry_event() -> Value {
+        let mut events = drain_test_telemetry_events();
+        assert_eq!(events.len(), 1, "expected exactly one telemetry event");
+        serde_json::from_str(&events.remove(0)).expect("telemetry payload should be valid JSON")
     }
 
     fn with_env_overrides(pairs: &[(&str, Option<&str>)], test: impl FnOnce()) {
@@ -819,5 +944,100 @@ mod tests {
             assert_eq!(error.code, NeuroRuntimeErrorCode::InvalidArgument);
             assert!(error.message.contains("NEURO_SAP_INSECURE"));
         });
+    }
+
+    #[tokio::test]
+    async fn telemetry_reports_success_without_changing_result() {
+        let _guard = telemetry_lock().lock().expect("telemetry lock poisoned");
+        drain_test_telemetry_events();
+
+        let result = run_with_neuro_command_telemetry("neuro_search_objects", async {
+            Ok::<_, NeuroRuntimeError>(17u32)
+        })
+        .await
+        .expect("operation should succeed");
+        assert_eq!(result, 17);
+
+        let event = take_single_telemetry_event();
+        assert_eq!(
+            event.get("event"),
+            Some(&json!(NEURO_COMMAND_TELEMETRY_EVENT))
+        );
+        assert_eq!(event.get("command"), Some(&json!("neuro_search_objects")));
+        assert_eq!(event.get("success"), Some(&json!(true)));
+        assert!(event.get("latencyMs").and_then(Value::as_u64).is_some());
+        assert!(event.get("errorCode").is_none());
+        assert!(event.get("errorMessage").is_none());
+    }
+
+    #[tokio::test]
+    async fn telemetry_reports_failure_and_preserves_error_details() {
+        let _guard = telemetry_lock().lock().expect("telemetry lock poisoned");
+        drain_test_telemetry_events();
+
+        let expected = runtime_error(
+            NeuroRuntimeErrorCode::WsUnavailable,
+            "ws is unavailable".to_string(),
+            None,
+        );
+        let result: Result<(), NeuroRuntimeError> =
+            run_with_neuro_command_telemetry("neuro_ws_request", async { Err(expected) }).await;
+        let error = result.expect_err("operation should fail");
+        assert_eq!(error.code, NeuroRuntimeErrorCode::WsUnavailable);
+        assert_eq!(error.message, "ws is unavailable");
+
+        let event = take_single_telemetry_event();
+        assert_eq!(
+            event.get("event"),
+            Some(&json!(NEURO_COMMAND_TELEMETRY_EVENT))
+        );
+        assert_eq!(event.get("command"), Some(&json!("neuro_ws_request")));
+        assert_eq!(event.get("success"), Some(&json!(false)));
+        assert_eq!(
+            event.get("errorCode"),
+            Some(&error_code_value(&NeuroRuntimeErrorCode::WsUnavailable))
+        );
+        assert_eq!(event.get("errorMessage"), Some(&json!("ws is unavailable")));
+    }
+
+    #[test]
+    fn telemetry_latency_is_capped_to_u64_range() {
+        let _guard = telemetry_lock().lock().expect("telemetry lock poisoned");
+        drain_test_telemetry_events();
+
+        let result: Result<(), NeuroRuntimeError> = Ok(());
+        emit_neuro_command_telemetry(
+            "neuro_runtime_diagnose",
+            Duration::from_secs(u64::MAX),
+            &result,
+        );
+
+        let event = take_single_telemetry_event();
+        assert_eq!(event.get("latencyMs"), Some(&json!(u64::MAX)));
+    }
+
+    #[test]
+    fn runtime_init_telemetry_emits_error_fields_on_failure() {
+        let _guard = telemetry_lock().lock().expect("telemetry lock poisoned");
+        drain_test_telemetry_events();
+
+        let error = runtime_error(
+            NeuroRuntimeErrorCode::RuntimeInitError,
+            "missing SAP URL".to_string(),
+            None,
+        );
+        emit_neuro_runtime_init_telemetry("failed", Duration::from_millis(9), Some(&error));
+
+        let event = take_single_telemetry_event();
+        assert_eq!(
+            event.get("event"),
+            Some(&json!(NEURO_RUNTIME_INIT_TELEMETRY_EVENT))
+        );
+        assert_eq!(event.get("status"), Some(&json!("failed")));
+        assert_eq!(event.get("success"), Some(&json!(false)));
+        assert_eq!(
+            event.get("errorCode"),
+            Some(&error_code_value(&NeuroRuntimeErrorCode::RuntimeInitError))
+        );
     }
 }
