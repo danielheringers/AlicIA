@@ -163,6 +163,12 @@ export interface NeuroRuntimeCommandError {
   details?: Record<string, unknown> | null
 }
 
+export interface NeuroCommandResponse<T> {
+  ok: boolean
+  data?: T | null
+  error?: NeuroRuntimeCommandError | null
+}
+
 export interface CodexReasoningEffortOption {
   reasoningEffort: ReasoningEffort
   description: string

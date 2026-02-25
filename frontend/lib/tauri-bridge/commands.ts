@@ -121,6 +121,12 @@ interface RawNeuroRuntimeCommandError {
   details?: Record<string, unknown> | null
 }
 
+interface RawNeuroCommandResponse<T> {
+  ok: boolean
+  data?: T | null
+  error?: RawNeuroRuntimeCommandError | null
+}
+
 function mapNeuroDiagnoseResponse(
   raw: RawNeuroRuntimeDiagnoseResponse,
 ): NeuroRuntimeDiagnoseResponse {
@@ -241,6 +247,34 @@ function normalizeNeuroRuntimeError(error: unknown): NeuroRuntimeCommandError {
   return unknownFallback
 }
 
+function normalizeRuntimeCommandError(
+  error?: RawNeuroRuntimeCommandError | NeuroRuntimeCommandError | null,
+): NeuroRuntimeCommandError {
+  if (!error) {
+    return {
+      code: 'unknown',
+      message: 'neuro command failed without details',
+      details: null,
+    }
+  }
+
+  return {
+    code: error.code as NeuroRuntimeCommandError['code'],
+    message: error.message,
+    details: error.details ?? null,
+  }
+}
+
+function unwrapNeuroResponse<T>(
+  response: RawNeuroCommandResponse<T>,
+): T {
+  if (response.ok && response.data != null) {
+    return response.data
+  }
+
+  throw normalizeRuntimeCommandError(response.error)
+}
+
 export async function codexRuntimeStatus(): Promise<RuntimeStatusResponse> {
   return invoke<RuntimeStatusResponse>('codex_runtime_status')
 }
@@ -251,8 +285,10 @@ export async function codexRuntimeCapabilities(): Promise<RuntimeCapabilitiesRes
 
 export async function neuroRuntimeDiagnose(): Promise<NeuroRuntimeDiagnoseResponse> {
   try {
-    const raw = await invoke<RawNeuroRuntimeDiagnoseResponse>('neuro_runtime_diagnose')
-    return mapNeuroDiagnoseResponse(raw)
+    const response = await invoke<RawNeuroCommandResponse<RawNeuroRuntimeDiagnoseResponse>>(
+      'neuro_runtime_diagnose',
+    )
+    return mapNeuroDiagnoseResponse(unwrapNeuroResponse(response))
   } catch (error) {
     throw normalizeNeuroRuntimeError(error)
   }
@@ -263,10 +299,14 @@ export async function neuroSearchObjects(
   maxResults?: number,
 ): Promise<NeuroAdtObjectSummary[]> {
   try {
-    const raw = await invoke<RawNeuroAdtObjectSummary[]>('neuro_search_objects', {
-      query,
-      maxResults,
-    })
+    const response = await invoke<RawNeuroCommandResponse<RawNeuroAdtObjectSummary[]>>(
+      'neuro_search_objects',
+      {
+        query,
+        maxResults,
+      },
+    )
+    const raw = unwrapNeuroResponse(response)
     return raw.map(mapNeuroObjectSummary)
   } catch (error) {
     throw normalizeNeuroRuntimeError(error)
@@ -275,7 +315,11 @@ export async function neuroSearchObjects(
 
 export async function neuroGetSource(objectUri: string): Promise<NeuroAdtSourceResponse> {
   try {
-    const raw = await invoke<RawNeuroAdtSourceResponse>('neuro_get_source', { objectUri })
+    const response = await invoke<RawNeuroCommandResponse<RawNeuroAdtSourceResponse>>(
+      'neuro_get_source',
+      { objectUri },
+    )
+    const raw = unwrapNeuroResponse(response)
     return mapNeuroSourceResponse(raw)
   } catch (error) {
     throw normalizeNeuroRuntimeError(error)
@@ -291,9 +335,13 @@ export async function neuroUpdateSource(
       source: request.source,
       etag: request.etag ?? null,
     }
-    const raw = await invoke<RawNeuroAdtUpdateSourceResponse>('neuro_update_source', {
-      request: payload,
-    })
+    const response = await invoke<RawNeuroCommandResponse<RawNeuroAdtUpdateSourceResponse>>(
+      'neuro_update_source',
+      {
+        request: payload,
+      },
+    )
+    const raw = unwrapNeuroResponse(response)
     return mapNeuroUpdateSourceResponse(raw)
   } catch (error) {
     throw normalizeNeuroRuntimeError(error)
@@ -304,7 +352,11 @@ export async function neuroWsRequest(
   request: NeuroWsDomainRequest,
 ): Promise<NeuroWsMessageEnvelope> {
   try {
-    const raw = await invoke<RawNeuroWsMessageEnvelope>('neuro_ws_request', { request })
+    const response = await invoke<RawNeuroCommandResponse<RawNeuroWsMessageEnvelope>>(
+      'neuro_ws_request',
+      { request },
+    )
+    const raw = unwrapNeuroResponse(response)
     return mapNeuroWsMessageEnvelope(raw)
   } catch (error) {
     throw normalizeNeuroRuntimeError(error)
