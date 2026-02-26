@@ -27,7 +27,7 @@ If `NEURO_SAP_URL` is missing, runtime initialization fails with `runtime_init_e
 - `NEURO_SAP_INSECURE` (fallback: `SAP_INSECURE`, default: `false`)
 - `NEURO_SAP_TIMEOUT_SECS` (fallback: `SAP_TIMEOUT_SECS`, default: `30`)
 - `NEURO_ADT_CSRF_FETCH_PATH` (fallback: `SAP_ADT_CSRF_FETCH_PATH`, default: `/sap/bc/adt`)
-- `NEURO_ADT_SEARCH_PATH` (fallback: `SAP_ADT_SEARCH_PATH`, default: `/sap/bc/adt/discovery/search`)
+- `NEURO_ADT_SEARCH_PATH` (fallback: `SAP_ADT_SEARCH_PATH`, default: `/sap/bc/adt/repository/informationsystem/search?operation=quickSearch`)
 
 ### Optional WebSocket
 

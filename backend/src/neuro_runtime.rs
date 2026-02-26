@@ -21,7 +21,8 @@ use crate::AppState;
 const DEFAULT_ADT_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_WS_TIMEOUT_SECS: u64 = 15;
 const DEFAULT_ADT_CSRF_FETCH_PATH: &str = "/sap/bc/adt";
-const DEFAULT_ADT_SEARCH_PATH: &str = "/sap/bc/adt/discovery/search";
+const DEFAULT_ADT_SEARCH_PATH: &str =
+    "/sap/bc/adt/repository/informationsystem/search?operation=quickSearch";
 const NEURO_COMMAND_TELEMETRY_EVENT: &str = "neuro.command";
 const NEURO_RUNTIME_INIT_TELEMETRY_EVENT: &str = "neuro.runtime_init";
 
@@ -758,19 +759,23 @@ pub async fn neuro_runtime_diagnose_impl(
     state: State<'_, AppState>,
 ) -> Result<RuntimeDiagnoseResponse, NeuroRuntimeError> {
     run_with_neuro_command_telemetry("neuro_runtime_diagnose", async {
-        if let Some(runtime) = {
-            let cache = state.inner().neuro_runtime.lock().await;
-            cache.clone()
-        } {
-            return Ok(success_response(runtime, true).await);
-        }
-
-        match get_or_init(state.inner()).await {
-            Ok(runtime) => Ok(success_response(runtime, false).await),
-            Err(error) => Ok(init_error_response(error)),
-        }
+        Ok(neuro_runtime_diagnose_for_app_state(state.inner()).await)
     })
     .await
+}
+
+pub async fn neuro_runtime_diagnose_for_app_state(state: &AppState) -> RuntimeDiagnoseResponse {
+    if let Some(runtime) = {
+        let cache = state.neuro_runtime.lock().await;
+        cache.clone()
+    } {
+        return success_response(runtime, true).await;
+    }
+
+    match get_or_init(state).await {
+        Ok(runtime) => success_response(runtime, false).await,
+        Err(error) => init_error_response(error),
+    }
 }
 
 pub async fn neuro_search_objects_impl(

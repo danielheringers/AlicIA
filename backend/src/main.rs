@@ -6,7 +6,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, MutexGuard};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use tokio::sync::Mutex as AsyncMutex;
 
 mod account_runtime;
@@ -138,6 +138,63 @@ const CODEX_HELP_KEY_FLAGS: &[&str] = &[
     "--enable FEATURE",
     "--disable FEATURE",
 ];
+
+fn parse_env_bool_flag(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "y" | "on" => Some(true),
+        "0" | "false" | "no" | "n" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn neuro_startup_probe_enabled() -> bool {
+    match env::var("NEURO_LOG_STARTUP_DIAGNOSE") {
+        Ok(raw) => parse_env_bool_flag(&raw).unwrap_or(true),
+        Err(_) => true,
+    }
+}
+
+fn diagnose_status_label(status: neuro_types::DiagnoseStatus) -> &'static str {
+    match status {
+        neuro_types::DiagnoseStatus::Healthy => "healthy",
+        neuro_types::DiagnoseStatus::Degraded => "degraded",
+        neuro_types::DiagnoseStatus::Unavailable => "unavailable",
+    }
+}
+
+fn spawn_neuro_startup_probe(app_handle: AppHandle) {
+    if !neuro_startup_probe_enabled() {
+        eprintln!("[neuro-startup] startup diagnose probe disabled by NEURO_LOG_STARTUP_DIAGNOSE");
+        return;
+    }
+
+    tauri::async_runtime::spawn(async move {
+        eprintln!("[neuro-startup] running startup ADT diagnose probe");
+
+        let state = app_handle.state::<AppState>();
+        let report =
+            crate::neuro_runtime::neuro_runtime_diagnose_for_app_state(state.inner()).await;
+
+        eprintln!(
+            "[neuro-startup] overall_status={}",
+            diagnose_status_label(report.overall_status)
+        );
+
+        if let Some(component) = report
+            .components
+            .iter()
+            .find(|component| component.component == "adt_http")
+        {
+            eprintln!(
+                "[neuro-startup] adt_http status={} detail={}",
+                diagnose_status_label(component.status),
+                component.detail
+            );
+        } else {
+            eprintln!("[neuro-startup] adt_http component was not reported by diagnose");
+        }
+    });
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1186,6 +1243,10 @@ fn codex_help_snapshot() -> CodexHelpSnapshot {
 fn main() {
     tauri::Builder::default()
         .manage(AppState::default())
+        .setup(|app| {
+            spawn_neuro_startup_probe(app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             start_codex_session,
             codex_turn_run,
