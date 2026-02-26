@@ -313,6 +313,8 @@ const RUNTIME_METHOD_KEYS: &[&str] = &[
     "neuro.get.source",
     "neuro.update.source",
     "neuro.ws.request",
+    "neuro.mcp.list_tools",
+    "neuro.mcp.invoke",
 ];
 
 fn default_runtime_capabilities() -> HashMap<String, bool> {
@@ -1471,6 +1473,8 @@ mod tests {
             "neuro.get.source",
             "neuro.update.source",
             "neuro.ws.request",
+            "neuro.mcp.list_tools",
+            "neuro.mcp.invoke",
         ] {
             assert_eq!(
                 methods.get(method),

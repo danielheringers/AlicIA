@@ -14,6 +14,7 @@ codex-protocol = { path = "../../codex/codex-rs/protocol", optional = true }
 codex-app-server-protocol = { path = "../../codex/codex-rs/app-server-protocol", optional = true }
 codex-rmcp-client = { path = "../../codex/codex-rs/rmcp-client", optional = true }
 neuro-engine = { path = "../../codex/codex-rs/neuro-engine" }
+neuro-mcp = { path = "../../codex/codex-rs/neuro-mcp" }
 neuro-types = { path = "../../codex/codex-rs/neuro-types" }
 neuro-adt-core = { path = "../../codex/codex-rs/neuro-adt-core" }
 neuro-adt-ws = { path = "../../codex/codex-rs/neuro-adt-ws" }

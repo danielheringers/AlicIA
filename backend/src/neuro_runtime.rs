@@ -1,6 +1,7 @@
 use neuro_adt_core::AdtClientError;
 use neuro_adt_ws::NeuroWsClientError;
 use neuro_engine::NeuroEngineError;
+use neuro_mcp::{NeuroMcpError, NeuroMcpFacade, NeuroToolSpec};
 use neuro_types::{
     AdtAuth, AdtHttpConfig, AdtHttpEndpoints, DiagnoseStatus, NeuroEngineConfig, NeuroRuntimeError,
     NeuroRuntimeErrorCode, RuntimeDiagnoseComponent, RuntimeDiagnoseResponse, SafetyPolicy,
@@ -82,7 +83,7 @@ struct RuntimeConfig {
 
 pub struct NeuroRuntime {
     config: RuntimeConfig,
-    engine: neuro_engine::NeuroEngine,
+    engine: Arc<neuro_engine::NeuroEngine>,
 }
 
 impl NeuroRuntime {
@@ -115,7 +116,7 @@ impl NeuroRuntime {
             connect_headers: config.ws.headers.clone(),
         });
 
-        let engine = neuro_engine::NeuroEngine::new(NeuroEngineConfig {
+        let engine = Arc::new(neuro_engine::NeuroEngine::new(NeuroEngineConfig {
             adt: AdtHttpConfig {
                 base_url,
                 auth,
@@ -141,7 +142,7 @@ impl NeuroRuntime {
             },
         })
         .await
-        .map_err(map_engine_error)?;
+        .map_err(map_engine_error)?);
 
         Ok(Self { config, engine })
     }
@@ -720,6 +721,32 @@ fn map_engine_error(error: NeuroEngineError) -> NeuroRuntimeError {
     }
 }
 
+fn map_mcp_error(error: NeuroMcpError) -> NeuroRuntimeError {
+    match error {
+        NeuroMcpError::UnknownTool(tool) => runtime_error(
+            NeuroRuntimeErrorCode::InvalidArgument,
+            format!("unsupported neuro MCP tool: {tool}"),
+            None,
+        ),
+        NeuroMcpError::UnsupportedTool { tool } => runtime_error(
+            NeuroRuntimeErrorCode::InvalidArgument,
+            format!("neuro MCP tool is declared but not implemented: {tool}"),
+            None,
+        ),
+        NeuroMcpError::InvalidArguments { tool, message } => runtime_error(
+            NeuroRuntimeErrorCode::InvalidArgument,
+            format!("invalid arguments for neuro MCP tool `{tool}`: {message}"),
+            None,
+        ),
+        NeuroMcpError::Engine(error) => map_engine_error(error),
+        NeuroMcpError::Serialize(error) => runtime_error(
+            NeuroRuntimeErrorCode::Unknown,
+            format!("failed to serialize neuro MCP response: {error}"),
+            None,
+        ),
+    }
+}
+
 pub async fn get_or_init(state: &AppState) -> Result<Arc<NeuroRuntime>, NeuroRuntimeError> {
     let started_at = Instant::now();
 
@@ -839,6 +866,31 @@ pub async fn neuro_ws_request_impl(
             )
             .await
             .map_err(map_engine_error)
+    })
+    .await
+}
+
+pub async fn neuro_list_tools_impl(
+    state: State<'_, AppState>,
+) -> Result<Vec<NeuroToolSpec>, NeuroRuntimeError> {
+    run_with_neuro_command_telemetry("neuro_list_tools", async {
+        let runtime = get_or_init(state.inner()).await?;
+        Ok(NeuroMcpFacade::new(runtime.engine.clone()).list_tools())
+    })
+    .await
+}
+
+pub async fn neuro_invoke_tool_impl(
+    state: State<'_, AppState>,
+    tool_name: String,
+    arguments: Value,
+) -> Result<Value, NeuroRuntimeError> {
+    run_with_neuro_command_telemetry("neuro_invoke_tool", async {
+        let runtime = get_or_init(state.inner()).await?;
+        NeuroMcpFacade::new(runtime.engine.clone())
+            .invoke(tool_name.as_str(), arguments)
+            .await
+            .map_err(map_mcp_error)
     })
     .await
 }

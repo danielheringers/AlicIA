@@ -57,6 +57,7 @@ import type {
   NeuroAdtUpdateSourceResponse,
   NeuroRuntimeCommandError,
   NeuroRuntimeDiagnoseResponse,
+  NeuroToolSpec,
   NeuroWsDomainRequest,
   NeuroWsMessageEnvelope,
   StartCodexSessionConfig,
@@ -358,6 +359,35 @@ export async function neuroWsRequest(
     )
     const raw = unwrapNeuroResponse(response)
     return mapNeuroWsMessageEnvelope(raw)
+  } catch (error) {
+    throw normalizeNeuroRuntimeError(error)
+  }
+}
+
+export async function neuroListTools(): Promise<NeuroToolSpec[]> {
+  try {
+    const response = await invoke<RawNeuroCommandResponse<NeuroToolSpec[]>>(
+      'neuro_list_tools',
+    )
+    return unwrapNeuroResponse(response)
+  } catch (error) {
+    throw normalizeNeuroRuntimeError(error)
+  }
+}
+
+export async function neuroInvokeTool(
+  toolName: string,
+  argumentsPayload: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  try {
+    const response = await invoke<RawNeuroCommandResponse<Record<string, unknown>>>(
+      'neuro_invoke_tool',
+      {
+        toolName,
+        arguments: argumentsPayload,
+      },
+    )
+    return unwrapNeuroResponse(response)
   } catch (error) {
     throw normalizeNeuroRuntimeError(error)
   }

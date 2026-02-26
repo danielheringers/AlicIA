@@ -74,6 +74,8 @@ export const RUNTIME_METHODS = [
   'neuro.get.source',
   'neuro.update.source',
   'neuro.ws.request',
+  'neuro.mcp.list_tools',
+  'neuro.mcp.invoke',
 ] as const
 
 export type RuntimeMethod = (typeof RUNTIME_METHODS)[number]
@@ -144,6 +146,11 @@ export interface NeuroWsMessageEnvelope {
   payload: Record<string, unknown>
   ok?: boolean | null
   error?: string | null
+}
+
+export interface NeuroToolSpec {
+  name: string
+  description: string
 }
 
 export type NeuroRuntimeErrorCode =

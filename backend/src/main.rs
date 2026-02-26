@@ -880,6 +880,32 @@ async fn neuro_ws_request(
 }
 
 #[tauri::command]
+async fn neuro_list_tools(
+    state: State<'_, AppState>,
+) -> Result<neuro_types::NeuroCommandResponse<Vec<neuro_mcp::NeuroToolSpec>>, String> {
+    Ok(
+        match crate::neuro_runtime::neuro_list_tools_impl(state).await {
+            Ok(data) => neuro_types::NeuroCommandResponse::success(data),
+            Err(error) => neuro_types::NeuroCommandResponse::failure(error),
+        },
+    )
+}
+
+#[tauri::command]
+async fn neuro_invoke_tool(
+    state: State<'_, AppState>,
+    tool_name: String,
+    arguments: serde_json::Value,
+) -> Result<neuro_types::NeuroCommandResponse<serde_json::Value>, String> {
+    Ok(
+        match crate::neuro_runtime::neuro_invoke_tool_impl(state, tool_name, arguments).await {
+            Ok(data) => neuro_types::NeuroCommandResponse::success(data),
+            Err(error) => neuro_types::NeuroCommandResponse::failure(error),
+        },
+    )
+}
+
+#[tauri::command]
 async fn load_codex_default_config(
     state: State<'_, AppState>,
 ) -> Result<RuntimeCodexConfig, String> {
@@ -1275,6 +1301,8 @@ fn main() {
             neuro_get_source,
             neuro_update_source,
             neuro_ws_request,
+            neuro_list_tools,
+            neuro_invoke_tool,
             load_codex_default_config,
             send_codex_input,
             stop_codex_session,
