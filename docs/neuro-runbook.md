@@ -111,3 +111,18 @@ Bridge helper: `neuroRuntimeDiagnose()` in `alicia/frontend/lib/tauri-bridge/com
 - Prefer `NEURO_*` names in new setups; keep `SAP_*` only for backward compatibility.
 - Boolean env parsing accepts `true/false`, `1/0`, `yes/no`, `on/off`.
 - Runtime caches Neuro initialization after first successful init.
+
+## 5. VBS Parity Tracking
+
+Parity with the local VBS reference is tracked in `codex/codex-rs/docs/parity/`.
+
+- Contract tools: `codex/codex-rs/docs/parity/vbs-contract/tools.json`
+- Contract endpoints: `codex/codex-rs/docs/parity/vbs-contract/endpoints.json`
+- Current gap report: `codex/codex-rs/docs/parity/gap-list.md`
+
+To regenerate the parity artifacts:
+
+```powershell
+cd codex/codex-rs
+powershell -ExecutionPolicy Bypass -File scripts/neuro-parity/generate_vbs_parity.ps1
+```
