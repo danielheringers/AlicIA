@@ -331,6 +331,32 @@ struct GitWorkspaceChangesResponse {
     files: Vec<GitWorkspaceChange>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexWorkspaceReadFileRequest {
+    path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexWorkspaceReadFileResponse {
+    path: String,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexWorkspaceWriteFileRequest {
+    path: String,
+    content: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexWorkspaceWriteFileResponse {
+    path: String,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CodexInputItem {
@@ -1181,6 +1207,22 @@ fn git_workspace_changes(
 
     crate::command_runtime::git_workspace_changes_impl(state, request.unwrap_or_default())
 }
+
+#[tauri::command]
+fn codex_workspace_read_file(
+    state: State<'_, AppState>,
+    request: CodexWorkspaceReadFileRequest,
+) -> Result<CodexWorkspaceReadFileResponse, String> {
+    crate::command_runtime::codex_workspace_read_file_impl(state, request)
+}
+
+#[tauri::command]
+fn codex_workspace_write_file(
+    state: State<'_, AppState>,
+    request: CodexWorkspaceWriteFileRequest,
+) -> Result<CodexWorkspaceWriteFileResponse, String> {
+    crate::command_runtime::codex_workspace_write_file_impl(state, request)
+}
 #[tauri::command]
 fn codex_models_list(state: State<'_, AppState>) -> Result<CodexModelListResponse, String> {
     crate::command_runtime::codex_models_list_impl(state)
@@ -1328,6 +1370,8 @@ fn main() {
             run_codex_command,
             git_commit_approved_review,
             git_workspace_changes,
+            codex_workspace_read_file,
+            codex_workspace_write_file,
             codex_models_list,
             codex_app_list,
             codex_account_read,
@@ -1345,4 +1389,3 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
-

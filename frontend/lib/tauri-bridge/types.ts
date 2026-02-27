@@ -69,6 +69,8 @@ export const RUNTIME_METHODS = [
   'account.rateLimits.read',
   'config.get',
   'config.set',
+  'workspace.file.read',
+  'workspace.file.write',
   'neuro.runtime.diagnose',
   'neuro.search.objects',
   'neuro.get.source',
@@ -221,6 +223,24 @@ export interface WorkspaceChangeRecord {
 
 export interface WorkspaceChangesResponse {
   files: WorkspaceChangeRecord[]
+}
+
+export interface CodexWorkspaceReadFileRequest {
+  path: string
+}
+
+export interface CodexWorkspaceReadFileResponse {
+  path: string
+  content: string
+}
+
+export interface CodexWorkspaceWriteFileRequest {
+  path: string
+  content: string
+}
+
+export interface CodexWorkspaceWriteFileResponse {
+  path: string
 }
 
 export interface GitCommitApprovedReviewRequest {

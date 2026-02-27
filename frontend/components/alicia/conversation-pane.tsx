@@ -60,6 +60,7 @@ interface ConversationPaneProps {
     decision: "submit" | "cancel"
     answers?: Record<string, { answers: string[] }>
   }) => Promise<void>
+  onOpenInEditor?: (ref: string) => void
 }
 
 function approvalRisk(
@@ -139,6 +140,7 @@ export function ConversationPane({
   onRemoveMention,
   onApprovalDecision,
   onUserInputDecision,
+  onOpenInEditor,
 }: ConversationPaneProps) {
   const groupedMessages = useMemo(() => {
     const grouped: Message[] = []
@@ -255,6 +257,7 @@ export function ConversationPane({
             content={message.content}
             timestamp={message.timestamp}
             resolvedDiff={resolvedDiffsByMessageId.get(message.id) ?? null}
+            onOpenInEditor={onOpenInEditor}
           />
         ))}
 
@@ -281,7 +284,11 @@ export function ConversationPane({
             <div className="ml-9 text-xs text-muted-foreground mb-1">Aggregated turn diff</div>
             {turnDiffFiles.map((file, index) => (
               <div key={`${file.filename}-${index}`} className="ml-9">
-                <DiffViewer filename={file.filename} lines={file.lines} />
+                <DiffViewer
+                  filename={file.filename}
+                  lines={file.lines}
+                  onOpenInEditor={onOpenInEditor}
+                />
               </div>
             ))}
           </div>

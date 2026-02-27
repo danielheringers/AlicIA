@@ -44,6 +44,7 @@ interface SidebarProps {
   onForkSession: () => void
   onSelectSession: (sessionId: string) => void
   onStartReview: () => void
+  onOpenFileChangeInEditor?: (ref: string) => void
 }
 
 interface SessionDayGroup {
@@ -231,6 +232,7 @@ export function Sidebar({
   onForkSession,
   onSelectSession,
   onStartReview,
+  onOpenFileChangeInEditor,
 }: SidebarProps) {
   const ApprovalIcon = approvalIcons[state.approvalPreset]
   const connectedMcps = state.mcpServers.filter(
@@ -540,8 +542,19 @@ export function Sidebar({
         </div>
 
         <div className="p-3 border-t border-panel-border shrink-0">
-          <button
+          <div
+            role="button"
+            tabIndex={0}
             onClick={onStartReview}
+            onKeyDown={(event) => {
+              if (event.target !== event.currentTarget) {
+                return
+              }
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault()
+                onStartReview()
+              }
+            }}
             className={`w-full rounded transition-colors ${
               isReviewActive ? "bg-terminal-blue/10 border border-terminal-blue/25" : "hover:bg-[#b9bcc01c]"
             }`}
@@ -561,15 +574,20 @@ export function Sidebar({
             </div>
             <div className="flex flex-col gap-0.5 px-2 pb-2">
               {state.fileChanges.slice(0, 6).map((file) => (
-                <div
+                <button
                   key={file.name}
-                  className="flex items-center gap-2 px-2 py-1 rounded text-xs text-left"
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onOpenFileChangeInEditor?.(file.name)
+                  }}
+                  className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs hover:bg-[#b9bcc01c]"
                 >
                   <span className={`text-[10px] font-bold w-3 ${statusColor[file.status]}`}>
                     {statusLabel[file.status]}
                   </span>
                   <span className="text-muted-foreground truncate">{file.name}</span>
-                </div>
+                </button>
               ))}
               {state.fileChanges.length === 0 && (
                 <span className="px-2 py-1 text-xs text-muted-foreground/60 text-left">
@@ -577,7 +595,7 @@ export function Sidebar({
                 </span>
               )}
             </div>
-          </button>
+          </div>
         </div>
 
         <div className="p-3 border-t border-panel-border shrink-0">

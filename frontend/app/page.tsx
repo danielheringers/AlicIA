@@ -13,6 +13,8 @@ import { AppsPanel } from "@/components/alicia/apps-panel"
 import { SessionPicker } from "@/components/alicia/session-picker"
 import { ReviewMode } from "@/components/alicia/review-mode"
 import { TerminalPane } from "@/components/alicia/terminal-pane"
+import { SourceEditorPanel } from "@/components/alicia/source-editor-panel"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { type AliciaState } from "@/lib/alicia-types"
 import {
   codexApprovalRespond,
@@ -23,10 +25,15 @@ import {
   pickMentionFile,
   gitCommitApprovedReview,
   codexWorkspaceChanges,
+  codexWorkspaceReadFile,
+  codexWorkspaceWriteFile,
+  neuroGetSource,
+  neuroUpdateSource,
   terminalResize,
   terminalWrite,
   type ApprovalDecision,
   type CodexModel,
+  type NeuroRuntimeCommandError,
   type RuntimeCodexConfig,
 } from "@/lib/tauri-bridge"
 import {
@@ -58,6 +65,7 @@ import { useAliciaTerminalRuntime } from "@/hooks/use-alicia-terminal-runtime"
 import { useAliciaActions } from "@/hooks/use-alicia-actions"
 import { useAliciaBootstrap } from "@/hooks/use-alicia-bootstrap"
 import { useAliciaRuntimeCore } from "@/hooks/use-alicia-runtime-core"
+import { useIsMobile } from "@/hooks/use-mobile"
 import {
   parseReasoningSystemMessage,
   parseUsageSystemMessage,
@@ -68,8 +76,46 @@ import {
   mergeAgentSpawnerPayloads,
   parseAgentSpawnerPayload,
 } from "@/lib/agent-spawner-events"
+import {
+  AbapSourceResolverError,
+  resolveAbapSourceRef,
+} from "@/lib/abap-source-resolver"
+import { routeSourceEditorRef, type SourceEditorRefKind } from "@/lib/source-editor-ref-routing"
+
+interface SourceEditorState {
+  visible: boolean
+  refKind: SourceEditorRefKind | null
+  objectUri: string | null
+  workspaceRoot: string | null
+  displayName: string | null
+  language: string
+  source: string
+  etag: string | null
+  dirty: boolean
+  loading: boolean
+  saving: boolean
+  error: string | null
+}
+
+const INITIAL_SOURCE_EDITOR_STATE: SourceEditorState = {
+  visible: false,
+  refKind: null,
+  objectUri: null,
+  workspaceRoot: null,
+  displayName: null,
+  language: "plaintext",
+  source: "",
+  etag: null,
+  dirty: false,
+  loading: false,
+  saving: false,
+  error: null,
+}
+
+type MainContentTab = "chat" | "editor" | "terminal"
 
 export default function AliciaTerminal() {
+  const isMobile = useIsMobile()
   const [initializing, setInitializing] = useState(true)
   const [initializingStatus, setInitializingStatus] = useState(
     "Initializing Alicia runtime...",
@@ -96,6 +142,10 @@ export default function AliciaTerminal() {
   const [modelsError, setModelsError] = useState<string | null>(null)
   const [modelsCachedAt, setModelsCachedAt] = useState<number | null>(null)
   const [modelsFromCache, setModelsFromCache] = useState(false)
+  const [sourceEditor, setSourceEditor] = useState<SourceEditorState>(
+    INITIAL_SOURCE_EDITOR_STATE,
+  )
+  const [activeMainTab, setActiveMainTab] = useState<MainContentTab>("chat")
   const [runtime, setRuntime] = useState<RuntimeState>({
     connected: isTauriRuntime(),
     state: "idle",
@@ -125,6 +175,9 @@ export default function AliciaTerminal() {
   const reviewRoutingRef = useRef(false)
   const turnDiffFilesRef = useRef<DiffFileView[]>([])
   const wasReviewThinkingRef = useRef(false)
+  const sourceOperationSeqRef = useRef(0)
+  const sourceBaselineRef = useRef("")
+  const sourceEditorRef = useRef<SourceEditorState>(INITIAL_SOURCE_EDITOR_STATE)
 
   const [isReviewComplete, setIsReviewComplete] = useState(false)
 
@@ -148,6 +201,26 @@ export default function AliciaTerminal() {
       setIsReviewComplete(true)
     }
   }, [isThinking])
+
+  const setSourceEditorWithRef = useCallback(
+    (
+      updater:
+        | SourceEditorState
+        | ((previous: SourceEditorState) => SourceEditorState),
+    ) => {
+      setSourceEditor((previous) => {
+        const next =
+          typeof updater === "function"
+            ? (updater as (previous: SourceEditorState) => SourceEditorState)(
+                previous,
+              )
+            : updater
+        sourceEditorRef.current = next
+        return next
+      })
+    },
+    [],
+  )
 
   const nextMessageId = useCallback(() => {
     idRef.current += 1
@@ -595,6 +668,7 @@ export default function AliciaTerminal() {
 
   useAliciaTerminalRuntime({
     initializing,
+    layoutMode: isMobile ? "mobile" : "desktop",
     activeTerminalId,
     activeTerminalRef,
     terminalContainerRef,
@@ -732,6 +806,445 @@ export default function AliciaTerminal() {
     },
     [addMessage, aliciaState.fileChanges, aliciaState.sessions, refreshWorkspaceChanges],
   )
+
+  const toEditorErrorMessage = useCallback((error: unknown): string => {
+    if (error instanceof AbapSourceResolverError) {
+      if (error.code === "ambiguous") {
+        const candidates = Array.isArray(error.details?.candidates)
+          ? (error.details?.candidates as string[]).slice(0, 3)
+          : []
+        if (candidates.length > 0) {
+          return `${error.message} Candidatos: ${candidates.join(", ")}.`
+        }
+      }
+      return error.message
+    }
+
+    if (error && typeof error === "object") {
+      const candidate = error as Partial<NeuroRuntimeCommandError>
+      if (typeof candidate.message === "string" && typeof candidate.code === "string") {
+        return `Falha (${candidate.code}): ${candidate.message}`
+      }
+    }
+
+    if (error instanceof Error) {
+      return error.message
+    }
+
+    return String(error)
+  }, [])
+
+  const beginSourceOperation = useCallback(() => {
+    sourceOperationSeqRef.current += 1
+    return sourceOperationSeqRef.current
+  }, [])
+
+  const inferDisplayNameFromPath = useCallback((path: string): string => {
+    const normalized = path.replace(/\\/g, "/")
+    const parts = normalized.split("/").filter(Boolean)
+    return parts.at(-1) ?? normalized
+  }, [])
+
+  const handleOpenSourceFromRef = useCallback(
+    (ref: string): boolean => {
+      const currentEditor = sourceEditorRef.current
+      if (
+        currentEditor.visible &&
+        currentEditor.dirty &&
+        !window.confirm(
+          "Existem alteracoes nao salvas no editor de codigo. Deseja descartar e abrir outro arquivo?",
+        )
+      ) {
+        return false
+      }
+
+      const refRoute = routeSourceEditorRef(ref)
+      const activeWorkspace = runtime.workspace
+      if (refRoute.kind === "workspace" && runtime.state !== "running") {
+        setSourceEditorWithRef({
+          visible: true,
+          refKind: "workspace",
+          objectUri: refRoute.normalizedRef,
+          workspaceRoot: activeWorkspace,
+          displayName: inferDisplayNameFromPath(refRoute.normalizedRef),
+          language: refRoute.monacoLanguage,
+          source: "",
+          etag: null,
+          dirty: false,
+          loading: false,
+          saving: false,
+          error:
+            "Inicie uma sessao ativa antes de abrir arquivos do workspace no editor de codigo.",
+        })
+        return true
+      }
+      const nextRequestId = beginSourceOperation()
+      sourceBaselineRef.current = ""
+
+      setSourceEditorWithRef((previous) => ({
+        ...previous,
+        visible: true,
+        refKind: refRoute.kind,
+        objectUri: refRoute.kind === "workspace" ? refRoute.normalizedRef : null,
+        workspaceRoot: activeWorkspace,
+        displayName:
+          refRoute.kind === "workspace"
+            ? inferDisplayNameFromPath(refRoute.normalizedRef)
+            : null,
+        language: refRoute.monacoLanguage,
+        source: "",
+        etag: null,
+        dirty: false,
+        loading: true,
+        saving: false,
+        error: null,
+      }))
+
+      void (async () => {
+        try {
+          if (refRoute.kind === "abap") {
+            const resolved = await resolveAbapSourceRef(refRoute.normalizedRef)
+            const loaded = await neuroGetSource(resolved.objectUri)
+
+            if (sourceOperationSeqRef.current !== nextRequestId) {
+              return
+            }
+
+            setSourceEditorWithRef({
+              visible: true,
+              refKind: "abap",
+              objectUri: loaded.objectUri,
+              workspaceRoot: activeWorkspace,
+              displayName: resolved.displayName,
+              language: "abap",
+              source: loaded.source,
+              etag: loaded.etag ?? null,
+              dirty: false,
+              loading: false,
+              saving: false,
+              error: null,
+            })
+            sourceBaselineRef.current = loaded.source
+            return
+          }
+
+          const loaded = await codexWorkspaceReadFile({
+            path: refRoute.normalizedRef,
+          })
+
+          if (sourceOperationSeqRef.current !== nextRequestId) {
+            return
+          }
+
+          setSourceEditorWithRef({
+            visible: true,
+            refKind: "workspace",
+            objectUri: loaded.path,
+            workspaceRoot: activeWorkspace,
+            displayName: inferDisplayNameFromPath(loaded.path),
+            language: refRoute.monacoLanguage,
+            source: loaded.source,
+            etag: null,
+            dirty: false,
+            loading: false,
+            saving: false,
+            error: null,
+          })
+          sourceBaselineRef.current = loaded.source
+        } catch (error) {
+          if (sourceOperationSeqRef.current !== nextRequestId) {
+            return
+          }
+
+          setSourceEditorWithRef({
+            visible: true,
+            refKind: refRoute.kind,
+            objectUri: refRoute.kind === "workspace" ? refRoute.normalizedRef : null,
+            workspaceRoot: activeWorkspace,
+            displayName:
+              refRoute.kind === "workspace"
+                ? inferDisplayNameFromPath(refRoute.normalizedRef)
+                : null,
+            language: refRoute.monacoLanguage,
+            source: "",
+            etag: null,
+            dirty: false,
+            loading: false,
+            saving: false,
+            error: toEditorErrorMessage(error),
+          })
+          sourceBaselineRef.current = ""
+        }
+      })()
+
+      return true
+    },
+    [
+      beginSourceOperation,
+      inferDisplayNameFromPath,
+      runtime.state,
+      runtime.workspace,
+      setSourceEditorWithRef,
+      toEditorErrorMessage,
+    ],
+  )
+
+  const handleMainTabChange = useCallback((value: string) => {
+    if (value === "chat" || value === "editor" || value === "terminal") {
+      setActiveMainTab(value)
+    }
+  }, [])
+
+  const onOpenInEditor = useCallback(
+    (ref: string) => {
+      const opened = handleOpenSourceFromRef(ref)
+      if (opened && isMobile) {
+        setActiveMainTab("editor")
+      }
+    },
+    [handleOpenSourceFromRef, isMobile],
+  )
+
+  const handleReloadSource = useCallback(async () => {
+    const currentEditor = sourceEditorRef.current
+    if (!currentEditor.objectUri || !currentEditor.refKind) {
+      return
+    }
+    if (currentEditor.refKind === "workspace" && runtime.state !== "running") {
+      setSourceEditorWithRef((previous) => ({
+        ...previous,
+        loading: false,
+        error:
+          "Sessao inativa. Inicie uma sessao antes de recarregar arquivos do workspace.",
+      }))
+      return
+    }
+    if (
+      currentEditor.refKind === "workspace" &&
+      currentEditor.workspaceRoot !== runtime.workspace
+    ) {
+      setSourceEditorWithRef((previous) => ({
+        ...previous,
+        loading: false,
+        error:
+          "Workspace ativo mudou desde a abertura do arquivo. Reabra o arquivo para evitar gravar no workspace errado.",
+      }))
+      return
+    }
+    if (
+      currentEditor.dirty &&
+      !window.confirm(
+        "Existem alteracoes nao salvas no editor de codigo. Deseja recarregar e descartar as alteracoes locais?",
+      )
+    ) {
+      return
+    }
+    const objectUri = currentEditor.objectUri
+    const refKind = currentEditor.refKind
+    const requestId = beginSourceOperation()
+
+    setSourceEditorWithRef((previous) => ({
+      ...previous,
+      loading: true,
+      error: null,
+    }))
+
+    try {
+      if (refKind === "abap") {
+        const loaded = await neuroGetSource(objectUri)
+
+        if (
+          sourceOperationSeqRef.current !== requestId ||
+          sourceEditorRef.current.objectUri !== objectUri
+        ) {
+          return
+        }
+
+        sourceBaselineRef.current = loaded.source
+        setSourceEditorWithRef((previous) => ({
+          ...previous,
+          source: loaded.source,
+          etag: loaded.etag ?? null,
+          dirty: false,
+          loading: false,
+          error: null,
+        }))
+        return
+      }
+
+      const loaded = await codexWorkspaceReadFile({ path: objectUri })
+
+      if (
+        sourceOperationSeqRef.current !== requestId ||
+        sourceEditorRef.current.objectUri !== objectUri
+      ) {
+        return
+      }
+
+      sourceBaselineRef.current = loaded.source
+      setSourceEditorWithRef((previous) => ({
+        ...previous,
+        source: loaded.source,
+        etag: null,
+        dirty: false,
+        loading: false,
+        error: null,
+      }))
+    } catch (error) {
+      if (
+        sourceOperationSeqRef.current !== requestId ||
+        sourceEditorRef.current.objectUri !== objectUri
+      ) {
+        return
+      }
+      setSourceEditorWithRef((previous) => ({
+        ...previous,
+        loading: false,
+        error: `Falha ao recarregar codigo: ${toEditorErrorMessage(error)}`,
+      }))
+    }
+  }, [
+    beginSourceOperation,
+    runtime.state,
+    runtime.workspace,
+    setSourceEditorWithRef,
+    toEditorErrorMessage,
+  ])
+
+  const handleSaveSource = useCallback(async () => {
+    const currentEditor = sourceEditorRef.current
+    if (
+      !currentEditor.objectUri ||
+      !currentEditor.refKind ||
+      currentEditor.loading ||
+      currentEditor.saving
+    ) {
+      return
+    }
+    if (currentEditor.refKind === "workspace" && runtime.state !== "running") {
+      setSourceEditorWithRef((previous) => ({
+        ...previous,
+        saving: false,
+        error:
+          "Sessao inativa. Inicie uma sessao antes de salvar arquivos do workspace.",
+      }))
+      return
+    }
+    if (
+      currentEditor.refKind === "workspace" &&
+      currentEditor.workspaceRoot !== runtime.workspace
+    ) {
+      setSourceEditorWithRef((previous) => ({
+        ...previous,
+        saving: false,
+        error:
+          "Workspace ativo mudou desde a abertura do arquivo. Reabra o arquivo para evitar gravar no workspace errado.",
+      }))
+      return
+    }
+    const objectUri = currentEditor.objectUri
+    const refKind = currentEditor.refKind
+    const sourceToSave = currentEditor.source
+    const etag = currentEditor.etag ?? undefined
+    const requestId = beginSourceOperation()
+
+    setSourceEditorWithRef((previous) => ({
+      ...previous,
+      saving: true,
+      error: null,
+    }))
+
+    try {
+      if (refKind === "abap") {
+        const result = await neuroUpdateSource({
+          objectUri,
+          source: sourceToSave,
+          etag,
+        })
+
+        if (
+          sourceOperationSeqRef.current !== requestId ||
+          sourceEditorRef.current.objectUri !== objectUri
+        ) {
+          return
+        }
+
+        const sourceStillMatches = sourceEditorRef.current.source === sourceToSave
+        if (sourceStillMatches) {
+          sourceBaselineRef.current = sourceToSave
+        }
+
+        setSourceEditorWithRef((previous) => ({
+          ...previous,
+          etag: result.etag ?? previous.etag,
+          dirty: sourceStillMatches ? false : previous.dirty,
+          saving: false,
+          error: null,
+        }))
+        return
+      }
+
+      await codexWorkspaceWriteFile({
+        path: objectUri,
+        content: sourceToSave,
+      })
+
+      if (
+        sourceOperationSeqRef.current !== requestId ||
+        sourceEditorRef.current.objectUri !== objectUri
+      ) {
+        return
+      }
+
+      const sourceStillMatches = sourceEditorRef.current.source === sourceToSave
+      if (sourceStillMatches) {
+        sourceBaselineRef.current = sourceToSave
+      }
+
+      setSourceEditorWithRef((previous) => ({
+        ...previous,
+        etag: null,
+        dirty: sourceStillMatches ? false : previous.dirty,
+        saving: false,
+        error: null,
+      }))
+    } catch (error) {
+      if (
+        sourceOperationSeqRef.current !== requestId ||
+        sourceEditorRef.current.objectUri !== objectUri
+      ) {
+        return
+      }
+      setSourceEditorWithRef((previous) => ({
+        ...previous,
+        saving: false,
+        error: `Falha ao salvar codigo: ${toEditorErrorMessage(error)}`,
+      }))
+    }
+  }, [
+    beginSourceOperation,
+    runtime.state,
+    runtime.workspace,
+    setSourceEditorWithRef,
+    toEditorErrorMessage,
+  ])
+
+  const handleCloseEditor = useCallback(() => {
+    const currentEditor = sourceEditorRef.current
+    if (
+      currentEditor.dirty &&
+      !window.confirm(
+        "Existem alteracoes nao salvas no editor de codigo. Deseja fechar e descartar as alteracoes?",
+      )
+    ) {
+      return
+    }
+
+    sourceOperationSeqRef.current += 1
+    sourceBaselineRef.current = ""
+    setSourceEditorWithRef(INITIAL_SOURCE_EDITOR_STATE)
+  }, [setSourceEditorWithRef])
+
   if (initializing) {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-background p-4">
@@ -761,79 +1274,98 @@ export default function AliciaTerminal() {
   return (
     <div className="h-screen w-screen flex flex-col bg-background overflow-hidden">
       <TitleBar connected={runtime.connected} workspace={runtime.workspace} />
-      <ResizablePanelGroup direction="horizontal" className="flex-1 min-h-0">
-        <ResizablePanel defaultSize={20} minSize={14} maxSize={28}>
-          <Sidebar
-            state={aliciaState}
-            modelLabel={currentModelLabel}
-            sessionPid={runtime.pid}
-            runtimeState={runtime.state}
-            onOpenPanel={(panel) => {
-              if (panel === "model") {
-                void openModelPanel(true)
-                return
-              }
-              if (panel === "sessions") {
-                void openSessionPanel("list")
-                return
-              }
-              if (panel === "apps") {
-                setAliciaState((prev) => ({ ...prev, activePanel: "apps" }))
-                void refreshAppsAndAuth({ throwOnError: false })
-                return
-              }
-              setAliciaState((prev) => ({ ...prev, activePanel: panel }))
-            }}
-            onStartSession={() => {
-              threadIdRef.current = null
-              reviewRoutingRef.current = false
-              setMessages([])
-              setPendingApprovals([])
-              setPendingUserInput(null)
-              setTurnDiff(null)
-              setTurnPlan(null)
-              void ensureRuntimeSession(true)
-              void refreshWorkspaceChanges()
-            }}
-            onStopSession={() => {
-              void (async () => {
-                try {
-                  await codexRuntimeSessionStop()
-                  reviewRoutingRef.current = false
-                  setPendingApprovals([])
-                  setPendingUserInput(null)
-                  setTurnDiff(null)
-                  setTurnPlan(null)
-                  setRuntime((prev) => ({
-                    ...prev,
-                    state: "idle",
-                    sessionId: null,
-                    pid: null,
-                  }))
-                } catch (error) {
-                  addMessage("system", `[session] failed to stop: ${String(error)}`)
+      {isMobile ? (
+        <div className="flex-1 min-h-0 flex flex-col">
+          <div className="h-[40%] min-h-[260px] border-b border-panel-border">
+            <Sidebar
+              state={aliciaState}
+              modelLabel={currentModelLabel}
+              sessionPid={runtime.pid}
+              runtimeState={runtime.state}
+              onOpenPanel={(panel) => {
+                if (panel === "model") {
+                  void openModelPanel(true)
+                  return
                 }
-              })()
-            }}
-            onResumeSession={() => {
-              void openSessionPanel("resume")
-            }}
-            onForkSession={() => {
-              void openSessionPanel("fork")
-            }}
-            onSelectSession={(sessionId) => {
-              void handleSessionSelect(sessionId, "switch")
-            }}
-            onStartReview={() => {
-              setAliciaState((prev) => ({ ...prev, activePanel: "review" }))
-              void refreshWorkspaceChanges()
-            }}
-          />
-        </ResizablePanel>
-        <ResizableHandle withHandle />
-        <ResizablePanel defaultSize={80} minSize={60}>
-          <ResizablePanelGroup direction="vertical">
-            <ResizablePanel defaultSize={62} minSize={40}>
+                if (panel === "sessions") {
+                  void openSessionPanel("list")
+                  return
+                }
+                if (panel === "apps") {
+                  setAliciaState((prev) => ({ ...prev, activePanel: "apps" }))
+                  void refreshAppsAndAuth({ throwOnError: false })
+                  return
+                }
+                setAliciaState((prev) => ({ ...prev, activePanel: panel }))
+              }}
+              onStartSession={() => {
+                threadIdRef.current = null
+                reviewRoutingRef.current = false
+                setMessages([])
+                setPendingApprovals([])
+                setPendingUserInput(null)
+                setTurnDiff(null)
+                setTurnPlan(null)
+                void ensureRuntimeSession(true)
+                void refreshWorkspaceChanges()
+              }}
+              onStopSession={() => {
+                void (async () => {
+                  try {
+                    await codexRuntimeSessionStop()
+                    reviewRoutingRef.current = false
+                    setPendingApprovals([])
+                    setPendingUserInput(null)
+                    setTurnDiff(null)
+                    setTurnPlan(null)
+                    setRuntime((prev) => ({
+                      ...prev,
+                      state: "idle",
+                      sessionId: null,
+                      pid: null,
+                    }))
+                  } catch (error) {
+                    addMessage("system", `[session] failed to stop: ${String(error)}`)
+                  }
+                })()
+              }}
+              onResumeSession={() => {
+                void openSessionPanel("resume")
+              }}
+              onForkSession={() => {
+                void openSessionPanel("fork")
+              }}
+              onSelectSession={(sessionId) => {
+                void handleSessionSelect(sessionId, "switch")
+              }}
+              onStartReview={() => {
+                setAliciaState((prev) => ({ ...prev, activePanel: "review" }))
+                void refreshWorkspaceChanges()
+              }}
+              onOpenFileChangeInEditor={onOpenInEditor}
+            />
+          </div>
+
+          <Tabs
+            value={activeMainTab}
+            onValueChange={handleMainTabChange}
+            className="flex-1 min-h-0 gap-0"
+          >
+            <div className="px-3 py-2 border-b border-panel-border">
+              <TabsList className="grid h-8 w-full grid-cols-3">
+                <TabsTrigger value="chat" className="text-xs">
+                  Chat
+                </TabsTrigger>
+                <TabsTrigger value="editor" className="text-xs">
+                  Editor
+                </TabsTrigger>
+                <TabsTrigger value="terminal" className="text-xs">
+                  Terminal
+                </TabsTrigger>
+              </TabsList>
+            </div>
+
+            <TabsContent value="chat" forceMount className="flex-1 min-h-0 data-[state=inactive]:hidden">
               <ConversationPane
                 currentModelLabel={currentModelLabel}
                 reasoningEffort={aliciaState.reasoningEffort}
@@ -867,10 +1399,46 @@ export default function AliciaTerminal() {
                 }}
                 onApprovalDecision={handleApprovalDecision}
                 onUserInputDecision={handleUserInputDecision}
+                onOpenInEditor={onOpenInEditor}
               />
-            </ResizablePanel>
-            <ResizableHandle withHandle />
-            <ResizablePanel defaultSize={38} minSize={20}>
+            </TabsContent>
+
+            <TabsContent value="editor" forceMount className="flex-1 min-h-0 data-[state=inactive]:hidden">
+              {sourceEditor.visible ? (
+                <SourceEditorPanel
+                  objectUri={sourceEditor.objectUri}
+                  displayName={sourceEditor.displayName}
+                  language={sourceEditor.language}
+                  source={sourceEditor.source}
+                  etag={sourceEditor.etag}
+                  dirty={sourceEditor.dirty}
+                  loading={sourceEditor.loading}
+                  saving={sourceEditor.saving}
+                  error={sourceEditor.error}
+                  onChangeSource={(value) => {
+                    setSourceEditorWithRef((previous) => ({
+                      ...previous,
+                      source: value,
+                      dirty: Boolean(previous.objectUri) && value !== sourceBaselineRef.current,
+                      error: null,
+                    }))
+                  }}
+                  onReload={() => {
+                    void handleReloadSource()
+                  }}
+                  onSave={() => {
+                    void handleSaveSource()
+                  }}
+                  onClose={handleCloseEditor}
+                />
+              ) : (
+                <div className="h-full w-full flex items-center justify-center px-4 text-center text-sm text-muted-foreground">
+                  Abra uma referencia de codigo na sidebar, no diff da conversa ou no review para carregar o editor.
+                </div>
+              )}
+            </TabsContent>
+
+            <TabsContent value="terminal" forceMount className="flex-1 min-h-0 data-[state=inactive]:hidden">
               <TerminalPane
                 tabs={terminalTabs}
                 activeTerminalId={activeTerminalId}
@@ -883,10 +1451,170 @@ export default function AliciaTerminal() {
                   void createTerminalTab(runtime.workspace)
                 }}
               />
+            </TabsContent>
+          </Tabs>
+        </div>
+      ) : (
+        <ResizablePanelGroup direction="horizontal" className="flex-1 min-h-0">
+          <ResizablePanel defaultSize={20} minSize={14} maxSize={28}>
+            <Sidebar
+              state={aliciaState}
+              modelLabel={currentModelLabel}
+              sessionPid={runtime.pid}
+              runtimeState={runtime.state}
+              onOpenPanel={(panel) => {
+                if (panel === "model") {
+                  void openModelPanel(true)
+                  return
+                }
+                if (panel === "sessions") {
+                  void openSessionPanel("list")
+                  return
+                }
+                if (panel === "apps") {
+                  setAliciaState((prev) => ({ ...prev, activePanel: "apps" }))
+                  void refreshAppsAndAuth({ throwOnError: false })
+                  return
+                }
+                setAliciaState((prev) => ({ ...prev, activePanel: panel }))
+              }}
+              onStartSession={() => {
+                threadIdRef.current = null
+                reviewRoutingRef.current = false
+                setMessages([])
+                setPendingApprovals([])
+                setPendingUserInput(null)
+                setTurnDiff(null)
+                setTurnPlan(null)
+                void ensureRuntimeSession(true)
+                void refreshWorkspaceChanges()
+              }}
+              onStopSession={() => {
+                void (async () => {
+                  try {
+                    await codexRuntimeSessionStop()
+                    reviewRoutingRef.current = false
+                    setPendingApprovals([])
+                    setPendingUserInput(null)
+                    setTurnDiff(null)
+                    setTurnPlan(null)
+                    setRuntime((prev) => ({
+                      ...prev,
+                      state: "idle",
+                      sessionId: null,
+                      pid: null,
+                    }))
+                  } catch (error) {
+                    addMessage("system", `[session] failed to stop: ${String(error)}`)
+                  }
+                })()
+              }}
+              onResumeSession={() => {
+                void openSessionPanel("resume")
+              }}
+              onForkSession={() => {
+                void openSessionPanel("fork")
+              }}
+              onSelectSession={(sessionId) => {
+                void handleSessionSelect(sessionId, "switch")
+              }}
+              onStartReview={() => {
+                setAliciaState((prev) => ({ ...prev, activePanel: "review" }))
+                void refreshWorkspaceChanges()
+              }}
+              onOpenFileChangeInEditor={onOpenInEditor}
+            />
+          </ResizablePanel>
+          <ResizableHandle withHandle />
+          <>
+            <ResizablePanel defaultSize={28} minSize={18}>
+              <SourceEditorPanel
+                objectUri={sourceEditor.objectUri}
+                displayName={sourceEditor.displayName}
+                language={sourceEditor.language}
+                source={sourceEditor.source}
+                etag={sourceEditor.etag}
+                dirty={sourceEditor.dirty}
+                loading={sourceEditor.loading}
+                saving={sourceEditor.saving}
+                error={sourceEditor.error}
+                onChangeSource={(value) => {
+                  setSourceEditorWithRef((previous) => ({
+                    ...previous,
+                    source: value,
+                    dirty: Boolean(previous.objectUri) && value !== sourceBaselineRef.current,
+                    error: null,
+                  }))
+                }}
+                onReload={() => {
+                  void handleReloadSource()
+                }}
+                onSave={() => {
+                  void handleSaveSource()
+                }}
+                onClose={handleCloseEditor}
+              />
             </ResizablePanel>
-          </ResizablePanelGroup>
-        </ResizablePanel>
-      </ResizablePanelGroup>
+            <ResizableHandle withHandle />
+          </>
+          <ResizablePanel defaultSize={52} minSize={40}>
+            <ResizablePanelGroup direction="vertical">
+              <ResizablePanel defaultSize={62} minSize={40}>
+                <ConversationPane
+                  currentModelLabel={currentModelLabel}
+                  reasoningEffort={aliciaState.reasoningEffort}
+                  messages={messages}
+                  isThinking={isThinking}
+                  pendingImages={pendingImages}
+                  pendingMentions={pendingMentions}
+                  runtimeCapabilities={aliciaState.runtimeCapabilities}
+                  pendingApprovals={pendingApprovals}
+                  pendingUserInput={pendingUserInput}
+                  turnDiff={turnDiff}
+                  turnDiffFiles={turnDiffFiles}
+                  turnPlan={turnPlan}
+                  runtimeState={runtime.state}
+                  scrollRef={scrollRef}
+                  onSubmit={handleSubmit}
+                  onSlashCommand={handleSlashCommand}
+                  onAttachImage={async () => {
+                    const picked = await pickImageFile()
+                    if (picked) setPendingImages((prev) => [...prev, picked])
+                  }}
+                  onAttachMention={async () => {
+                    const picked = await pickMentionFile()
+                    if (picked) setPendingMentions((prev) => [...prev, picked])
+                  }}
+                  onRemoveImage={(index) => {
+                    setPendingImages((prev) => prev.filter((_, i) => i !== index))
+                  }}
+                  onRemoveMention={(index) => {
+                    setPendingMentions((prev) => prev.filter((_, i) => i !== index))
+                  }}
+                  onApprovalDecision={handleApprovalDecision}
+                  onUserInputDecision={handleUserInputDecision}
+                  onOpenInEditor={onOpenInEditor}
+                />
+              </ResizablePanel>
+              <ResizableHandle withHandle />
+              <ResizablePanel defaultSize={38} minSize={20}>
+                <TerminalPane
+                  tabs={terminalTabs}
+                  activeTerminalId={activeTerminalId}
+                  terminalContainerRef={terminalContainerRef}
+                  onSelectTab={setActiveTerminalId}
+                  onCloseTab={(id) => {
+                    void closeTerminalTab(id)
+                  }}
+                  onCreateTab={() => {
+                    void createTerminalTab(runtime.workspace)
+                  }}
+                />
+              </ResizablePanel>
+            </ResizablePanelGroup>
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      )}
       <StatusBar
         state={aliciaState}
         modelLabel={currentModelLabel}
@@ -974,6 +1702,7 @@ export default function AliciaTerminal() {
             void handleSlashCommand(`/review-file "${escapedPath}"`)
           }}
           onCommitApproved={handleCommitApprovedReview}
+          onOpenInEditor={onOpenInEditor}
           onClose={() => setAliciaState((prev) => ({ ...prev, activePanel: null }))}
         />
       )}

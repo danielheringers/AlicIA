@@ -116,33 +116,35 @@ impl NeuroRuntime {
             connect_headers: config.ws.headers.clone(),
         });
 
-        let engine = Arc::new(neuro_engine::NeuroEngine::new(NeuroEngineConfig {
-            adt: AdtHttpConfig {
-                base_url,
-                auth,
-                timeout_secs: config.sap.timeout_secs,
-                csrf_fetch_path: config.sap.csrf_fetch_path.value.clone(),
-                endpoints: AdtHttpEndpoints {
-                    search_objects_path: config.sap.search_objects_path.value.clone(),
+        let engine = Arc::new(
+            neuro_engine::NeuroEngine::new(NeuroEngineConfig {
+                adt: AdtHttpConfig {
+                    base_url,
+                    auth,
+                    timeout_secs: config.sap.timeout_secs,
+                    csrf_fetch_path: config.sap.csrf_fetch_path.value.clone(),
+                    endpoints: AdtHttpEndpoints {
+                        search_objects_path: config.sap.search_objects_path.value.clone(),
+                    },
+                    insecure_tls: config.sap.insecure_tls,
+                    sap_client: config.sap.client.as_ref().map(|value| value.value.clone()),
+                    sap_language: config
+                        .sap
+                        .language
+                        .as_ref()
+                        .map(|value| value.value.clone()),
                 },
-                insecure_tls: config.sap.insecure_tls,
-                sap_client: config.sap.client.as_ref().map(|value| value.value.clone()),
-                sap_language: config
-                    .sap
-                    .language
-                    .as_ref()
-                    .map(|value| value.value.clone()),
-            },
-            ws,
-            safety: SafetyPolicy {
-                read_only: config.safety.read_only,
-                blocked_source_patterns: config.safety.blocked_source_patterns.clone(),
-                allowed_ws_domains: config.safety.allowed_ws_domains.clone(),
-                require_etag_for_updates: config.safety.require_etag_for_updates,
-            },
-        })
-        .await
-        .map_err(map_engine_error)?);
+                ws,
+                safety: SafetyPolicy {
+                    read_only: config.safety.read_only,
+                    blocked_source_patterns: config.safety.blocked_source_patterns.clone(),
+                    allowed_ws_domains: config.safety.allowed_ws_domains.clone(),
+                    require_etag_for_updates: config.safety.require_etag_for_updates,
+                },
+            })
+            .await
+            .map_err(map_engine_error)?,
+        );
 
         Ok(Self { config, engine })
     }
@@ -609,7 +611,9 @@ async fn success_response(
         RuntimeDiagnoseComponent {
             component: "ws_env_config".to_string(),
             status: DiagnoseStatus::Degraded,
-            detail: "WebSocket environment URL was not configured (optional realtime features disabled)".to_string(),
+            detail:
+                "WebSocket environment URL was not configured (optional realtime features disabled)"
+                    .to_string(),
             latency_ms: None,
         }
     };
@@ -1098,4 +1102,3 @@ mod tests {
         );
     }
 }
-

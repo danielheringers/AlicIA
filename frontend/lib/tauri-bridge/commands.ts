@@ -46,6 +46,10 @@ import type {
   AccountRateLimitsReadResponse,
   RunCodexCommandResponse,
   WorkspaceChangesResponse,
+  CodexWorkspaceReadFileRequest,
+  CodexWorkspaceReadFileResponse,
+  CodexWorkspaceWriteFileRequest,
+  CodexWorkspaceWriteFileResponse,
   GitCommitApprovedReviewRequest,
   GitCommitApprovedReviewResponse,
   RuntimeCodexConfig,
@@ -546,6 +550,23 @@ export async function runCodexCommand(
 export async function codexWorkspaceChanges(): Promise<WorkspaceChangesResponse> {
   return invoke<WorkspaceChangesResponse>("git_workspace_changes")
 }
+
+export async function codexWorkspaceReadFile(
+  request: CodexWorkspaceReadFileRequest,
+): Promise<CodexWorkspaceReadFileResponse> {
+  return invoke<CodexWorkspaceReadFileResponse>('codex_workspace_read_file', {
+    request,
+  })
+}
+
+export async function codexWorkspaceWriteFile(
+  request: CodexWorkspaceWriteFileRequest,
+): Promise<CodexWorkspaceWriteFileResponse> {
+  return invoke<CodexWorkspaceWriteFileResponse>('codex_workspace_write_file', {
+    request,
+  })
+}
+
 export async function gitCommitApprovedReview(
   request: GitCommitApprovedReviewRequest,
 ): Promise<GitCommitApprovedReviewResponse> {

@@ -34,6 +34,7 @@ interface TerminalMessageProps {
     emptyMessage?: string
     files: DiffFileView[]
   } | null
+  onOpenInEditor?: (ref: string) => void
 }
 
 function CopyButton({ text }: { text: string }) {
@@ -131,6 +132,7 @@ export function TerminalMessage({
   codeBlocks,
   thinking,
   resolvedDiff,
+  onOpenInEditor,
 }: TerminalMessageProps) {
   const statusSnapshot = type === "system" ? parseStatusSnapshot(content) : null
   const agentSpawnerPayload =
@@ -207,6 +209,7 @@ export function TerminalMessage({
                       key={`${file.filename}-${index}`}
                       filename={file.filename}
                       lines={file.lines}
+                      onOpenInEditor={onOpenInEditor}
                     />
                   ))
                 ) : (
@@ -229,6 +232,7 @@ export function TerminalMessage({
                           key={`${file.filename}-${index}-${fileIndex}`}
                           filename={file.filename}
                           lines={file.lines}
+                          onOpenInEditor={onOpenInEditor}
                         />
                       ))}
                     </div>

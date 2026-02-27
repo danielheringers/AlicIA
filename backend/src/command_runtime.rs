@@ -11,6 +11,7 @@ use codex_rmcp_client::perform_oauth_login_return_url;
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
 use std::env;
+use std::fs;
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -38,7 +39,9 @@ use crate::mcp_runtime::{
 use crate::models_runtime::fetch_models_for_picker;
 use crate::{
     default_codex_binary, lock_active_session, resolve_codex_launch, ActiveSessionTransport,
-    AppState, CodexModelListResponse, GitCommandExecutionResult, GitCommitApprovedReviewRequest,
+    AppState, CodexModelListResponse, CodexWorkspaceReadFileRequest,
+    CodexWorkspaceReadFileResponse, CodexWorkspaceWriteFileRequest,
+    CodexWorkspaceWriteFileResponse, GitCommandExecutionResult, GitCommitApprovedReviewRequest,
     GitCommitApprovedReviewResponse, GitWorkspaceChange, GitWorkspaceChangesRequest,
     GitWorkspaceChangesResponse, RunCodexCommandResponse, RuntimeCapabilitiesResponse,
     RuntimeContractMetadata,
@@ -308,6 +311,8 @@ const RUNTIME_METHOD_KEYS: &[&str] = &[
     "account.rateLimits.read",
     "config.get",
     "config.set",
+    "workspace.file.read",
+    "workspace.file.write",
     "neuro.runtime.diagnose",
     "neuro.search.objects",
     "neuro.get.source",
@@ -459,6 +464,151 @@ fn is_safe_git_path(path: &str) -> bool {
 
 fn to_literal_pathspec(path: &str) -> String {
     format!(":(literal){path}")
+}
+
+const WORKSPACE_READ_OPERATION: &str = "codex_workspace_read_file";
+const WORKSPACE_WRITE_OPERATION: &str = "codex_workspace_write_file";
+
+fn active_workspace_cwd(state: &State<'_, AppState>, operation: &str) -> Result<PathBuf, String> {
+    let active = lock_active_session(state.inner())?;
+    let Some(session) = active.as_ref() else {
+        return Err(format!("{operation} requires an active codex session"));
+    };
+
+    Ok(session.cwd.clone())
+}
+
+fn normalize_workspace_relative_path(operation: &str, path: &str) -> Result<PathBuf, String> {
+    if path.is_empty() {
+        return Err(format!("{operation} rejected empty path"));
+    }
+
+    if path.contains('\0') {
+        return Err(format!(
+            "{operation} rejected unsafe path '{path}': contains NUL"
+        ));
+    }
+
+    let candidate = Path::new(path);
+    if candidate.is_absolute() {
+        return Err(format!(
+            "{operation} rejected unsafe path '{path}': absolute paths are not allowed"
+        ));
+    }
+
+    if !candidate
+        .components()
+        .all(|component| matches!(component, Component::Normal(_)))
+    {
+        return Err(format!(
+            "{operation} rejected unsafe path '{path}': non-normal components are not allowed"
+        ));
+    }
+
+    Ok(candidate.to_path_buf())
+}
+
+fn canonicalize_workspace_root(workspace_cwd: &Path, operation: &str) -> Result<PathBuf, String> {
+    let metadata = fs::metadata(workspace_cwd).map_err(|error| {
+        format!(
+            "{operation} failed to inspect workspace cwd '{}': {error}",
+            workspace_cwd.display()
+        )
+    })?;
+    if !metadata.is_dir() {
+        return Err(format!(
+            "{operation} invalid workspace cwd '{}': path is not a directory",
+            workspace_cwd.display()
+        ));
+    }
+
+    fs::canonicalize(workspace_cwd).map_err(|error| {
+        format!(
+            "{operation} failed to canonicalize workspace cwd '{}': {error}",
+            workspace_cwd.display()
+        )
+    })
+}
+
+fn ensure_path_within_workspace(
+    workspace_root: &Path,
+    candidate: &Path,
+    operation: &str,
+    context: &str,
+) -> Result<(), String> {
+    if candidate.starts_with(workspace_root) {
+        return Ok(());
+    }
+
+    Err(format!(
+        "{operation} rejected path traversal: {context} '{}' escapes workspace '{}'",
+        candidate.display(),
+        workspace_root.display()
+    ))
+}
+
+fn ensure_secure_workspace_parent(
+    workspace_root: &Path,
+    relative_path: &Path,
+    operation: &str,
+) -> Result<PathBuf, String> {
+    let mut parent_dir = workspace_root.to_path_buf();
+
+    if let Some(relative_parent) = relative_path.parent() {
+        for component in relative_parent.components() {
+            let Component::Normal(name) = component else {
+                return Err(format!(
+                    "{operation} rejected unsafe path '{}': non-normal parent component",
+                    relative_path.display()
+                ));
+            };
+
+            let next = parent_dir.join(name);
+            if next.exists() {
+                let metadata = fs::symlink_metadata(&next).map_err(|error| {
+                    format!(
+                        "{operation} failed to inspect path '{}': {error}",
+                        next.display()
+                    )
+                })?;
+
+                if metadata.file_type().is_symlink() {
+                    let canonical = fs::canonicalize(&next).map_err(|error| {
+                        format!(
+                            "{operation} failed to canonicalize symlink '{}': {error}",
+                            next.display()
+                        )
+                    })?;
+                    ensure_path_within_workspace(workspace_root, &canonical, operation, "parent")?;
+                    if !canonical.is_dir() {
+                        return Err(format!(
+                            "{operation} rejected parent '{}': not a directory",
+                            canonical.display()
+                        ));
+                    }
+                    parent_dir = canonical;
+                } else if metadata.is_dir() {
+                    parent_dir = next;
+                } else {
+                    return Err(format!(
+                        "{operation} rejected parent '{}': not a directory",
+                        next.display()
+                    ));
+                }
+            } else {
+                fs::create_dir(&next).map_err(|error| {
+                    format!(
+                        "{operation} failed to create parent directory '{}': {error}",
+                        next.display()
+                    )
+                })?;
+                parent_dir = next;
+            }
+        }
+    }
+
+    ensure_path_within_workspace(workspace_root, &parent_dir, operation, "parent")?;
+    Ok(parent_dir)
 }
 
 pub(crate) fn git_commit_approved_review_impl(
@@ -791,6 +941,121 @@ pub(crate) fn git_workspace_changes_impl(
         cwd: cwd.to_string_lossy().to_string(),
         total: files.len(),
         files,
+    })
+}
+
+pub(crate) fn codex_workspace_read_file_impl(
+    state: State<'_, AppState>,
+    request: CodexWorkspaceReadFileRequest,
+) -> Result<CodexWorkspaceReadFileResponse, String> {
+    let operation = WORKSPACE_READ_OPERATION;
+    let requested_path = request.path;
+    let relative_path = normalize_workspace_relative_path(operation, &requested_path)?;
+
+    let workspace_cwd = active_workspace_cwd(&state, operation)?;
+    let workspace_root = canonicalize_workspace_root(&workspace_cwd, operation)?;
+    let target_path = workspace_cwd.join(&relative_path);
+
+    let metadata = fs::metadata(&target_path).map_err(|error| {
+        if error.kind() == ErrorKind::NotFound {
+            format!(
+                "{operation} file '{}' does not exist in workspace '{}'",
+                relative_path.display(),
+                workspace_cwd.display()
+            )
+        } else {
+            format!(
+                "{operation} failed to inspect file '{}': {error}",
+                target_path.display()
+            )
+        }
+    })?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "{operation} rejected path '{}': target is not a file",
+            relative_path.display()
+        ));
+    }
+
+    let canonical_target = fs::canonicalize(&target_path).map_err(|error| {
+        format!(
+            "{operation} failed to canonicalize file '{}': {error}",
+            target_path.display()
+        )
+    })?;
+    ensure_path_within_workspace(&workspace_root, &canonical_target, operation, "target")?;
+
+    let content = fs::read_to_string(&canonical_target).map_err(|error| {
+        format!(
+            "{operation} failed to read file '{}': {error}",
+            relative_path.display()
+        )
+    })?;
+
+    Ok(CodexWorkspaceReadFileResponse {
+        path: requested_path,
+        content,
+    })
+}
+
+pub(crate) fn codex_workspace_write_file_impl(
+    state: State<'_, AppState>,
+    request: CodexWorkspaceWriteFileRequest,
+) -> Result<CodexWorkspaceWriteFileResponse, String> {
+    let operation = WORKSPACE_WRITE_OPERATION;
+    let requested_path = request.path;
+    let relative_path = normalize_workspace_relative_path(operation, &requested_path)?;
+
+    let workspace_cwd = active_workspace_cwd(&state, operation)?;
+    let workspace_root = canonicalize_workspace_root(&workspace_cwd, operation)?;
+
+    let file_name = relative_path.file_name().ok_or_else(|| {
+        format!(
+            "{operation} rejected unsafe path '{}': missing file name",
+            relative_path.display()
+        )
+    })?;
+    let parent_dir = ensure_secure_workspace_parent(&workspace_root, &relative_path, operation)?;
+    let target_path = parent_dir.join(file_name);
+
+    if target_path.exists() {
+        let metadata = fs::symlink_metadata(&target_path).map_err(|error| {
+            format!(
+                "{operation} failed to inspect existing path '{}': {error}",
+                target_path.display()
+            )
+        })?;
+        if metadata.file_type().is_symlink() {
+            let canonical_target = fs::canonicalize(&target_path).map_err(|error| {
+                format!(
+                    "{operation} failed to canonicalize existing symlink '{}': {error}",
+                    target_path.display()
+                )
+            })?;
+            ensure_path_within_workspace(&workspace_root, &canonical_target, operation, "target")?;
+            if canonical_target.is_dir() {
+                return Err(format!(
+                    "{operation} rejected path '{}': target resolves to a directory",
+                    relative_path.display()
+                ));
+            }
+        } else if metadata.is_dir() {
+            return Err(format!(
+                "{operation} rejected path '{}': target is a directory",
+                relative_path.display()
+            ));
+        }
+    }
+
+    fs::write(&target_path, request.content).map_err(|error| {
+        format!(
+            "{operation} failed to write file '{}': {error}",
+            relative_path.display()
+        )
+    })?;
+
+    Ok(CodexWorkspaceWriteFileResponse {
+        path: requested_path,
     })
 }
 
@@ -1480,6 +1745,18 @@ mod tests {
                 methods.get(method),
                 Some(&true),
                 "neuro capability should stay enabled: {method}"
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_capabilities_include_workspace_file_methods() {
+        let methods = default_runtime_capabilities();
+        for method in ["workspace.file.read", "workspace.file.write"] {
+            assert_eq!(
+                methods.get(method),
+                Some(&true),
+                "workspace capability should stay enabled: {method}"
             );
         }
     }

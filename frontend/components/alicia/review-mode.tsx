@@ -11,6 +11,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   Square,
+  SquareArrowOutUpRight,
   X,
 } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
@@ -62,6 +63,7 @@ interface ReviewModeProps {
     comments: Record<string, string>
   }) => Promise<void>
   onClose: () => void
+  onOpenInEditor?: (ref: string) => void
 }
 
 interface ReviewFileItem {
@@ -117,6 +119,7 @@ export function ReviewMode({
   onRunReviewFile,
   onCommitApproved,
   onClose,
+  onOpenInEditor,
 }: ReviewModeProps) {
   const files = useMemo<ReviewFileItem[]>(() => {
     const byName = new Map<string, ReviewFileItem>()
@@ -516,6 +519,14 @@ export function ReviewMode({
     }
   }
 
+  const handleOpenFileInEditor = useCallback(
+    (path: string) => {
+      setSelectedPath(path)
+      onOpenInEditor?.(path)
+    },
+    [onOpenInEditor],
+  )
+
   return (
     <div className="fixed inset-0 z-50 bg-background">
       <div className="h-full w-full bg-panel-bg overflow-hidden flex flex-col">
@@ -644,40 +655,63 @@ export function ReviewMode({
                   const DecisionIcon = decisionConfig[decision].icon
 
                   return (
-                    <button
+                    <div
                       key={file.name}
-                      onClick={() => setSelectedPath(file.name)}
-                      className={`w-full text-left rounded px-2 py-1.5 mb-0.5 border transition-colors ${
+                      className={`mb-0.5 rounded border transition-colors ${
                         isActive
                           ? "bg-sidebar-accent border-sidebar-accent"
                           : "border-transparent hover:bg-[#b9bcc01c]"
                       }`}
                     >
-                      <div className="flex items-center gap-1.5">
-                        <span
-                          role="checkbox"
-                          aria-checked={isChecked}
-                          onClick={(e) => { e.stopPropagation(); toggleFileSelection(file.name) }}
-                          className="flex-shrink-0 cursor-pointer text-muted-foreground hover:text-terminal-fg"
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => setSelectedPath(file.name)}
+                          className="flex-1 text-left rounded px-2 py-1.5"
                         >
-                          {isChecked ? (
-                            <CheckSquare className="w-3.5 h-3.5 text-terminal-blue" />
-                          ) : (
-                            <Square className="w-3.5 h-3.5" />
-                          )}
-                        </span>
-                        <span className={`text-[10px] font-bold w-3 flex-shrink-0 ${statusClass[file.status]}`}>
-                          {statusLabel[file.status]}
-                        </span>
-                        <span className="text-xs text-terminal-fg truncate flex-1 min-w-0">{file.name}</span>
-                        <DecisionIcon className={`w-3 h-3 flex-shrink-0 ${decisionConfig[decision].color}`} />
-                        {findings > 0 && (
-                          <span className="flex-shrink-0 text-[9px] bg-terminal-gold/20 text-terminal-gold px-1 py-0.5 rounded-full leading-none">
-                            {findings}
-                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              role="checkbox"
+                              aria-checked={isChecked}
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                toggleFileSelection(file.name)
+                              }}
+                              className="flex-shrink-0 cursor-pointer text-muted-foreground hover:text-terminal-fg"
+                            >
+                              {isChecked ? (
+                                <CheckSquare className="w-3.5 h-3.5 text-terminal-blue" />
+                              ) : (
+                                <Square className="w-3.5 h-3.5" />
+                              )}
+                            </span>
+                            <span className={`text-[10px] font-bold w-3 flex-shrink-0 ${statusClass[file.status]}`}>
+                              {statusLabel[file.status]}
+                            </span>
+                            <span className="text-xs text-terminal-fg truncate flex-1 min-w-0">{file.name}</span>
+                            <DecisionIcon className={`w-3 h-3 flex-shrink-0 ${decisionConfig[decision].color}`} />
+                            {findings > 0 && (
+                              <span className="flex-shrink-0 text-[9px] bg-terminal-gold/20 text-terminal-gold px-1 py-0.5 rounded-full leading-none">
+                                {findings}
+                              </span>
+                            )}
+                          </div>
+                        </button>
+                        {onOpenInEditor && (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              handleOpenFileInEditor(file.name)
+                            }}
+                            className="mr-1 rounded p-1 text-muted-foreground hover:bg-background/60 hover:text-terminal-cyan"
+                            aria-label={`Open ${file.name} in editor`}
+                            title="Open in editor"
+                          >
+                            <SquareArrowOutUpRight className="h-3.5 w-3.5" />
+                          </button>
                         )}
                       </div>
-                    </button>
+                    </div>
                   )
                 })}
               </div>
@@ -732,6 +766,14 @@ export function ReviewMode({
                               filename={file.filename}
                               lines={file.lines}
                               className="my-1"
+                              onOpenInEditor={
+                                onOpenInEditor
+                                  ? (ref) => {
+                                      setSelectedPath(file.filename)
+                                      onOpenInEditor(ref)
+                                    }
+                                  : undefined
+                              }
                             />
                           ))}
                         </div>
@@ -870,6 +912,7 @@ export function ReviewMode({
                         filename={selectedFile.name}
                         lines={selectedFile.diff.lines}
                         className="my-3"
+                        onOpenInEditor={onOpenInEditor}
                       />
                     ) : (
                       <div className="py-3 text-xs text-muted-foreground">

@@ -4,6 +4,7 @@ import type { Terminal } from "xterm"
 
 interface UseAliciaTerminalRuntimeOptions {
   initializing: boolean
+  layoutMode: "mobile" | "desktop"
   activeTerminalId: number | null
   activeTerminalRef: MutableRefObject<number | null>
   terminalContainerRef: RefObject<HTMLDivElement | null>
@@ -16,6 +17,7 @@ interface UseAliciaTerminalRuntimeOptions {
 
 export function useAliciaTerminalRuntime({
   initializing,
+  layoutMode,
   activeTerminalId,
   activeTerminalRef,
   terminalContainerRef,
@@ -117,6 +119,7 @@ export function useAliciaTerminalRuntime({
     }
   }, [
     initializing,
+    layoutMode,
     activeTerminalRef,
     terminalContainerRef,
     terminalBuffersRef,

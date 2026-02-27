@@ -13,6 +13,7 @@ interface DiffViewerProps {
   lines: DiffLine[]
   onApprove?: () => void
   onReject?: () => void
+  onOpenInEditor?: (ref: string) => void
   className?: string
 }
 
@@ -21,30 +22,58 @@ export function DiffViewer({
   lines,
   onApprove,
   onReject,
+  onOpenInEditor,
   className,
 }: DiffViewerProps) {
+  const openEnabled = typeof onOpenInEditor === "function"
+  const additions = lines.filter((line) => line.type === "add").length
+  const removals = lines.filter((line) => line.type === "remove").length
+
   return (
     <div className={`rounded-md border border-panel-border overflow-hidden my-2 ${className ?? ""}`}>
       <div className="flex items-center justify-between px-3 py-1.5 bg-panel-bg border-b border-panel-border">
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-terminal-cyan">{filename}</span>
-          <span className="text-[10px] text-muted-foreground/40">
-            +{lines.filter(l => l.type === "add").length}
-            {" / "}
-            -{lines.filter(l => l.type === "remove").length}
-          </span>
-        </div>
+        {openEnabled ? (
+          <button
+            type="button"
+            className="flex min-w-0 items-center gap-2 text-left hover:opacity-90"
+            onClick={() => {
+              onOpenInEditor(filename)
+            }}
+          >
+            <span className="text-xs text-terminal-cyan truncate">{filename}</span>
+            <span className="text-[10px] text-muted-foreground/40">
+              +{additions}
+              {" / "}
+              -{removals}
+            </span>
+          </button>
+        ) : (
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-xs text-terminal-cyan truncate">{filename}</span>
+            <span className="text-[10px] text-muted-foreground/40">
+              +{additions}
+              {" / "}
+              -{removals}
+            </span>
+          </div>
+        )}
         {(onApprove || onReject) && (
           <div className="flex items-center gap-1">
             <button
-              onClick={onApprove}
+              onClick={(event) => {
+                event.stopPropagation()
+                onApprove?.()
+              }}
               className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-terminal-green/10 text-terminal-green hover:bg-terminal-green/20 border border-terminal-green/20 transition-colors"
             >
               <Check className="w-3 h-3" />
               Apply
             </button>
             <button
-              onClick={onReject}
+              onClick={(event) => {
+                event.stopPropagation()
+                onReject?.()
+              }}
               className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-terminal-red/10 text-terminal-red hover:bg-terminal-red/20 border border-terminal-red/20 transition-colors"
             >
               <X className="w-3 h-3" />
