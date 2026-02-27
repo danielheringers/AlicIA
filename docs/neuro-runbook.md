@@ -93,7 +93,7 @@ Bridge helper: `neuroRuntimeDiagnose()` in `alicia/frontend/lib/tauri-bridge/com
 2. Check runtime init/log errors in the Tauri backend output.
 3. Run diagnose and inspect `components` + `metadata` source fields.
 4. Validate ADT credentials/connectivity with `neuro-cli diagnose`.
-5. If WebSocket is required, set `NEURO_WS_URL` and verify `neuro_ws` is not `unavailable`.
+5. If WebSocket is required, set `NEURO_WS_URL` and verify `neuro_ws` is `healthy` (missing WS is reported as `degraded`).
 
 ### Common failures
 
@@ -126,3 +126,4 @@ To regenerate the parity artifacts:
 cd codex/codex-rs
 powershell -ExecutionPolicy Bypass -File scripts/neuro-parity/generate_vbs_parity.ps1
 ```
+

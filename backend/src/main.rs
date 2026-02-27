@@ -193,6 +193,20 @@ fn spawn_neuro_startup_probe(app_handle: AppHandle) {
         } else {
             eprintln!("[neuro-startup] adt_http component was not reported by diagnose");
         }
+
+        if let Some(component) = report
+            .components
+            .iter()
+            .filter(|component| component.status != neuro_types::DiagnoseStatus::Healthy)
+            .max_by_key(|component| component.status)
+        {
+            eprintln!(
+                "[neuro-startup] critical_component={} status={} detail={}",
+                component.component,
+                diagnose_status_label(component.status),
+                component.detail
+            );
+        }
     });
 }
 
@@ -1331,3 +1345,4 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+

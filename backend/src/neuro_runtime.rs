@@ -608,8 +608,8 @@ async fn success_response(
     } else {
         RuntimeDiagnoseComponent {
             component: "ws_env_config".to_string(),
-            status: DiagnoseStatus::Unavailable,
-            detail: "WebSocket environment URL was not configured".to_string(),
+            status: DiagnoseStatus::Degraded,
+            detail: "WebSocket environment URL was not configured (optional realtime features disabled)".to_string(),
             latency_ms: None,
         }
     };
@@ -1098,3 +1098,4 @@ mod tests {
         );
     }
 }
+
