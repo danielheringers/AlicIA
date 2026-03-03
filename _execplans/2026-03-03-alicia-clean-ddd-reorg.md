@@ -32,7 +32,8 @@ Excluido:
 - [x] (2026-03-03) Fase 0: baseline de contrato e smoke atual.
 - [x] (2026-03-03) Fase 1: centralizacao do contrato em `alicia/codex-bridge`.
 - [x] (2026-03-03) Fase 2: extracao de portas/casos de uso no frontend.
-- [ ] (2026-03-03) Fase 3: extracao de interface Tauri no backend.
+- [x] (2026-03-03) Fase 3 (slice 1): camada `interface/tauri` criada e comandos low/medium migrados.
+- [ ] (2026-03-03) Fase 3: extracao de interface Tauri no backend (conclusao completa).
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
 
@@ -126,6 +127,41 @@ Validacao executada:
 Resultado:
 1. Fase 2 concluida sem blocker de merge.
 2. Fronteira arquitetural reforcada para o frontend priorizado nesta fase.
+
+## Fase 3 Slice 1 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-03.
+2. Objetivo: iniciar Fase 3 com extracao da camada `interface/tauri` no backend, reduzindo responsabilidade direta do `main.rs`.
+3. Escopo do slice:
+   - criacao de `backend/src/interface/tauri/{commands,dto}`
+   - migracao de comandos Tauri de baixo/medio risco
+   - preservacao de comandos fora de escopo em `main.rs` para proximo slice
+
+Entregas:
+1. Camada `interface/tauri` criada:
+   - `backend/src/interface/mod.rs`
+   - `backend/src/interface/tauri/mod.rs`
+   - `backend/src/interface/tauri/commands/*.rs`
+   - `backend/src/interface/tauri/dto/*.rs`
+2. Comandos migrados:
+   - utility: `codex_help_snapshot`, `pick_workspace_folder`, `pick_image_file`, `pick_mention_file`
+   - runtime/config: `load_codex_default_config`, `update_codex_config`, `codex_config_get`, `codex_config_set`, `codex_runtime_status`, `codex_runtime_capabilities`
+   - workspace/git: `run_codex_command`, `git_workspace_changes`, `codex_workspace_*`, `git_commit_approved_review`
+   - terminal: `terminal_create`, `terminal_write`, `terminal_resize`, `terminal_kill`
+   - session lifecycle: `start_codex_session`, `resize_codex_pty`, `stop_codex_session`
+3. `main.rs` atualizado para bootstrap + registro desses handlers migrados via `generate_handler!`.
+
+Validacao executada:
+1. `cd alicia/backend && cargo fmt --all` -> OK.
+2. `cd alicia/backend && cargo check` -> OK.
+3. `cd alicia/backend && cargo test` -> OK (`121 passed; 0 failed`).
+4. `cd alicia/backend && cargo clippy --all-targets --all-features -- -D warnings` -> OK.
+5. Verificacao de paridade: comandos fora de escopo (`codex_turn_*`, `codex_thread_*`, `codex_review_start`, `codex_approval_respond`, `codex_user_input_respond`, `send_codex_input`, `neuro_*`, `codex_native_runtime_diagnose`) seguem registrados no `generate_handler!`.
+
+Resultado:
+1. Slice 1 da Fase 3 concluido sem blocker de merge.
+2. Fase 3 completa permanece em aberto para migracao dos grupos de comandos de maior acoplamento (turn/thread/review/approval/user_input/neuro).
 
 ## Current Architecture Snapshot (Key Risks)
 
@@ -334,6 +370,3 @@ Fase 2:
    - faltam testes unitarios de use-cases/adapters e teste de concorrencia para login MCP.
 4. Ajuste para Fase 3:
    - extrair interface Tauri no backend, reduzindo `main.rs` para bootstrap/registro e alinhando portas por contexto.
-
-
-

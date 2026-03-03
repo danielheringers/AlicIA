@@ -17,6 +17,7 @@ mod command_runtime;
 mod config_runtime;
 mod events_runtime;
 mod generated;
+mod interface;
 mod launch_runtime;
 mod mcp_runtime;
 mod models_runtime;
@@ -32,7 +33,20 @@ use crate::account_runtime::{
     AccountRateLimitsReadResponse, AccountReadRequest, AccountReadResponse, AppListRequest,
     AppListResponse,
 };
-use crate::config_runtime::{load_runtime_config_from_codex, normalize_runtime_config};
+use crate::interface::tauri::commands::{
+    runtime_config::{
+        codex_config_get, codex_config_set, codex_runtime_capabilities, codex_runtime_status,
+        load_codex_default_config, update_codex_config,
+    },
+    session_lifecycle::{resize_codex_pty, start_codex_session, stop_codex_session},
+    terminal::{terminal_create, terminal_kill, terminal_resize, terminal_write},
+    utility::{codex_help_snapshot, pick_image_file, pick_mention_file, pick_workspace_folder},
+    workspace_git::{
+        codex_workspace_create_directory, codex_workspace_list_directory,
+        codex_workspace_read_file, codex_workspace_rename_entry, codex_workspace_write_file,
+        git_commit_approved_review, git_workspace_changes, run_codex_command,
+    },
+};
 use crate::mcp_runtime::{
     McpLoginRequest, McpLoginResponse, McpReloadResponse, McpServerListResponse,
     McpStartupWarmupResponse,
@@ -44,102 +58,22 @@ pub(crate) use crate::events_runtime::{
     emit_codex_event, emit_lifecycle, emit_stderr, emit_stdout, emit_terminal_data,
     emit_terminal_exit,
 };
+pub(crate) use crate::interface::tauri::dto::{
+    CodexWorkspaceCreateDirectoryRequest, CodexWorkspaceCreateDirectoryResponse,
+    CodexWorkspaceListDirectoryEntry, CodexWorkspaceListDirectoryEntryKind,
+    CodexWorkspaceListDirectoryRequest, CodexWorkspaceListDirectoryResponse,
+    CodexWorkspaceReadFileRequest, CodexWorkspaceReadFileResponse,
+    CodexWorkspaceRenameEntryRequest, CodexWorkspaceRenameEntryResponse,
+    CodexWorkspaceWriteFileRequest, CodexWorkspaceWriteFileResponse, GitCommandExecutionResult,
+    GitCommitApprovedReviewRequest, GitCommitApprovedReviewResponse, GitWorkspaceChange,
+    GitWorkspaceChangesRequest, GitWorkspaceChangesResponse, RunCodexCommandResponse,
+    RuntimeCapabilitiesResponse, RuntimeCodexConfig, RuntimeContractMetadata,
+    StartCodexSessionConfig, StartCodexSessionResponse, TerminalCreateRequest,
+    TerminalCreateResponse, TerminalKillRequest, TerminalResizeRequest, TerminalWriteRequest,
+};
 pub(crate) use crate::launch_runtime::{
     default_codex_binary, resolve_binary_path, resolve_codex_launch,
 };
-
-const CODEX_HELP_CLI_TREE: &str = r#"codex
-  exec (alias: e)
-    resume
-    review
-  review
-  login
-    status
-  logout
-  mcp
-    list
-    get
-    add
-    remove
-    login
-    logout
-  mcp-server
-  app-server
-    generate-ts
-    generate-json-schema
-  completion
-  sandbox
-    macos
-    linux
-    windows
-  debug
-    app-server
-      send-message-v2
-  apply (alias: a)
-  resume
-  fork
-  cloud
-    exec
-    status
-    list
-    apply
-    diff
-  features
-    list
-    enable
-    disable"#;
-
-const CODEX_HELP_SLASH_COMMANDS: &[&str] = &[
-    "/model",
-    "/approvals",
-    "/permissions",
-    "/setup-default-sandbox",
-    "/sandbox-add-read-dir",
-    "/experimental",
-    "/skills",
-    "/review",
-    "/review-file",
-    "/rename",
-    "/new",
-    "/resume",
-    "/fork",
-    "/init",
-    "/compact",
-    "/plan",
-    "/collab",
-    "/agent",
-    "/diff",
-    "/mention",
-    "/status",
-    // "/debug-config",
-    "/statusline",
-    "/mcp",
-    "/apps",
-    "/logout",
-    "/quit",
-    "/exit",
-    "/feedback",
-    "/ps",
-    "/clean",
-    "/personality",
-    "/debug-m-drop",
-    "/debug-m-update",
-];
-
-const CODEX_HELP_KEY_FLAGS: &[&str] = &[
-    "--model",
-    "--image",
-    "--profile",
-    "--sandbox",
-    "--full-auto",
-    "--dangerously-bypass-approvals-and-sandbox",
-    "--search",
-    "--add-dir",
-    "--cd",
-    "-c key=value",
-    "--enable FEATURE",
-    "--disable FEATURE",
-];
 
 fn parse_env_bool_flag(value: &str) -> Option<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
@@ -210,210 +144,6 @@ fn spawn_neuro_startup_probe(app_handle: AppHandle) {
             );
         }
     });
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RuntimeCodexConfig {
-    model: String,
-    reasoning: String,
-    approval_preset: String,
-    approval_policy: String,
-    sandbox: String,
-    profile: String,
-    web_search_mode: String,
-}
-
-impl Default for RuntimeCodexConfig {
-    fn default() -> Self {
-        Self {
-            model: "default".to_string(),
-            reasoning: "default".to_string(),
-            approval_preset: "auto".to_string(),
-            approval_policy: "on-request".to_string(),
-            sandbox: "read-only".to_string(),
-            profile: "read_write_with_approval".to_string(),
-            web_search_mode: "cached".to_string(),
-        }
-    }
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct StartCodexSessionConfig {
-    binary: Option<String>,
-    args: Option<Vec<String>>,
-    cwd: Option<String>,
-    env: Option<HashMap<String, String>>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct StartCodexSessionResponse {
-    session_id: u64,
-    pid: u32,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RuntimeStatusResponse {
-    session_id: Option<u64>,
-    pid: Option<u32>,
-    workspace: String,
-    runtime_config: RuntimeCodexConfig,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RuntimeCapabilitiesResponse {
-    methods: HashMap<String, bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    contract: Option<RuntimeContractMetadata>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RuntimeContractMetadata {
-    version: String,
-}
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RunCodexCommandResponse {
-    stdout: String,
-    stderr: String,
-    status: i32,
-    success: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GitCommitApprovedReviewRequest {
-    paths: Vec<String>,
-    message: String,
-    cwd: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct GitCommandExecutionResult {
-    stdout: String,
-    stderr: String,
-    status: i32,
-    success: bool,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct GitCommitApprovedReviewResponse {
-    success: bool,
-    add: GitCommandExecutionResult,
-    commit: GitCommandExecutionResult,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GitWorkspaceChangesRequest {
-    cwd: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct GitWorkspaceChange {
-    path: String,
-    status: String,
-    code: String,
-    from_path: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct GitWorkspaceChangesResponse {
-    cwd: String,
-    total: usize,
-    files: Vec<GitWorkspaceChange>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CodexWorkspaceReadFileRequest {
-    path: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CodexWorkspaceReadFileResponse {
-    path: String,
-    content: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CodexWorkspaceWriteFileRequest {
-    path: String,
-    content: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CodexWorkspaceWriteFileResponse {
-    path: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CodexWorkspaceCreateDirectoryRequest {
-    path: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CodexWorkspaceCreateDirectoryResponse {
-    path: String,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CodexWorkspaceListDirectoryRequest {
-    path: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "lowercase")]
-enum CodexWorkspaceListDirectoryEntryKind {
-    File,
-    Directory,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CodexWorkspaceListDirectoryEntry {
-    name: String,
-    path: String,
-    kind: CodexWorkspaceListDirectoryEntryKind,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    has_children: Option<bool>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CodexWorkspaceListDirectoryResponse {
-    cwd: String,
-    path: String,
-    entries: Vec<CodexWorkspaceListDirectoryEntry>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CodexWorkspaceRenameEntryRequest {
-    path: String,
-    new_name: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CodexWorkspaceRenameEntryResponse {
-    path: String,
-    new_path: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -681,48 +411,6 @@ struct CodexUserInputRespondResponse {
     decision: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct TerminalCreateRequest {
-    cwd: Option<String>,
-    shell: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct TerminalCreateResponse {
-    terminal_id: u64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct TerminalWriteRequest {
-    terminal_id: u64,
-    data: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct TerminalResizeRequest {
-    terminal_id: u64,
-    cols: u16,
-    rows: u16,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct TerminalKillRequest {
-    terminal_id: u64,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CodexHelpSnapshot {
-    cli_tree: &'static str,
-    slash_commands: Vec<&'static str>,
-    key_flags: Vec<&'static str>,
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CodexReasoningEffortOption {
@@ -870,39 +558,6 @@ fn lock_runtime_config(state: &AppState) -> Result<MutexGuard<'_, RuntimeCodexCo
         .runtime_config
         .lock()
         .map_err(|_| "runtime config lock poisoned".to_string())
-}
-
-#[tauri::command]
-fn codex_runtime_status(state: State<'_, AppState>) -> Result<RuntimeStatusResponse, String> {
-    let (session_id, pid, session_workspace) = {
-        let active = lock_active_session(state.inner())?;
-        (
-            active.as_ref().map(|session| session.session_id),
-            active.as_ref().and_then(|session| session.pid),
-            active.as_ref().map(|session| session.cwd.clone()),
-        )
-    };
-
-    let runtime_config = lock_runtime_config(state.inner())?.clone();
-    let process_cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let workspace = crate::workspace_runtime::resolve_runtime_status_workspace(
-        session_workspace.as_deref(),
-        process_cwd.as_path(),
-    );
-
-    Ok(RuntimeStatusResponse {
-        session_id,
-        pid,
-        workspace,
-        runtime_config,
-    })
-}
-
-#[tauri::command]
-async fn codex_runtime_capabilities(
-    state: State<'_, AppState>,
-) -> Result<RuntimeCapabilitiesResponse, String> {
-    crate::command_runtime::codex_runtime_capabilities_impl(state).await
 }
 
 #[tauri::command]
@@ -1161,41 +816,6 @@ async fn neuro_invoke_tool(
 }
 
 #[tauri::command]
-async fn load_codex_default_config(
-    state: State<'_, AppState>,
-) -> Result<RuntimeCodexConfig, String> {
-    let loaded = load_runtime_config_from_codex().await?;
-    let mut runtime = lock_runtime_config(state.inner())?;
-    *runtime = loaded.clone();
-    Ok(loaded)
-}
-
-#[tauri::command]
-fn update_codex_config(
-    state: State<'_, AppState>,
-    config: RuntimeCodexConfig,
-) -> Result<RuntimeCodexConfig, String> {
-    let mut runtime = lock_runtime_config(state.inner())?;
-    *runtime = normalize_runtime_config(config);
-    Ok(runtime.clone())
-}
-
-#[tauri::command]
-fn codex_config_get(state: State<'_, AppState>) -> Result<RuntimeCodexConfig, String> {
-    Ok(lock_runtime_config(state.inner())?.clone())
-}
-
-#[tauri::command]
-fn codex_config_set(
-    state: State<'_, AppState>,
-    patch: RuntimeCodexConfig,
-) -> Result<RuntimeCodexConfig, String> {
-    let mut runtime = lock_runtime_config(state.inner())?;
-    *runtime = normalize_runtime_config(patch);
-    Ok(runtime.clone())
-}
-
-#[tauri::command]
 async fn codex_turn_run(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -1330,139 +950,6 @@ async fn send_codex_input(
 }
 
 #[tauri::command]
-async fn start_codex_session(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    config: Option<StartCodexSessionConfig>,
-) -> Result<StartCodexSessionResponse, String> {
-    crate::session_runtime::start_codex_session_impl(app, state, config).await
-}
-
-#[tauri::command]
-fn resize_codex_pty(state: State<'_, AppState>, _rows: u16, _cols: u16) -> Result<(), String> {
-    crate::session_runtime::resize_codex_pty_impl(state, _rows, _cols)
-}
-
-#[tauri::command]
-async fn stop_codex_session(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    crate::session_runtime::stop_codex_session_impl(app, state).await
-}
-
-#[tauri::command]
-fn terminal_create(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    request: Option<TerminalCreateRequest>,
-) -> Result<TerminalCreateResponse, String> {
-    crate::terminal_runtime::terminal_create_impl(app, state, request)
-}
-
-#[tauri::command]
-fn terminal_write(state: State<'_, AppState>, request: TerminalWriteRequest) -> Result<(), String> {
-    crate::terminal_runtime::terminal_write_impl(state, request)
-}
-
-#[tauri::command]
-fn terminal_resize(
-    state: State<'_, AppState>,
-    request: TerminalResizeRequest,
-) -> Result<(), String> {
-    crate::terminal_runtime::terminal_resize_impl(state, request)
-}
-
-#[tauri::command]
-fn terminal_kill(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    request: TerminalKillRequest,
-) -> Result<(), String> {
-    crate::terminal_runtime::terminal_kill_impl(app, state, request)
-}
-
-#[tauri::command]
-fn run_codex_command(
-    args: Vec<String>,
-    cwd: Option<String>,
-) -> Result<RunCodexCommandResponse, String> {
-    crate::command_runtime::run_codex_command_impl(args, cwd)
-}
-
-#[tauri::command]
-fn git_commit_approved_review(
-    state: State<'_, AppState>,
-    mut request: GitCommitApprovedReviewRequest,
-) -> Result<GitCommitApprovedReviewResponse, String> {
-    let active_cwd = {
-        let active = lock_active_session(state.inner())?;
-        active
-            .as_ref()
-            .map(|session| session.cwd.to_string_lossy().to_string())
-    };
-
-    let Some(cwd) = active_cwd else {
-        return Err("git_commit_approved_review requires an active codex session".to_string());
-    };
-
-    request.cwd = Some(cwd);
-
-    crate::command_runtime::git_commit_approved_review_impl(request)
-}
-
-#[tauri::command]
-fn git_workspace_changes(
-    state: State<'_, AppState>,
-    request: Option<GitWorkspaceChangesRequest>,
-) -> Result<GitWorkspaceChangesResponse, String> {
-    {
-        let active = lock_active_session(state.inner())?;
-        if active.is_none() {
-            return Err("git_workspace_changes requires an active codex session".to_string());
-        }
-    }
-
-    crate::command_runtime::git_workspace_changes_impl(state, request.unwrap_or_default())
-}
-
-#[tauri::command]
-fn codex_workspace_read_file(
-    state: State<'_, AppState>,
-    request: CodexWorkspaceReadFileRequest,
-) -> Result<CodexWorkspaceReadFileResponse, String> {
-    crate::command_runtime::codex_workspace_read_file_impl(state, request)
-}
-
-#[tauri::command]
-fn codex_workspace_write_file(
-    state: State<'_, AppState>,
-    request: CodexWorkspaceWriteFileRequest,
-) -> Result<CodexWorkspaceWriteFileResponse, String> {
-    crate::command_runtime::codex_workspace_write_file_impl(state, request)
-}
-
-#[tauri::command]
-fn codex_workspace_create_directory(
-    state: State<'_, AppState>,
-    request: CodexWorkspaceCreateDirectoryRequest,
-) -> Result<CodexWorkspaceCreateDirectoryResponse, String> {
-    crate::command_runtime::codex_workspace_create_directory_impl(state, request)
-}
-
-#[tauri::command]
-fn codex_workspace_list_directory(
-    state: State<'_, AppState>,
-    request: Option<CodexWorkspaceListDirectoryRequest>,
-) -> Result<CodexWorkspaceListDirectoryResponse, String> {
-    crate::command_runtime::codex_workspace_list_directory_impl(state, request.unwrap_or_default())
-}
-
-#[tauri::command]
-fn codex_workspace_rename_entry(
-    state: State<'_, AppState>,
-    request: CodexWorkspaceRenameEntryRequest,
-) -> Result<CodexWorkspaceRenameEntryResponse, String> {
-    crate::command_runtime::codex_workspace_rename_entry_impl(state, request)
-}
-#[tauri::command]
 fn codex_models_list(state: State<'_, AppState>) -> Result<CodexModelListResponse, String> {
     crate::command_runtime::codex_models_list_impl(state)
 }
@@ -1532,38 +1019,6 @@ async fn codex_mcp_login(
 #[tauri::command]
 async fn codex_mcp_reload(state: State<'_, AppState>) -> Result<McpReloadResponse, String> {
     crate::command_runtime::codex_mcp_reload_impl(state).await
-}
-
-#[tauri::command]
-fn pick_workspace_folder() -> Option<String> {
-    crate::command_runtime::pick_workspace_folder_impl()
-}
-
-#[tauri::command]
-fn pick_image_file() -> Option<String> {
-    rfd::FileDialog::new()
-        .add_filter(
-            "Image",
-            &["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"],
-        )
-        .pick_file()
-        .map(|path| path.to_string_lossy().to_string())
-}
-
-#[tauri::command]
-fn pick_mention_file() -> Option<String> {
-    rfd::FileDialog::new()
-        .pick_file()
-        .map(|path| path.to_string_lossy().to_string())
-}
-
-#[tauri::command]
-fn codex_help_snapshot() -> CodexHelpSnapshot {
-    CodexHelpSnapshot {
-        cli_tree: CODEX_HELP_CLI_TREE,
-        slash_commands: CODEX_HELP_SLASH_COMMANDS.to_vec(),
-        key_flags: CODEX_HELP_KEY_FLAGS.to_vec(),
-    }
 }
 
 fn main() {
