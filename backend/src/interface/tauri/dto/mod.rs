@@ -1,5 +1,6 @@
 mod runtime;
 mod session_lifecycle;
+mod session_turn;
 mod terminal;
 mod utility;
 mod workspace_git;
@@ -8,6 +9,18 @@ pub(crate) use runtime::{
     RuntimeCapabilitiesResponse, RuntimeCodexConfig, RuntimeContractMetadata, RuntimeStatusResponse,
 };
 pub(crate) use session_lifecycle::{StartCodexSessionConfig, StartCodexSessionResponse};
+pub(crate) use session_turn::{
+    CodexApprovalRespondRequest, CodexInputItem, CodexReviewStartRequest, CodexReviewStartResponse,
+    CodexThreadArchiveRequest, CodexThreadArchiveResponse, CodexThreadCloseRequest,
+    CodexThreadCloseResponse, CodexThreadCompactStartRequest, CodexThreadCompactStartResponse,
+    CodexThreadForkRequest, CodexThreadForkResponse, CodexThreadListRequest,
+    CodexThreadListResponse, CodexThreadOpenResponse, CodexThreadReadRequest,
+    CodexThreadReadResponse, CodexThreadRollbackRequest, CodexThreadRollbackResponse,
+    CodexThreadSummary, CodexThreadTurnHistoryMessage, CodexThreadTurnSummary,
+    CodexThreadUnarchiveRequest, CodexThreadUnarchiveResponse, CodexTurnInterruptRequest,
+    CodexTurnInterruptResponse, CodexTurnRunRequest, CodexTurnRunResponse, CodexTurnSteerRequest,
+    CodexTurnSteerResponse, CodexUserInputRespondRequest, CodexUserInputRespondResponse,
+};
 pub(crate) use terminal::{
     TerminalCreateRequest, TerminalCreateResponse, TerminalKillRequest, TerminalResizeRequest,
     TerminalWriteRequest,

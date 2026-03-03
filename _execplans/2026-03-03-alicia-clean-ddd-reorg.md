@@ -33,6 +33,7 @@ Excluido:
 - [x] (2026-03-03) Fase 1: centralizacao do contrato em `alicia/codex-bridge`.
 - [x] (2026-03-03) Fase 2: extracao de portas/casos de uso no frontend.
 - [x] (2026-03-03) Fase 3 (slice 1): camada `interface/tauri` criada e comandos low/medium migrados.
+- [x] (2026-03-03) Fase 3 (slice 2): comandos Session/Thread/Review migrados para `interface/tauri`.
 - [ ] (2026-03-03) Fase 3: extracao de interface Tauri no backend (conclusao completa).
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
@@ -163,11 +164,45 @@ Resultado:
 1. Slice 1 da Fase 3 concluido sem blocker de merge.
 2. Fase 3 completa permanece em aberto para migracao dos grupos de comandos de maior acoplamento (turn/thread/review/approval/user_input/neuro).
 
+## Fase 3 Slice 2 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-03.
+2. Objetivo: continuar a extracao da interface Tauri no backend, removendo de `main.rs` os comandos e DTOs de Session/Thread/Review.
+3. Escopo do slice:
+   - migracao de handlers `codex_turn_*`, `codex_thread_*`, `codex_review_start`, `codex_approval_respond`, `codex_user_input_respond`, `send_codex_input`
+   - centralizacao dos DTOs do contexto em `backend/src/interface/tauri/dto/session_turn.rs`
+   - ajuste de consumo em `session_turn_runtime.rs`
+
+Entregas:
+1. Novo modulo de handlers:
+   - `backend/src/interface/tauri/commands/session_turn.rs`
+2. Novo modulo de DTOs:
+   - `backend/src/interface/tauri/dto/session_turn.rs`
+3. Exports atualizados:
+   - `backend/src/interface/tauri/commands/mod.rs`
+   - `backend/src/interface/tauri/dto/mod.rs`
+4. `main.rs` reduzido para bootstrap + registro dos handlers migrados.
+5. `session_turn_runtime.rs` ajustado para importar DTOs da camada `interface/tauri/dto`.
+
+Validacao executada:
+1. `cd alicia/backend && cargo fmt --all -- --check` -> OK.
+2. `cd alicia/backend && cargo check` -> OK.
+3. `cd alicia/backend && cargo test` -> OK (`121 passed; 0 failed`).
+4. `cd alicia/backend && cargo clippy --all-targets --all-features -- -D warnings` -> OK.
+5. Verificacao de paridade:
+   - os 16 comandos migrados estao registrados no `generate_handler!`;
+   - comandos fora de escopo permaneceram registrados, com contagem total de handlers mantida (`70`).
+
+Resultado:
+1. Slice 2 da Fase 3 concluido sem blocker de merge.
+2. Fase 3 completa permanece em aberto para os grupos fora deste slice (principalmente `neuro_*` e comandos de runtime nao migrados).
+
 ## Current Architecture Snapshot (Key Risks)
 
 1. Frontend com `god component` em `app/page.tsx` concentrando UI + fluxo + regras.
 2. Componentes de UI sem import direto de `tauri-bridge` nos painéis priorizados da Fase 2; ainda existe acoplamento residual via adapter concreto em alguns fluxos.
-3. `main.rs` concentrando DTOs, comandos, wiring e parte da coordenacao.
+3. `main.rs` ja perdeu os grupos migrados (utility/runtime/workspace/terminal/session/session-thread-review), mas ainda concentra wiring e comandos de contexts restantes (`account`, `mcp`, `models`, `neuro`).
 4. Modulos backend monoliticos (`command_runtime.rs`, `session_turn_runtime.rs`, `neuro_runtime.rs`).
 5. Contrato runtime duplicado entre frontend e backend.
 
@@ -370,3 +405,12 @@ Fase 2:
    - faltam testes unitarios de use-cases/adapters e teste de concorrencia para login MCP.
 4. Ajuste para Fase 3:
    - extrair interface Tauri no backend, reduzindo `main.rs` para bootstrap/registro e alinhando portas por contexto.
+
+Fase 3 (slices 1-2):
+1. Resultado entregue: camada `interface/tauri` consolidada para comandos de baixo/medio risco e contexto Session/Thread/Review, com `main.rs` significativamente reduzido.
+2. Incidentes/regressoes: nenhum blocker detectado em check/test/clippy e revisao read-only.
+3. Riscos residuais:
+   - faltam testes dedicados de serializacao/contrato dos DTOs centralizados em `dto/session_turn.rs`;
+   - faltam testes de integracao para garantir registro/invocacao Tauri pos-refactor.
+4. Ajuste para continuidade da Fase 3:
+   - migrar comandos restantes de maior acoplamento (especialmente `neuro_*`) para `interface/tauri`, mantendo paridade no `generate_handler!`.

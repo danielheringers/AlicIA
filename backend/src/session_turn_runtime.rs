@@ -55,9 +55,7 @@ use toml::map::Map as TomlMap;
 use crate::codex_event_translator::NativeCodexEventTranslator;
 #[cfg(feature = "native-codex-runtime")]
 use crate::emit_codex_event;
-use crate::status_runtime::{fetch_rate_limits_for_status, format_non_tui_status};
-use crate::{
-    emit_lifecycle, emit_stderr, emit_stdout, lock_active_session, lock_runtime_config, AppState,
+use crate::interface::tauri::dto::{
     CodexApprovalRespondRequest, CodexInputItem, CodexReviewStartRequest, CodexReviewStartResponse,
     CodexThreadArchiveRequest, CodexThreadArchiveResponse, CodexThreadCloseRequest,
     CodexThreadCloseResponse, CodexThreadCompactStartRequest, CodexThreadCompactStartResponse,
@@ -67,10 +65,16 @@ use crate::{
     CodexThreadUnarchiveRequest, CodexThreadUnarchiveResponse, CodexTurnInterruptRequest,
     CodexTurnInterruptResponse, CodexTurnRunRequest, CodexTurnRunResponse, CodexTurnSteerRequest,
     CodexTurnSteerResponse, CodexUserInputRespondRequest, CodexUserInputRespondResponse,
-    RuntimeCodexConfig,
 };
 #[cfg(feature = "native-codex-runtime")]
-use crate::{CodexThreadSummary, CodexThreadTurnHistoryMessage, CodexThreadTurnSummary};
+use crate::interface::tauri::dto::{
+    CodexThreadSummary, CodexThreadTurnHistoryMessage, CodexThreadTurnSummary,
+};
+use crate::status_runtime::{fetch_rate_limits_for_status, format_non_tui_status};
+use crate::{
+    emit_lifecycle, emit_stderr, emit_stdout, lock_active_session, lock_runtime_config, AppState,
+    RuntimeCodexConfig,
+};
 
 #[cfg(feature = "native-codex-runtime")]
 fn normalize_runtime_thread_id(thread_id: Option<String>) -> Option<String> {
