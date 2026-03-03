@@ -141,39 +141,49 @@ export function TerminalMessage({
     () => (type === "agent" && !resolvedDiff ? parseAgentDiffMarkdownSegments(content) : null),
     [type, content, resolvedDiff],
   )
+  const rowToneClass =
+    type === "user"
+      ? "border-terminal-blue/30 bg-terminal-blue/10"
+      : type === "system"
+        ? "border-terminal-purple/25 bg-[var(--ide-surface-1)]"
+        : "border-[var(--ide-border-subtle)] bg-[var(--ide-surface-1)]/70"
+
   return (
-    <div className={`group flex gap-3 px-5 py-3 ${type === "user" ? "bg-line-highlight/50" : ""} hover:bg-line-highlight/30 transition-colors`}>
+    <div className="px-3 py-1.5 md:px-4">
+      <div
+        className={`group flex gap-2.5 rounded-md border px-2.5 py-2 transition-colors hover:bg-[var(--ide-surface-2)] ${rowToneClass}`}
+      >
       {/* Avatar */}
-      <div className="shrink-0 mt-0.5">
+      <div className="mt-0.5 shrink-0">
         {type === "user" ? (
-          <div className="w-6 h-6 rounded bg-terminal-blue/15 border border-terminal-blue/20 flex items-center justify-center">
-            <User className="w-3.5 h-3.5 text-terminal-blue" />
+          <div className="flex h-5 w-5 items-center justify-center rounded-full border border-terminal-green/30 bg-terminal-green/10">
+            <User className="h-3 w-3 text-terminal-green" />
           </div>
         ) : type === "system" ? (
-          <div className="w-6 h-6 rounded bg-terminal-purple/15 border border-terminal-purple/20 flex items-center justify-center">
-            <Terminal className="w-3.5 h-3.5 text-terminal-purple" />
+          <div className="flex h-5 w-5 items-center justify-center rounded border border-terminal-blue/30 bg-terminal-blue/10">
+            <Terminal className="h-3 w-3 text-terminal-blue" />
           </div>
         ) : (
-          <div className="w-6 h-6 rounded bg-terminal-green/15 border border-terminal-green/20 flex items-center justify-center">
-            <Bot className="w-3.5 h-3.5 text-terminal-green" />
+          <div className="flex h-5 w-5 items-center justify-center rounded-full border border-terminal-blue/30 bg-terminal-blue/10">
+            <Bot className="h-3 w-3 text-terminal-blue" />
           </div>
         )}
       </div>
 
       {/* Content */}
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 mb-1">
+        <div className="mb-0.5 flex items-center gap-2">
           <span className={`text-xs font-semibold ${
             type === "user"
-              ? "text-terminal-blue"
+              ? "text-terminal-green"
               : type === "system"
-              ? "text-terminal-purple"
-              : "text-terminal-green"
+              ? "text-terminal-blue"
+              : "text-terminal-blue"
           }`}>
             {type === "user" ? "you" : type === "system" ? "system" : "alicia"}
           </span>
           {timestamp && (
-            <span className="text-[10px] text-muted-foreground/40">{timestamp}</span>
+            <span className="text-[10px] text-muted-foreground/50">{timestamp}</span>
           )}
         </div>
 
@@ -240,7 +250,7 @@ export function TerminalMessage({
                 )}
               </div>
             ) : (
-              <div className="text-sm text-terminal-fg/90 leading-relaxed whitespace-pre-wrap">
+              <div className="text-[12px] text-terminal-fg/90 leading-relaxed whitespace-pre-wrap">
                 {content}
               </div>
             )}
@@ -279,6 +289,7 @@ export function TerminalMessage({
           </>
         )}
       </div>
+    </div>
     </div>
   )
 }

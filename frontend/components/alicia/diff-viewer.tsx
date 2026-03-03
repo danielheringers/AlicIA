@@ -30,8 +30,10 @@ export function DiffViewer({
   const removals = lines.filter((line) => line.type === "remove").length
 
   return (
-    <div className={`rounded-md border border-panel-border overflow-hidden my-2 ${className ?? ""}`}>
-      <div className="flex items-center justify-between px-3 py-1.5 bg-panel-bg border-b border-panel-border">
+    <div
+      className={`my-2 overflow-hidden rounded-md border border-[var(--ide-border-subtle)] bg-[var(--ide-surface-1)] ${className ?? ""}`}
+    >
+      <div className="flex items-center justify-between border-b border-[var(--ide-border-subtle)] bg-[var(--ide-surface-2)] px-3 py-1.5">
         {openEnabled ? (
           <button
             type="button"
@@ -82,7 +84,7 @@ export function DiffViewer({
           </div>
         )}
       </div>
-      <div className="bg-terminal-bg overflow-x-auto text-xs font-mono">
+      <div className="overflow-x-auto bg-[var(--ide-surface-0)] text-xs font-mono">
         {lines.map((line, i) => (
           <div
             key={i}

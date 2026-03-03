@@ -40,15 +40,73 @@ function normalizeRefInput(ref: string): string {
   return stripOuterQuotes(ref.trim())
 }
 
+function isWorkspaceLikePath(ref: string): boolean {
+  if (ref.includes("/") || ref.includes("\\")) {
+    return true
+  }
+  return /^[a-z]:/i.test(ref)
+}
+
 function isAbapRef(ref: string): boolean {
   if (ref.startsWith("/sap/bc/adt/")) {
     return true
   }
-  return ref.toLowerCase().endsWith(".abap")
+  if (!ref.toLowerCase().endsWith(".abap")) {
+    return false
+  }
+  if (isNamespacedAbapRef(ref)) {
+    return true
+  }
+  return !isWorkspaceLikePath(ref)
 }
 
 function normalizeWorkspaceRef(ref: string): string {
   return ref.replace(/\\/g, "/")
+}
+
+function isNamespacedAbapRef(ref: string): boolean {
+  if (!ref.startsWith("/") || ref.includes("\\")) {
+    return false
+  }
+  const match = /^\/([A-Z0-9_]+)\/([^/]+\.abap)$/u.exec(ref)
+  if (!match) {
+    return false
+  }
+  return true
+}
+
+export function normalizeWorkspacePathForRoot(
+  workspacePath: string,
+  workspaceRoot: string | null | undefined,
+): string {
+  const normalizedPath = normalizeWorkspaceRef(workspacePath).trim()
+  if (!normalizedPath) {
+    return normalizedPath
+  }
+
+  const normalizedRoot = normalizeWorkspaceRef(workspaceRoot ?? "")
+    .trim()
+    .replace(/\/+$/, "")
+
+  if (!normalizedRoot) {
+    return normalizedPath.replace(/^\.\/+/, "")
+  }
+
+  const lowerPath = normalizedPath.toLowerCase()
+  const lowerRoot = normalizedRoot.toLowerCase()
+  const rootPrefix = `${lowerRoot}/`
+
+  if (lowerPath === lowerRoot) {
+    return normalizedPath
+  }
+
+  if (lowerPath.startsWith(rootPrefix)) {
+    return normalizedPath
+      .slice(normalizedRoot.length + 1)
+      .replace(/^\/+/, "")
+  }
+
+  return normalizedPath.replace(/^\.\/+/, "")
 }
 
 function inferWorkspaceLanguage(path: string): string {

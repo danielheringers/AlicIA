@@ -71,10 +71,24 @@ export const RUNTIME_METHODS = [
   'config.set',
   'workspace.file.read',
   'workspace.file.write',
+  'workspace.directory.list',
+  'workspace.directory.create',
+  'workspace.entry.rename',
   'neuro.runtime.diagnose',
   'neuro.search.objects',
   'neuro.get.source',
   'neuro.update.source',
+  'neuro.adt.server.list',
+  'neuro.adt.server.upsert',
+  'neuro.adt.server.remove',
+  'neuro.adt.server.select',
+  'neuro.adt.server.connect',
+  'neuro.adt.list.packages',
+  'neuro.adt.list.namespaces',
+  'neuro.adt.explorer.state.get',
+  'neuro.adt.explorer.state.patch',
+  'neuro.adt.list.objects',
+  'neuro.adt.list.package_inventory',
   'neuro.ws.request',
   'neuro.mcp.list_tools',
   'neuro.mcp.invoke',
@@ -127,12 +141,158 @@ export interface NeuroAdtUpdateSourceRequest {
   objectUri: string
   source: string
   etag?: string | null
+  serverId?: string | null
 }
 
 export interface NeuroAdtUpdateSourceResponse {
   objectUri: string
   statusCode: number
   etag?: string | null
+}
+
+export interface NeuroAdtServerRecord {
+  id: string
+  name: string
+  baseUrl: string
+  client?: string | null
+  language?: string | null
+  username?: string | null
+}
+
+export interface NeuroAdtServerListResponse {
+  servers: NeuroAdtServerRecord[]
+  selectedServerId?: string | null
+}
+
+export interface NeuroAdtServerUpsertRequest {
+  id: string
+  name: string
+  baseUrl: string
+  client?: string | null
+  language?: string | null
+  username?: string | null
+  password?: string | null
+}
+
+export interface NeuroAdtServerConnectResponse {
+  serverId: string
+  connected: boolean
+  message?: string | null
+}
+
+export interface NeuroAdtPackageSummary {
+  name: string
+  description?: string | null
+}
+
+export interface NeuroAdtNamespaceSummary {
+  name: string
+  packageName?: string | null
+}
+
+export type NeuroAdtFavoritePackageKind = 'package' | 'namespace'
+
+export interface NeuroAdtFavoritePackageItem {
+  name: string
+  kind: NeuroAdtFavoritePackageKind
+}
+
+export interface NeuroAdtFavoriteObjectItem {
+  uri: string
+  name: string
+  objectType?: string | null
+  package?: string | null
+}
+
+export interface NeuroAdtExplorerState {
+  workingPackage?: string | null
+  focusedObjectUri?: string | null
+  packageScopeRoots: string[]
+  favoritePackages: NeuroAdtFavoritePackageItem[]
+  favoriteObjects: NeuroAdtFavoriteObjectItem[]
+}
+
+export interface NeuroAdtExplorerStatePatchRequest {
+  workingPackage?: string | null
+  focusedObjectUri?: string | null
+  setPackageScopeRoots?: string[] | null
+  toggleFavoritePackage?: NeuroAdtFavoritePackageItem | null
+  toggleFavoriteObject?: NeuroAdtFavoriteObjectItem | null
+}
+
+export type NeuroAdtObjectListScope =
+  | 'local_objects'
+  | 'favorite_packages'
+  | 'favorite_objects'
+  | 'system_library'
+
+export interface NeuroAdtListObjectsRequest {
+  scope: NeuroAdtObjectListScope
+  packageName?: string | null
+  packageKind?: NeuroAdtFavoritePackageKind | null
+  namespace?: string | null
+  serverId?: string | null
+  maxResults?: number | null
+}
+
+export interface NeuroAdtListObjectsResponse {
+  scope: NeuroAdtObjectListScope
+  objects: NeuroAdtObjectSummary[]
+  namespaces?: NeuroAdtNamespaceSummary[]
+}
+
+export interface NeuroAdtPackageInventoryRequest {
+  roots: string[]
+  includeSubpackages?: boolean | null
+  includeObjects?: boolean | null
+  maxPackages?: number | null
+  maxObjectsPerPackage?: number | null
+  serverId?: string | null
+}
+
+export interface NeuroAdtPackageInventoryNode {
+  name: string
+  parentName?: string | null
+  depth: number
+  isRoot: boolean
+  objectCount: number
+}
+
+export interface NeuroAdtPackageInventoryPackageObjects {
+  packageName: string
+  objects: NeuroAdtObjectSummary[]
+}
+
+export interface NeuroAdtPackageInventoryRootMetadata {
+  root: string
+  kind: string
+  queriesExecuted: number
+  matchedPackages: number
+  returnedPackages: number
+  resultLimitHit: boolean
+  isComplete: boolean
+  skippedDueToMaxPackages: boolean
+}
+
+export interface NeuroAdtPackageInventoryMetadata {
+  isComplete: boolean
+  isTruncated: boolean
+  includeObjects: boolean
+  maxPackagesReached: boolean
+  rootDiscoveryTruncated: boolean
+  objectResultsTruncated: boolean
+  maxPackages: number
+  maxObjectsPerPackage: number
+  returnedPackages: number
+  packagesWithTruncatedObjects: number
+  roots: NeuroAdtPackageInventoryRootMetadata[]
+}
+
+export interface NeuroAdtPackageInventoryResponse {
+  roots: string[]
+  packages: NeuroAdtPackageInventoryNode[]
+  objectsByPackage: NeuroAdtPackageInventoryPackageObjects[]
+  metadata?: NeuroAdtPackageInventoryMetadata | null
 }
 
 export interface NeuroWsDomainRequest {
@@ -241,6 +401,41 @@ export interface CodexWorkspaceWriteFileRequest {
 
 export interface CodexWorkspaceWriteFileResponse {
   path: string
+}
+
+export interface CodexWorkspaceCreateDirectoryRequest {
+  path: string
+}
+
+export interface CodexWorkspaceCreateDirectoryResponse {
+  path: string
+}
+
+export interface CodexWorkspaceRenameEntryRequest {
+  path: string
+  newName: string
+}
+
+export interface CodexWorkspaceRenameEntryResponse {
+  path: string
+  newPath: string
+}
+
+export interface CodexWorkspaceDirectoryEntry {
+  name: string
+  path: string
+  kind: 'file' | 'directory'
+  hasChildren?: boolean
+}
+
+export interface CodexWorkspaceListDirectoryRequest {
+  path?: string
+}
+
+export interface CodexWorkspaceListDirectoryResponse {
+  cwd: string
+  path: string
+  entries: CodexWorkspaceDirectoryEntry[]
 }
 
 export interface GitCommitApprovedReviewRequest {

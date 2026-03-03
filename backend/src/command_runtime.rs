@@ -39,8 +39,12 @@ use crate::mcp_runtime::{
 use crate::models_runtime::fetch_models_for_picker;
 use crate::{
     default_codex_binary, lock_active_session, resolve_codex_launch, ActiveSessionTransport,
-    AppState, CodexModelListResponse, CodexWorkspaceReadFileRequest,
-    CodexWorkspaceReadFileResponse, CodexWorkspaceWriteFileRequest,
+    AppState, CodexModelListResponse, CodexWorkspaceCreateDirectoryRequest,
+    CodexWorkspaceCreateDirectoryResponse, CodexWorkspaceListDirectoryEntry,
+    CodexWorkspaceListDirectoryEntryKind, CodexWorkspaceListDirectoryRequest,
+    CodexWorkspaceListDirectoryResponse, CodexWorkspaceReadFileRequest,
+    CodexWorkspaceReadFileResponse, CodexWorkspaceRenameEntryRequest,
+    CodexWorkspaceRenameEntryResponse, CodexWorkspaceWriteFileRequest,
     CodexWorkspaceWriteFileResponse, GitCommandExecutionResult, GitCommitApprovedReviewRequest,
     GitCommitApprovedReviewResponse, GitWorkspaceChange, GitWorkspaceChangesRequest,
     GitWorkspaceChangesResponse, RunCodexCommandResponse, RuntimeCapabilitiesResponse,
@@ -313,10 +317,24 @@ const RUNTIME_METHOD_KEYS: &[&str] = &[
     "config.set",
     "workspace.file.read",
     "workspace.file.write",
+    "workspace.directory.create",
+    "workspace.directory.list",
+    "workspace.entry.rename",
     "neuro.runtime.diagnose",
     "neuro.search.objects",
     "neuro.get.source",
     "neuro.update.source",
+    "neuro.adt.server.list",
+    "neuro.adt.server.upsert",
+    "neuro.adt.server.remove",
+    "neuro.adt.server.select",
+    "neuro.adt.server.connect",
+    "neuro.adt.list.packages",
+    "neuro.adt.list.namespaces",
+    "neuro.adt.explorer.state.get",
+    "neuro.adt.explorer.state.patch",
+    "neuro.adt.list.objects",
+    "neuro.adt.list.package_inventory",
     "neuro.ws.request",
     "neuro.mcp.list_tools",
     "neuro.mcp.invoke",
@@ -468,6 +486,9 @@ fn to_literal_pathspec(path: &str) -> String {
 
 const WORKSPACE_READ_OPERATION: &str = "codex_workspace_read_file";
 const WORKSPACE_WRITE_OPERATION: &str = "codex_workspace_write_file";
+const WORKSPACE_CREATE_DIRECTORY_OPERATION: &str = "codex_workspace_create_directory";
+const WORKSPACE_LIST_DIRECTORY_OPERATION: &str = "codex_workspace_list_directory";
+const WORKSPACE_RENAME_ENTRY_OPERATION: &str = "codex_workspace_rename_entry";
 
 fn active_workspace_cwd(state: &State<'_, AppState>, operation: &str) -> Result<PathBuf, String> {
     let active = lock_active_session(state.inner())?;
@@ -506,6 +527,63 @@ fn normalize_workspace_relative_path(operation: &str, path: &str) -> Result<Path
     }
 
     Ok(candidate.to_path_buf())
+}
+
+fn normalize_workspace_list_relative_path(
+    operation: &str,
+    path: Option<&str>,
+) -> Result<PathBuf, String> {
+    match path {
+        Some(value) if !value.is_empty() => normalize_workspace_relative_path(operation, value),
+        _ => Ok(PathBuf::new()),
+    }
+}
+
+fn normalize_workspace_entry_name(operation: &str, new_name: &str) -> Result<String, String> {
+    if new_name.trim().is_empty() {
+        return Err(format!("{operation} rejected empty newName"));
+    }
+
+    if new_name.contains('\0') {
+        return Err(format!(
+            "{operation} rejected unsafe newName '{new_name}': contains NUL"
+        ));
+    }
+
+    if new_name == "." || new_name == ".." {
+        return Err(format!(
+            "{operation} rejected unsafe newName '{new_name}': '.' and '..' are not allowed"
+        ));
+    }
+
+    if new_name.contains('/') || new_name.contains('\\') {
+        return Err(format!(
+            "{operation} rejected unsafe newName '{new_name}': path separators are not allowed"
+        ));
+    }
+
+    let candidate = Path::new(new_name);
+    if !candidate
+        .components()
+        .all(|component| matches!(component, Component::Normal(_)))
+    {
+        return Err(format!(
+            "{operation} rejected unsafe newName '{new_name}': non-normal components are not allowed"
+        ));
+    }
+
+    Ok(new_name.to_string())
+}
+
+fn workspace_relative_path_to_string(path: &Path) -> String {
+    let parts: Vec<String> = path
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(name) => Some(name.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect();
+    parts.join("/")
 }
 
 fn canonicalize_workspace_root(workspace_cwd: &Path, operation: &str) -> Result<PathBuf, String> {
@@ -609,6 +687,496 @@ fn ensure_secure_workspace_parent(
 
     ensure_path_within_workspace(workspace_root, &parent_dir, operation, "parent")?;
     Ok(parent_dir)
+}
+
+fn ensure_existing_workspace_directory_target(
+    workspace_root: &Path,
+    relative_path: &Path,
+    target_path: &Path,
+    operation: &str,
+) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(target_path).map_err(|error| {
+        format!(
+            "{operation} failed to inspect existing path '{}': {error}",
+            target_path.display()
+        )
+    })?;
+
+    if metadata.file_type().is_symlink() {
+        let canonical_target = fs::canonicalize(target_path).map_err(|error| {
+            format!(
+                "{operation} failed to canonicalize existing symlink '{}': {error}",
+                target_path.display()
+            )
+        })?;
+        ensure_path_within_workspace(workspace_root, &canonical_target, operation, "target")?;
+        if canonical_target.is_dir() {
+            return Ok(());
+        }
+
+        return Err(format!(
+            "{operation} rejected path '{}': target exists and resolves to a non-directory",
+            relative_path.display()
+        ));
+    }
+
+    if metadata.is_dir() {
+        let canonical_target = fs::canonicalize(target_path).map_err(|error| {
+            format!(
+                "{operation} failed to canonicalize existing directory '{}': {error}",
+                target_path.display()
+            )
+        })?;
+        ensure_path_within_workspace(workspace_root, &canonical_target, operation, "target")?;
+        return Ok(());
+    }
+
+    Err(format!(
+        "{operation} rejected path '{}': target exists and is not a directory",
+        relative_path.display()
+    ))
+}
+
+fn resolve_workspace_directory_for_list(
+    workspace_root: &Path,
+    workspace_cwd: &Path,
+    relative_path: &Path,
+    operation: &str,
+) -> Result<PathBuf, String> {
+    let target_path = if relative_path.as_os_str().is_empty() {
+        workspace_cwd.to_path_buf()
+    } else {
+        workspace_cwd.join(relative_path)
+    };
+
+    let metadata = fs::symlink_metadata(&target_path).map_err(|error| {
+        if error.kind() == ErrorKind::NotFound {
+            format!(
+                "{operation} directory '{}' does not exist in workspace '{}'",
+                relative_path.display(),
+                workspace_cwd.display()
+            )
+        } else {
+            format!(
+                "{operation} failed to inspect directory '{}': {error}",
+                target_path.display()
+            )
+        }
+    })?;
+
+    let canonical_target = if metadata.file_type().is_symlink() {
+        let canonical = fs::canonicalize(&target_path).map_err(|error| {
+            format!(
+                "{operation} failed to canonicalize symlink '{}': {error}",
+                target_path.display()
+            )
+        })?;
+        ensure_path_within_workspace(workspace_root, &canonical, operation, "target")?;
+        if !canonical.is_dir() {
+            return Err(format!(
+                "{operation} rejected path '{}': target resolves to a non-directory",
+                relative_path.display()
+            ));
+        }
+        canonical
+    } else if metadata.is_dir() {
+        let canonical = fs::canonicalize(&target_path).map_err(|error| {
+            format!(
+                "{operation} failed to canonicalize directory '{}': {error}",
+                target_path.display()
+            )
+        })?;
+        ensure_path_within_workspace(workspace_root, &canonical, operation, "target")?;
+        canonical
+    } else {
+        return Err(format!(
+            "{operation} rejected path '{}': target is not a directory",
+            relative_path.display()
+        ));
+    };
+
+    Ok(canonical_target)
+}
+
+fn workspace_directory_has_children_within_workspace(
+    workspace_root: &Path,
+    directory_path: &Path,
+    operation: &str,
+) -> Result<bool, String> {
+    let mut entries = fs::read_dir(directory_path).map_err(|error| {
+        format!(
+            "{operation} failed to read directory '{}': {error}",
+            directory_path.display()
+        )
+    })?;
+
+    if let Some(child) = entries.next() {
+        let child = child.map_err(|error| {
+            format!(
+                "{operation} failed to read directory entry in '{}': {error}",
+                directory_path.display()
+            )
+        })?;
+        let child_path = child.path();
+        let metadata = fs::symlink_metadata(&child_path).map_err(|error| {
+            format!(
+                "{operation} failed to inspect path '{}': {error}",
+                child_path.display()
+            )
+        })?;
+        if metadata.file_type().is_symlink() {
+            let canonical = fs::canonicalize(&child_path).map_err(|error| {
+                format!(
+                    "{operation} failed to canonicalize symlink '{}': {error}",
+                    child_path.display()
+                )
+            })?;
+            ensure_path_within_workspace(workspace_root, &canonical, operation, "entry")?;
+        }
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+fn classify_workspace_directory_entry(
+    workspace_root: &Path,
+    entry_path: &Path,
+    entry_relative_path: &Path,
+    operation: &str,
+) -> Result<(CodexWorkspaceListDirectoryEntryKind, Option<bool>), String> {
+    let metadata = fs::symlink_metadata(entry_path).map_err(|error| {
+        format!(
+            "{operation} failed to inspect path '{}': {error}",
+            entry_path.display()
+        )
+    })?;
+
+    if metadata.file_type().is_symlink() {
+        let canonical_target = fs::canonicalize(entry_path).map_err(|error| {
+            format!(
+                "{operation} failed to canonicalize symlink '{}': {error}",
+                entry_path.display()
+            )
+        })?;
+        ensure_path_within_workspace(workspace_root, &canonical_target, operation, "entry")?;
+        let resolved_metadata = fs::metadata(&canonical_target).map_err(|error| {
+            format!(
+                "{operation} failed to inspect resolved symlink '{}': {error}",
+                canonical_target.display()
+            )
+        })?;
+        if resolved_metadata.is_dir() {
+            let has_children = workspace_directory_has_children_within_workspace(
+                workspace_root,
+                &canonical_target,
+                operation,
+            )?;
+            return Ok((
+                CodexWorkspaceListDirectoryEntryKind::Directory,
+                Some(has_children),
+            ));
+        }
+        if resolved_metadata.is_file() {
+            return Ok((CodexWorkspaceListDirectoryEntryKind::File, None));
+        }
+
+        return Err(format!(
+            "{operation} rejected path '{}': unsupported symlink target type",
+            entry_relative_path.display()
+        ));
+    }
+
+    if metadata.is_dir() {
+        let has_children = workspace_directory_has_children_within_workspace(
+            workspace_root,
+            entry_path,
+            operation,
+        )?;
+        return Ok((
+            CodexWorkspaceListDirectoryEntryKind::Directory,
+            Some(has_children),
+        ));
+    }
+
+    if metadata.is_file() {
+        return Ok((CodexWorkspaceListDirectoryEntryKind::File, None));
+    }
+
+    Err(format!(
+        "{operation} rejected path '{}': unsupported entry type",
+        entry_relative_path.display()
+    ))
+}
+
+fn list_workspace_directory_entries_within_workspace(
+    workspace_root: &Path,
+    directory_path: &Path,
+    requested_relative_path: &Path,
+    operation: &str,
+) -> Result<Vec<CodexWorkspaceListDirectoryEntry>, String> {
+    let mut directories = Vec::<CodexWorkspaceListDirectoryEntry>::new();
+    let mut files = Vec::<CodexWorkspaceListDirectoryEntry>::new();
+
+    let entries = fs::read_dir(directory_path).map_err(|error| {
+        format!(
+            "{operation} failed to read directory '{}': {error}",
+            directory_path.display()
+        )
+    })?;
+
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!(
+                "{operation} failed to read directory entry in '{}': {error}",
+                directory_path.display()
+            )
+        })?;
+        let name_os = entry.file_name();
+        let name = name_os.to_string_lossy().to_string();
+        let entry_relative_path = if requested_relative_path.as_os_str().is_empty() {
+            PathBuf::from(&name_os)
+        } else {
+            requested_relative_path.join(&name_os)
+        };
+        let entry_path = entry.path();
+        let (kind, has_children) = classify_workspace_directory_entry(
+            workspace_root,
+            &entry_path,
+            &entry_relative_path,
+            operation,
+        )?;
+        let output = CodexWorkspaceListDirectoryEntry {
+            name,
+            path: workspace_relative_path_to_string(entry_relative_path.as_path()),
+            kind,
+            has_children,
+        };
+
+        match output.kind {
+            CodexWorkspaceListDirectoryEntryKind::Directory => directories.push(output),
+            CodexWorkspaceListDirectoryEntryKind::File => files.push(output),
+        }
+    }
+
+    directories.sort_by(|left, right| {
+        left.name
+            .to_ascii_lowercase()
+            .cmp(&right.name.to_ascii_lowercase())
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    files.sort_by(|left, right| {
+        left.name
+            .to_ascii_lowercase()
+            .cmp(&right.name.to_ascii_lowercase())
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    directories.extend(files);
+
+    Ok(directories)
+}
+
+fn list_workspace_directory_within_workspace(
+    workspace_root: &Path,
+    workspace_cwd: &Path,
+    requested_path: Option<&str>,
+    operation: &str,
+) -> Result<CodexWorkspaceListDirectoryResponse, String> {
+    let relative_path = normalize_workspace_list_relative_path(operation, requested_path)?;
+    let canonical_target = resolve_workspace_directory_for_list(
+        workspace_root,
+        workspace_cwd,
+        &relative_path,
+        operation,
+    )?;
+    let entries = list_workspace_directory_entries_within_workspace(
+        workspace_root,
+        &canonical_target,
+        &relative_path,
+        operation,
+    )?;
+
+    Ok(CodexWorkspaceListDirectoryResponse {
+        cwd: workspace_cwd.to_string_lossy().to_string(),
+        path: workspace_relative_path_to_string(relative_path.as_path()),
+        entries,
+    })
+}
+
+fn create_workspace_directory_within_workspace(
+    workspace_root: &Path,
+    relative_path: &Path,
+    operation: &str,
+) -> Result<(), String> {
+    let directory_name = relative_path.file_name().ok_or_else(|| {
+        format!(
+            "{operation} rejected unsafe path '{}': missing directory name",
+            relative_path.display()
+        )
+    })?;
+
+    let parent_dir = ensure_secure_workspace_parent(workspace_root, relative_path, operation)?;
+    let target_path = parent_dir.join(directory_name);
+
+    if target_path.exists() {
+        return ensure_existing_workspace_directory_target(
+            workspace_root,
+            relative_path,
+            &target_path,
+            operation,
+        );
+    }
+
+    match fs::create_dir(&target_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+            return ensure_existing_workspace_directory_target(
+                workspace_root,
+                relative_path,
+                &target_path,
+                operation,
+            );
+        }
+        Err(error) => {
+            return Err(format!(
+                "{operation} failed to create directory '{}': {error}",
+                relative_path.display()
+            ));
+        }
+    }
+
+    let canonical_target = fs::canonicalize(&target_path).map_err(|error| {
+        format!(
+            "{operation} failed to canonicalize created directory '{}': {error}",
+            target_path.display()
+        )
+    })?;
+    ensure_path_within_workspace(workspace_root, &canonical_target, operation, "target")?;
+
+    if !canonical_target.is_dir() {
+        return Err(format!(
+            "{operation} rejected path '{}': created target is not a directory",
+            relative_path.display()
+        ));
+    }
+
+    Ok(())
+}
+
+fn rename_workspace_entry_within_workspace(
+    workspace_root: &Path,
+    workspace_cwd: &Path,
+    requested_path: &str,
+    new_name: &str,
+    operation: &str,
+) -> Result<String, String> {
+    let relative_path = normalize_workspace_relative_path(operation, requested_path)?;
+    let normalized_new_name = normalize_workspace_entry_name(operation, new_name)?;
+    let source_name = relative_path.file_name().ok_or_else(|| {
+        format!(
+            "{operation} rejected unsafe path '{}': missing source name",
+            relative_path.display()
+        )
+    })?;
+
+    let source_parent_path = relative_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(|path| workspace_cwd.join(path))
+        .unwrap_or_else(|| workspace_cwd.to_path_buf());
+
+    let canonical_source_parent = fs::canonicalize(&source_parent_path).map_err(|error| {
+        format!(
+            "{operation} failed to canonicalize source parent '{}': {error}",
+            source_parent_path.display()
+        )
+    })?;
+    ensure_path_within_workspace(
+        workspace_root,
+        &canonical_source_parent,
+        operation,
+        "parent",
+    )?;
+    if !canonical_source_parent.is_dir() {
+        return Err(format!(
+            "{operation} rejected source parent '{}': not a directory",
+            source_parent_path.display()
+        ));
+    }
+
+    let source_path = canonical_source_parent.join(source_name);
+    fs::symlink_metadata(&source_path).map_err(|error| {
+        if error.kind() == ErrorKind::NotFound {
+            format!(
+                "{operation} source '{}' does not exist in workspace '{}'",
+                relative_path.display(),
+                workspace_cwd.display()
+            )
+        } else {
+            format!(
+                "{operation} failed to inspect source '{}': {error}",
+                source_path.display()
+            )
+        }
+    })?;
+
+    let canonical_source_target = fs::canonicalize(&source_path).map_err(|error| {
+        format!(
+            "{operation} failed to canonicalize source '{}': {error}",
+            source_path.display()
+        )
+    })?;
+    ensure_path_within_workspace(
+        workspace_root,
+        &canonical_source_target,
+        operation,
+        "source target",
+    )?;
+
+    let destination_path = canonical_source_parent.join(&normalized_new_name);
+    ensure_path_within_workspace(workspace_root, &destination_path, operation, "target path")?;
+    match fs::symlink_metadata(&destination_path) {
+        Ok(_) => {
+            return Err(format!(
+                "{operation} rejected rename '{}': destination '{}' already exists",
+                relative_path.display(),
+                destination_path.display()
+            ));
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "{operation} failed to inspect destination '{}': {error}",
+                destination_path.display()
+            ));
+        }
+    }
+
+    fs::rename(&source_path, &destination_path).map_err(|error| {
+        format!(
+            "{operation} failed to rename '{}' to '{}': {error}",
+            source_path.display(),
+            destination_path.display()
+        )
+    })?;
+
+    let canonical_destination = fs::canonicalize(&destination_path).map_err(|error| {
+        format!(
+            "{operation} failed to canonicalize renamed entry '{}': {error}",
+            destination_path.display()
+        )
+    })?;
+    ensure_path_within_workspace(workspace_root, &canonical_destination, operation, "target")?;
+
+    let renamed_relative_path = relative_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(|path| path.join(&normalized_new_name))
+        .unwrap_or_else(|| PathBuf::from(&normalized_new_name));
+
+    Ok(workspace_relative_path_to_string(
+        renamed_relative_path.as_path(),
+    ))
 }
 
 pub(crate) fn git_commit_approved_review_impl(
@@ -1057,6 +1625,70 @@ pub(crate) fn codex_workspace_write_file_impl(
     Ok(CodexWorkspaceWriteFileResponse {
         path: requested_path,
     })
+}
+
+pub(crate) fn codex_workspace_create_directory_impl(
+    state: State<'_, AppState>,
+    request: CodexWorkspaceCreateDirectoryRequest,
+) -> Result<CodexWorkspaceCreateDirectoryResponse, String> {
+    let operation = WORKSPACE_CREATE_DIRECTORY_OPERATION;
+    let requested_path = request.path;
+    let relative_path = normalize_workspace_relative_path(operation, &requested_path)?;
+
+    let workspace_cwd = active_workspace_cwd(&state, operation)?;
+    let workspace_root = canonicalize_workspace_root(&workspace_cwd, operation)?;
+
+    create_workspace_directory_within_workspace(&workspace_root, &relative_path, operation)?;
+
+    Ok(CodexWorkspaceCreateDirectoryResponse {
+        path: requested_path,
+    })
+}
+
+pub(crate) fn codex_workspace_list_directory_impl(
+    state: State<'_, AppState>,
+    request: CodexWorkspaceListDirectoryRequest,
+) -> Result<CodexWorkspaceListDirectoryResponse, String> {
+    let operation = WORKSPACE_LIST_DIRECTORY_OPERATION;
+    let workspace_cwd = active_workspace_cwd(&state, operation)?;
+    let workspace_root = canonicalize_workspace_root(&workspace_cwd, operation)?;
+
+    list_workspace_directory_within_workspace(
+        &workspace_root,
+        &workspace_cwd,
+        request.path.as_deref(),
+        operation,
+    )
+}
+
+pub(crate) fn codex_workspace_rename_entry_impl(
+    state: State<'_, AppState>,
+    request: CodexWorkspaceRenameEntryRequest,
+) -> Result<CodexWorkspaceRenameEntryResponse, String> {
+    let operation = WORKSPACE_RENAME_ENTRY_OPERATION;
+    let requested_path = request.path;
+    let new_path = {
+        let workspace_cwd = active_workspace_cwd(&state, operation)?;
+        let workspace_root = canonicalize_workspace_root(&workspace_cwd, operation)?;
+        rename_workspace_entry_within_workspace(
+            &workspace_root,
+            &workspace_cwd,
+            &requested_path,
+            &request.new_name,
+            operation,
+        )?
+    };
+
+    Ok(CodexWorkspaceRenameEntryResponse {
+        path: requested_path,
+        new_path,
+    })
+}
+
+pub(crate) fn pick_workspace_folder_impl() -> Option<String> {
+    rfd::FileDialog::new()
+        .pick_folder()
+        .map(|path| path.to_string_lossy().to_string())
 }
 
 pub(crate) fn codex_models_list_impl(
@@ -1573,10 +2205,28 @@ pub(crate) async fn codex_mcp_reload_impl(
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_git_status, default_runtime_capabilities, disable_methods_for_native_transport,
-        extract_capabilities_contract_version, parse_git_status_porcelain,
+        classify_git_status, create_workspace_directory_within_workspace,
+        default_runtime_capabilities, disable_methods_for_native_transport,
+        extract_capabilities_contract_version, list_workspace_directory_within_workspace,
+        parse_git_status_porcelain, rename_workspace_entry_within_workspace,
+        CodexWorkspaceListDirectoryEntryKind,
     };
     use serde_json::json;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_path(label: &str) -> PathBuf {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "alicia_backend_command_runtime_{label}_{}_{}",
+            std::process::id(),
+            now
+        ))
+    }
 
     #[test]
     fn parse_untracked_entry() {
@@ -1737,6 +2387,17 @@ mod tests {
             "neuro.search.objects",
             "neuro.get.source",
             "neuro.update.source",
+            "neuro.adt.server.list",
+            "neuro.adt.server.upsert",
+            "neuro.adt.server.remove",
+            "neuro.adt.server.select",
+            "neuro.adt.server.connect",
+            "neuro.adt.list.packages",
+            "neuro.adt.list.namespaces",
+            "neuro.adt.explorer.state.get",
+            "neuro.adt.explorer.state.patch",
+            "neuro.adt.list.objects",
+            "neuro.adt.list.package_inventory",
             "neuro.ws.request",
             "neuro.mcp.list_tools",
             "neuro.mcp.invoke",
@@ -1752,12 +2413,265 @@ mod tests {
     #[test]
     fn runtime_capabilities_include_workspace_file_methods() {
         let methods = default_runtime_capabilities();
-        for method in ["workspace.file.read", "workspace.file.write"] {
+        for method in [
+            "workspace.file.read",
+            "workspace.file.write",
+            "workspace.directory.create",
+            "workspace.directory.list",
+            "workspace.entry.rename",
+        ] {
             assert_eq!(
                 methods.get(method),
                 Some(&true),
                 "workspace capability should stay enabled: {method}"
             );
         }
+    }
+
+    #[test]
+    fn workspace_directory_list_orders_directories_before_files() {
+        let temp_root = unique_temp_path("list_ordering");
+        let workspace = temp_root.join("workspace");
+        fs::create_dir_all(workspace.join("alpha_empty")).expect("alpha directory should exist");
+        fs::create_dir_all(workspace.join("zeta_nested")).expect("zeta directory should exist");
+        fs::write(workspace.join("zeta_nested/item.txt"), "x")
+            .expect("nested file should be created");
+        fs::write(workspace.join("Beta.txt"), "x").expect("file should be created");
+        fs::write(workspace.join("omega.txt"), "x").expect("file should be created");
+
+        let workspace_root = fs::canonicalize(&workspace).expect("workspace should canonicalize");
+        let response = list_workspace_directory_within_workspace(
+            &workspace_root,
+            &workspace_root,
+            None,
+            "codex_workspace_list_directory",
+        )
+        .expect("listing should succeed");
+
+        assert_eq!(response.path, "");
+        assert_eq!(response.entries.len(), 4);
+
+        assert_eq!(response.entries[0].name, "alpha_empty");
+        assert_eq!(response.entries[0].path, "alpha_empty");
+        assert!(matches!(
+            &response.entries[0].kind,
+            CodexWorkspaceListDirectoryEntryKind::Directory
+        ));
+        assert_eq!(response.entries[0].has_children, Some(false));
+
+        assert_eq!(response.entries[1].name, "zeta_nested");
+        assert!(matches!(
+            &response.entries[1].kind,
+            CodexWorkspaceListDirectoryEntryKind::Directory
+        ));
+        assert_eq!(response.entries[1].has_children, Some(true));
+
+        assert_eq!(response.entries[2].name, "Beta.txt");
+        assert!(matches!(
+            &response.entries[2].kind,
+            CodexWorkspaceListDirectoryEntryKind::File
+        ));
+        assert_eq!(response.entries[2].has_children, None);
+
+        assert_eq!(response.entries[3].name, "omega.txt");
+        assert!(matches!(
+            &response.entries[3].kind,
+            CodexWorkspaceListDirectoryEntryKind::File
+        ));
+        assert_eq!(response.entries[3].has_children, None);
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn workspace_directory_list_rejects_non_normal_relative_path() {
+        let temp_root = unique_temp_path("list_reject_non_normal");
+        let workspace = temp_root.join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace should be created");
+
+        let workspace_root = fs::canonicalize(&workspace).expect("workspace should canonicalize");
+        let error = list_workspace_directory_within_workspace(
+            &workspace_root,
+            &workspace_root,
+            Some("../outside"),
+            "codex_workspace_list_directory",
+        )
+        .expect_err("path traversal should be rejected");
+        assert!(error.contains("non-normal components are not allowed"));
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn workspace_directory_list_returns_relative_paths_for_nested_directory() {
+        let temp_root = unique_temp_path("list_nested");
+        let workspace = temp_root.join("workspace");
+        fs::create_dir_all(workspace.join("nested/deeper"))
+            .expect("nested directories should exist");
+        fs::write(workspace.join("nested/file.txt"), "x").expect("file should be created");
+
+        let workspace_root = fs::canonicalize(&workspace).expect("workspace should canonicalize");
+        let response = list_workspace_directory_within_workspace(
+            &workspace_root,
+            &workspace_root,
+            Some("nested"),
+            "codex_workspace_list_directory",
+        )
+        .expect("listing should succeed");
+
+        assert_eq!(response.path, "nested");
+        assert_eq!(response.entries.len(), 2);
+        assert_eq!(response.entries[0].path, "nested/deeper");
+        assert_eq!(response.entries[1].path, "nested/file.txt");
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn workspace_directory_create_is_idempotent_for_existing_directory() {
+        let temp_root = unique_temp_path("mkdir_idempotent");
+        let workspace = temp_root.join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace should be created");
+
+        let workspace_root = fs::canonicalize(&workspace).expect("workspace should canonicalize");
+        let relative_path = Path::new("nested/child");
+        create_workspace_directory_within_workspace(
+            &workspace_root,
+            relative_path,
+            "codex_workspace_create_directory",
+        )
+        .expect("first create should succeed");
+        create_workspace_directory_within_workspace(
+            &workspace_root,
+            relative_path,
+            "codex_workspace_create_directory",
+        )
+        .expect("second create should be idempotent");
+
+        assert!(workspace_root.join(relative_path).is_dir());
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn workspace_directory_create_rejects_existing_file_target() {
+        let temp_root = unique_temp_path("mkdir_existing_file");
+        let workspace = temp_root.join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace should be created");
+        fs::create_dir_all(workspace.join("nested")).expect("parent should be created");
+        fs::write(workspace.join("nested/child"), "content").expect("file should be created");
+
+        let workspace_root = fs::canonicalize(&workspace).expect("workspace should canonicalize");
+        let error = create_workspace_directory_within_workspace(
+            &workspace_root,
+            Path::new("nested/child"),
+            "codex_workspace_create_directory",
+        )
+        .expect_err("existing file target should fail");
+        assert!(error.contains("target exists and is not a directory"));
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn workspace_entry_rename_succeeds_for_file_and_directory() {
+        let temp_root = unique_temp_path("rename_success");
+        let workspace = temp_root.join("workspace");
+        fs::create_dir_all(workspace.join("nested")).expect("nested directory should be created");
+        fs::write(workspace.join("nested/old.txt"), "content").expect("file should be created");
+        fs::create_dir_all(workspace.join("nested/old_dir"))
+            .expect("old directory should be created");
+
+        let workspace_root = fs::canonicalize(&workspace).expect("workspace should canonicalize");
+
+        let renamed_file = rename_workspace_entry_within_workspace(
+            &workspace_root,
+            &workspace_root,
+            "nested/old.txt",
+            "new.txt",
+            "codex_workspace_rename_entry",
+        )
+        .expect("file rename should succeed");
+        assert_eq!(renamed_file, "nested/new.txt");
+        assert!(workspace_root.join("nested/new.txt").exists());
+        assert!(!workspace_root.join("nested/old.txt").exists());
+
+        let renamed_directory = rename_workspace_entry_within_workspace(
+            &workspace_root,
+            &workspace_root,
+            "nested/old_dir",
+            "new_dir",
+            "codex_workspace_rename_entry",
+        )
+        .expect("directory rename should succeed");
+        assert_eq!(renamed_directory, "nested/new_dir");
+        assert!(workspace_root.join("nested/new_dir").is_dir());
+        assert!(!workspace_root.join("nested/old_dir").exists());
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn workspace_entry_rename_rejects_invalid_new_name() {
+        let temp_root = unique_temp_path("rename_invalid_name");
+        let workspace = temp_root.join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace should be created");
+        fs::write(workspace.join("old.txt"), "content").expect("file should be created");
+
+        let workspace_root = fs::canonicalize(&workspace).expect("workspace should canonicalize");
+        let error = rename_workspace_entry_within_workspace(
+            &workspace_root,
+            &workspace_root,
+            "old.txt",
+            "..",
+            "codex_workspace_rename_entry",
+        )
+        .expect_err("invalid newName should fail");
+        assert!(error.contains("'.' and '..' are not allowed"));
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn workspace_entry_rename_rejects_existing_destination() {
+        let temp_root = unique_temp_path("rename_overwrite");
+        let workspace = temp_root.join("workspace");
+        fs::create_dir_all(workspace.join("nested")).expect("nested directory should be created");
+        fs::write(workspace.join("nested/source.txt"), "source").expect("source should exist");
+        fs::write(workspace.join("nested/target.txt"), "target")
+            .expect("target should already exist");
+
+        let workspace_root = fs::canonicalize(&workspace).expect("workspace should canonicalize");
+        let error = rename_workspace_entry_within_workspace(
+            &workspace_root,
+            &workspace_root,
+            "nested/source.txt",
+            "target.txt",
+            "codex_workspace_rename_entry",
+        )
+        .expect_err("destination overwrite should fail");
+        assert!(error.contains("destination"));
+        assert!(error.contains("already exists"));
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn workspace_entry_rename_rejects_path_traversal() {
+        let temp_root = unique_temp_path("rename_traversal");
+        let workspace = temp_root.join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace should be created");
+
+        let workspace_root = fs::canonicalize(&workspace).expect("workspace should canonicalize");
+        let error = rename_workspace_entry_within_workspace(
+            &workspace_root,
+            &workspace_root,
+            "../outside.txt",
+            "renamed.txt",
+            "codex_workspace_rename_entry",
+        )
+        .expect_err("path traversal should fail");
+        assert!(error.contains("non-normal components are not allowed"));
+
+        let _ = fs::remove_dir_all(temp_root);
     }
 }

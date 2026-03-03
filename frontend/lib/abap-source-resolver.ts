@@ -177,16 +177,27 @@ const SEARCH_RESULT_REVALIDATION_LIMIT = 100
 async function revalidateUniqueMatch(
   term: string,
   expectedObjectTypes: Set<string> | null,
+  serverId: string | null | undefined,
   matcher: (results: NeuroAdtObjectSummary[]) => NeuroAdtObjectSummary[],
 ): Promise<NeuroAdtObjectSummary[]> {
-  const rawResults = await neuroSearchObjects(term, SEARCH_RESULT_REVALIDATION_LIMIT)
+  const rawResults = await neuroSearchObjects(
+    term,
+    SEARCH_RESULT_REVALIDATION_LIMIT,
+    serverId,
+  )
   const filteredResults = filterByExpectedObjectTypes(rawResults, expectedObjectTypes)
   return matcher(filteredResults)
 }
 
+interface ResolveAbapSourceRefOptions {
+  serverId?: string | null
+}
+
 export async function resolveAbapSourceRef(
   ref: string,
+  options: ResolveAbapSourceRefOptions = {},
 ): Promise<ResolvedAbapSourceRef> {
+  const serverId = options.serverId ?? null
   const normalizedRef = normalizeInputRef(ref)
 
   if (!normalizedRef) {
@@ -239,7 +250,7 @@ export async function resolveAbapSourceRef(
     >()
 
     for (const term of searchTerms) {
-      const rawResults = await neuroSearchObjects(term, SEARCH_RESULT_LIMIT)
+      const rawResults = await neuroSearchObjects(term, SEARCH_RESULT_LIMIT, serverId)
       searchedTerms.push(term)
 
       const results = filterByExpectedObjectTypes(rawResults, expectedObjectTypes)
@@ -252,6 +263,7 @@ export async function resolveAbapSourceRef(
         const revalidatedExactMatches = await revalidateUniqueMatch(
           term,
           expectedObjectTypes,
+          serverId,
           (revalidatedResults) => findExactNameMatches(revalidatedResults, term),
         )
 
@@ -283,6 +295,7 @@ export async function resolveAbapSourceRef(
         const revalidatedBroadMatches = await revalidateUniqueMatch(
           term,
           expectedObjectTypes,
+          serverId,
           (revalidatedResults) => revalidatedResults,
         )
         if (revalidatedBroadMatches.length !== 1) {

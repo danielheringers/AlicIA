@@ -32,7 +32,7 @@ export const metadata: Metadata = {
 }
 
 export const viewport: Viewport = {
-  themeColor: '#252525',
+  themeColor: '#1a1b1e',
 }
 
 export default function RootLayout({
@@ -41,8 +41,8 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en" className={_jetbrainsMono.variable}>
-      <body className="font-mono antialiased">
+    <html lang="en" className={`${_jetbrainsMono.variable} h-full`}>
+      <body className="h-full min-h-dvh bg-[var(--ide-app-bg)] font-mono antialiased">
         {children}
         <Analytics />
       </body>

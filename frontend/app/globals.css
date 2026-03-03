@@ -5,42 +5,42 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --background: #252525;
-  --foreground: #b3b6bb;
-  --card: #2b2d30;
-  --card-foreground: #b3b6bb;
-  --popover: #2b2d30;
-  --popover-foreground: #b3b6bb;
+  --background: #0e0e10;
+  --foreground: #c4c8ce;
+  --card: #141416;
+  --card-foreground: #c4c8ce;
+  --popover: #141416;
+  --popover-foreground: #c4c8ce;
   --primary: #39CC9B;
   --primary-foreground: #1a1a1a;
-  --secondary: #44474b;
-  --secondary-foreground: #b3b6bb;
-  --muted: #2b2d30;
-  --muted-foreground: #77797c;
+  --secondary: #242428;
+  --secondary-foreground: #c4c8ce;
+  --muted: #141416;
+  --muted-foreground: #8f949d;
   --accent: #6c95eb;
   --accent-foreground: #1a1a1a;
   --destructive: #cf4d4d;
   --destructive-foreground: #ffffff;
-  --border: #171718dc;
-  --input: #44474b5d;
+  --border: #242428;
+  --input: #242428;
   --ring: #39CC9B;
   --chart-1: #39CC9B;
   --chart-2: #6c95eb;
   --chart-3: #c9a26d;
   --chart-4: #9a94e9;
   --chart-5: #ed94c0;
-  --radius: 0.5rem;
-  --sidebar: #1e1f22;
-  --sidebar-foreground: #b3b6bb;
+  --radius: 0.25rem;
+  --sidebar: #141416;
+  --sidebar-foreground: #c4c8ce;
   --sidebar-primary: #39CC9B;
   --sidebar-primary-foreground: #1a1a1a;
-  --sidebar-accent: #2e436e;
-  --sidebar-accent-foreground: #b9bcc0;
-  --sidebar-border: #171718dc;
+  --sidebar-accent: #17263d;
+  --sidebar-accent-foreground: #c4c8ce;
+  --sidebar-border: #242428;
   --sidebar-ring: #39CC9B;
 
   /* Custom Alicia tokens */
-  --terminal-bg: #1e1f22;
+  --terminal-bg: #0f1012;
   --terminal-fg: #C5CFD9;
   --terminal-green: #39CC9B;
   --terminal-blue: #6c95eb;
@@ -50,10 +50,30 @@
   --terminal-cyan: #66c3cc;
   --terminal-pink: #ed94c0;
   --terminal-comment: #76a862;
-  --panel-bg: #2b2d30;
-  --panel-border: #171718dc;
+  --panel-bg: #141416;
+  --panel-border: #242428;
   --selection: #093866d3;
   --line-highlight: #202424;
+
+  /* IDE shell tokens */
+  --ide-app-bg: #0e0e10;
+  --ide-surface-0: #0e0e10;
+  --ide-surface-1: #141416;
+  --ide-surface-2: #1a1a1d;
+  --ide-surface-3: #202024;
+  --ide-surface-4: #242428;
+  --ide-border-subtle: #242428;
+  --ide-border-strong: #2d2d32;
+  --ide-hover: #1d2229;
+  --ide-active: #202a38;
+  --ide-tab-active: #101013;
+  --ide-tab-idle: #1a1a1d;
+  --ide-titlebar-height: 32px;
+  --ide-toolbar-height: 30px;
+  --ide-status-height: 22px;
+  --ide-activity-width: 44px;
+  --ide-sidebar-width: 200px;
+  --ide-radius: 6px;
 }
 
 @theme inline {
@@ -119,23 +139,117 @@
   }
   body {
     @apply bg-background text-foreground;
+    min-height: 100dvh;
+  }
+}
+
+.alicia-shell-root {
+  width: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  font-family: var(--font-mono), 'JetBrains Mono', 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.alicia-panel-chrome {
+  border: 0;
+  border-radius: 0;
+  background: var(--ide-surface-0);
+  box-shadow: none;
+}
+
+.alicia-panel-titlebar {
+  height: 30px;
+  border-bottom: 1px solid var(--ide-border-subtle);
+  background: var(--ide-surface-1);
+}
+
+.alicia-status-chip {
+  border: 1px solid var(--ide-border-subtle);
+  border: 1px solid color-mix(in oklab, var(--terminal-blue) 16%, var(--ide-border-subtle));
+  background: var(--ide-surface-1);
+  background: color-mix(in oklab, var(--terminal-blue) 5%, var(--ide-surface-1));
+}
+
+.alicia-status-bar {
+  background: var(--ide-surface-1);
+  background: color-mix(in oklab, var(--terminal-blue) 18%, var(--ide-surface-1));
+  border-top: 1px solid var(--ide-border-subtle);
+  border-top: 1px solid color-mix(in oklab, var(--terminal-blue) 36%, var(--ide-border-subtle));
+  height: var(--ide-status-height);
+}
+
+.alicia-sidebar-session-row {
+  min-height: 18px;
+}
+
+.zen-exit-overlay {
+  position: fixed;
+  inset-inline: 0;
+  bottom: 14px;
+  z-index: 60;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.zen-exit-button {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--ide-border-strong);
+  border-radius: 999px;
+  background: var(--ide-surface-1);
+  background: color-mix(in oklab, var(--ide-surface-1) 90%, black);
+  box-shadow: 0 6px 22px #00000050;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--terminal-fg);
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.zen-exit-button:hover {
+  background: var(--ide-surface-2);
+  border-color: var(--terminal-blue);
+}
+
+.zen-exit-button:focus-visible {
+  outline: 2px solid var(--terminal-blue);
+  outline: 2px solid color-mix(in oklab, var(--terminal-blue) 65%, white);
+  outline-offset: 2px;
+}
+
+.terminal-tab-close {
+  opacity: 1;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .terminal-tab-close {
+    opacity: 0;
+  }
+
+  .group:hover .terminal-tab-close,
+  .terminal-tab-close:focus-visible {
+    opacity: 1;
   }
 }
 
 /* Custom scrollbar for terminal feel */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #252525;
+  background: var(--ide-app-bg);
 }
 ::-webkit-scrollbar-thumb {
-  background: #4d4e5188;
-  border-radius: 4px;
+  background: #4f556088;
+  border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #55575aa8;
+  background: #616875b0;
 }
 
 /* Blinking cursor */
@@ -186,4 +300,8 @@
 
 .xterm .xterm-viewport {
   overflow-y: auto;
+}
+
+.xterm .xterm-screen {
+  height: 100%;
 }

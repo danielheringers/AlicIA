@@ -43,8 +43,8 @@ describe("resolveAbapSourceRef", () => {
     await expect(resolveAbapSourceRef("ZCL_COLLIDE")).rejects.toMatchObject({
       code: "ambiguous",
     })
-    expect(neuroSearchObjectsMock).toHaveBeenCalledWith("ZCL_COLLIDE", 12)
-    expect(neuroSearchObjectsMock).toHaveBeenCalledWith("ZCL_COLLIDE", 100)
+    expect(neuroSearchObjectsMock).toHaveBeenCalledWith("ZCL_COLLIDE", 12, null)
+    expect(neuroSearchObjectsMock).toHaveBeenCalledWith("ZCL_COLLIDE", 100, null)
   })
 
   it("usa sufixo .clas.abap para filtrar tipo esperado", async () => {

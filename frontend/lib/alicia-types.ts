@@ -154,6 +154,7 @@ export const SUPPORTED_SLASH_COMMANDS: SlashCommand[] = [
   { command: "/review", label: "Review", description: "Request code review", category: "agent", support: "supported" },
   { command: "/review-file", label: "Review File", description: "Request review for selected file", category: "agent", support: "supported" },
   { command: "/diff", label: "Diff", description: "Show current changes diff", category: "agent", support: "supported" },
+  { command: "/adt", label: "ADT", description: "Conectar ou verificar status de servidores ADT", category: "debug", support: "supported" },
   { command: "/mcp", label: "MCP", description: "View MCP server status and tools", category: "debug", support: "supported" },
   { command: "/apps", label: "Apps", description: "Manage connected apps", category: "debug", support: "supported" },
   { command: "/status", label: "Status", description: "Show system status", category: "debug", support: "supported" },
@@ -252,6 +253,7 @@ export interface AliciaState {
     | "model"
     | "permissions"
     | "mcp"
+    | "adt"
     | "sessions"
     | "apps"
     | "review"

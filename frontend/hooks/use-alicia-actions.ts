@@ -28,7 +28,15 @@ import {
   type UserInputRequestState,
 } from "@/lib/alicia-runtime-helpers"
 import {
+  isExplicitAdtConnectionTestIntent,
+  isExplicitAdtStatusIntent,
+  parseAdtSlashIntent,
+  type AdtChatIntent,
+} from "@/lib/adt-chat-intents"
+import { formatAdtRuntimeError } from "@/lib/adt-runtime-error"
+import {
   codexAccountLogout,
+  codexRuntimeStatus,
   codexRuntimeSessionStop,
   codexConfigGet,
   codexConfigSet,
@@ -41,6 +49,9 @@ import {
   codexThreadRollback,
   codexThreadUnarchive,
   codexTurnRun,
+  neuroAdtServerConnect,
+  neuroAdtServerList,
+  neuroAdtServerSelect,
   runCodexCommand,
   sendCodexInput,
   type CodexInputItem,
@@ -90,6 +101,15 @@ interface UseAliciaActionsParams {
   availableModels: CodexModel[]
   reviewRoutingRef: MutableRefObject<boolean>
   refreshWorkspaceChanges: () => Promise<void>
+  onAdtServerSelectionChange?: (
+    serverId: string | null,
+    options?: { refreshExplorer?: boolean },
+  ) => void
+  sapContextSnapshot?: {
+    serverId?: string | null
+    workPackage?: string | null
+    focusedObjectUri?: string | null
+  } | null
 }
 
 interface ParsedSlashCommand {
@@ -109,6 +129,27 @@ function parseSlashCommandInput(input: string): ParsedSlashCommand {
 interface ParsedReviewSlash {
   target: ReviewTarget
   delivery?: ReviewDelivery | null
+}
+
+export function buildSapContextInputText(
+  snapshot?: {
+    serverId?: string | null
+    workPackage?: string | null
+    focusedObjectUri?: string | null
+  } | null,
+): string | null {
+  const payload = [
+    snapshot?.serverId ? `serverId=${snapshot.serverId}` : null,
+    snapshot?.workPackage ? `workPackage=${snapshot.workPackage}` : null,
+    snapshot?.focusedObjectUri ? `focusedObject=${snapshot.focusedObjectUri}` : null,
+  ]
+    .filter(Boolean)
+    .join(" ")
+
+  if (!payload) {
+    return null
+  }
+  return `[sap-context] ${payload}`
 }
 
 function decodeEscapedToken(token: string): string {
@@ -273,6 +314,8 @@ export function useAliciaActions({
   availableModels,
   reviewRoutingRef,
   refreshWorkspaceChanges,
+  onAdtServerSelectionChange,
+  sapContextSnapshot,
 }: UseAliciaActionsParams) {
   const [sessionActionPending, setSessionActionPending] = useState<{
     sessionId: string
@@ -299,6 +342,116 @@ export function useAliciaActions({
     },
     [setAliciaState],
   )
+
+  const syncRuntimeStatus = useCallback(async () => {
+    try {
+      const status = await codexRuntimeStatus()
+      setRuntime((prev) => ({
+        ...prev,
+        connected: true,
+        state: status.sessionId != null ? "running" : "idle",
+        sessionId: status.sessionId ?? null,
+        pid: status.pid ?? null,
+        workspace: status.workspace,
+      }))
+      return status
+    } catch {
+      return null
+    }
+  }, [setRuntime])
+
+  const clearRuntimeSessionState = useCallback(() => {
+    setRuntime((prev) => ({
+      ...prev,
+      state: "idle",
+      sessionId: null,
+      pid: null,
+    }))
+  }, [setRuntime])
+
+  const executeAdtChatIntent = useCallback(
+    async (intent: Extract<AdtChatIntent, { type: "connect" | "status" }>) => {
+      const listResponse = await neuroAdtServerList()
+      const servers = listResponse.servers
+      const selectedServerId = (listResponse.selectedServerId ?? "").trim() || null
+
+      if (intent.type === "status") {
+        if (servers.length === 0) {
+          addMessage("system", "[adt] nenhum servidor ADT cadastrado.")
+          return
+        }
+
+        const rows = servers.map((server) => {
+          const suffix = server.id === selectedServerId ? " (ativo)" : ""
+          return `- ${server.id}${suffix}`
+        })
+
+        let signalLine = "[adt] conexao atual: sem servidor ativo."
+        if (selectedServerId) {
+          try {
+            const probe = await neuroAdtServerConnect(selectedServerId)
+            signalLine = `[adt] conexao atual (${selectedServerId}): ${probe.connected ? "ok" : "falha"}.`
+          } catch (error) {
+            signalLine = `[adt] conexao atual (${selectedServerId}): erro (${formatAdtRuntimeError(error)}).`
+          }
+        }
+
+        addMessage(
+          "system",
+          `[adt] servidores (${servers.length}):\n${rows.join("\n")}\n${signalLine}`,
+        )
+        return
+      }
+
+      if (servers.length === 0) {
+        addMessage("system", "[adt] nenhum servidor ADT cadastrado para conectar.")
+        return
+      }
+
+      const requestedServerId = (intent.serverId ?? "").trim()
+      const activeServerId = selectedServerId
+      let targetServerId = requestedServerId || activeServerId
+
+      if (!targetServerId) {
+        addMessage(
+          "system",
+          "[adt] nenhum servidor ADT ativo. Use /adt connect <server-id>.",
+        )
+        return
+      }
+
+      const knownServer = servers.find((server) => server.id === targetServerId)
+      if (!knownServer) {
+        addMessage(
+          "system",
+          `[adt] servidor ADT "${targetServerId}" nao encontrado. Use /adt status para listar.`,
+        )
+        return
+      }
+
+      if (requestedServerId && requestedServerId !== selectedServerId) {
+        try {
+          targetServerId = await neuroAdtServerSelect(requestedServerId)
+          onAdtServerSelectionChange?.(targetServerId, { refreshExplorer: false })
+        } catch (error) {
+          addMessage(
+            "system",
+            `[adt] falha ao selecionar servidor ativo "${requestedServerId}": ${formatAdtRuntimeError(error)}.`,
+          )
+          return
+        }
+      }
+
+      const response = await neuroAdtServerConnect(targetServerId)
+      onAdtServerSelectionChange?.(targetServerId, { refreshExplorer: true })
+      const fallbackMessage = response.connected
+        ? `[adt] conexao ADT ativa para ${response.serverId}.`
+        : `[adt] falha ao conectar ${response.serverId}.`
+
+      addMessage("system", response.message ?? fallbackMessage)
+    },
+    [addMessage, onAdtServerSelectionChange],
+  )
   const handleSubmit = useCallback(
     async (value: string) => {
       const text = value.trim()
@@ -311,11 +464,59 @@ export function useAliciaActions({
         .join("\n")
       addMessage("user", preview)
 
+      if (
+        text &&
+        pendingMentions.length === 0 &&
+        pendingImages.length === 0 &&
+        isExplicitAdtConnectionTestIntent(text)
+      ) {
+        try {
+          await executeAdtChatIntent({ type: "connect", serverId: null })
+        } catch (error) {
+          addMessage(
+            "system",
+            `[adt] nao foi possivel testar conexao ADT no frontend: ${formatAdtRuntimeError(error)}`,
+          )
+        }
+        return
+      }
+
+      if (
+        text &&
+        pendingMentions.length === 0 &&
+        pendingImages.length === 0 &&
+        isExplicitAdtStatusIntent(text)
+      ) {
+        try {
+          await executeAdtChatIntent({ type: "status" })
+        } catch (error) {
+          addMessage(
+            "system",
+            `[adt] nao foi possivel verificar status ADT no frontend: ${formatAdtRuntimeError(error)}`,
+          )
+        }
+        return
+      }
+
       if (!(await ensureSession(false))) {
         return
       }
 
       const inputItems: CodexInputItem[] = []
+      const sapContextText = buildSapContextInputText(sapContextSnapshot)
+      if (sapContextText) {
+        inputItems.push({
+          type: "text",
+          text: sapContextText,
+        })
+      }
+      const mentionsAdt = /\badt\b/i.test(text)
+      if (mentionsAdt) {
+        inputItems.push({
+          type: "text",
+          text: "[contexto-ui] ADT e gerido nativamente pela UI. Para conexao/status use o fluxo ADT do frontend; nao tente usar CLI `adt`.",
+        })
+      }
       if (text) inputItems.push({ type: "text", text })
       pendingMentions.forEach((path) => inputItems.push({ type: "mention", path }))
       pendingImages.forEach((path) => inputItems.push({ type: "local_image", path }))
@@ -345,7 +546,9 @@ export function useAliciaActions({
       setPendingImages,
       setPendingMentions,
       setIsThinking,
+      sapContextSnapshot,
       threadIdRef,
+      executeAdtChatIntent,
     ],
   )
 
@@ -388,6 +591,29 @@ export function useAliciaActions({
         return
       }
 
+      if (normalizedName === "/adt") {
+        const intent = parseAdtSlashIntent(command)
+        if (!intent) {
+          addMessage("system", "[adt] uso: /adt [connect [server-id] | status]")
+          return
+        }
+
+        if (intent.type === "invalid") {
+          addMessage("system", `[adt] ${intent.message}`)
+          return
+        }
+
+        try {
+          await executeAdtChatIntent(intent)
+        } catch (error) {
+          addMessage(
+            "system",
+            `[adt] comando indisponivel no frontend: ${formatAdtRuntimeError(error)}`,
+          )
+        }
+        return
+      }
+
       if (normalizedName === "/model" || normalizedName === "/models") {
         await openModelPanel(true)
         return
@@ -423,6 +649,7 @@ export function useAliciaActions({
       if (normalizedName === "/new") {
         threadIdRef.current = null
         await ensureSession(true)
+        await syncRuntimeStatus()
         return
       }
       if (normalizedName === "/diff") {
@@ -776,12 +1003,8 @@ export function useAliciaActions({
       }
       if (normalizedName === "/quit" || normalizedName === "/exit") {
         await codexRuntimeSessionStop()
-        setRuntime((prev) => ({
-          ...prev,
-          state: "idle",
-          sessionId: null,
-          pid: null,
-        }))
+        clearRuntimeSessionState()
+        await syncRuntimeStatus()
         return
       }
       addMessage("system", "[slash] unsupported command: " + slashDefinition.command)
@@ -796,15 +1019,17 @@ export function useAliciaActions({
       refreshMcpServers,
       refreshAppsAndAuth,
       refreshThreadList,
+      clearRuntimeSessionState,
       setAliciaState,
       setIsThinking,
-      setRuntime,
+      syncRuntimeStatus,
       supportsRuntimeMethod,
       threadIdRef,
       turnDiff,
       reviewRoutingRef,
       refreshWorkspaceChanges,
       runtimeConfigRef,
+      executeAdtChatIntent,
     ],
   )
 
@@ -939,6 +1164,8 @@ export function useAliciaActions({
           threadIdRef.current = opened.threadId || selectedThreadId
         }
 
+        await syncRuntimeStatus()
+
         const threadToRead = threadIdRef.current ?? selectedThreadId
         if (threadToRead) {
           try {
@@ -1000,6 +1227,7 @@ export function useAliciaActions({
       setPendingUserInput,
       setTurnDiff,
       setTurnPlan,
+      syncRuntimeStatus,
       supportsRuntimeMethod,
       threadIdRef,
       reviewRoutingRef,

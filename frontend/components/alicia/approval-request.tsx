@@ -31,11 +31,11 @@ export function ApprovalRequest({
 
   return (
     <div
-      className="mx-5 my-2 ml-14 rounded-lg border-2 border-dashed overflow-hidden"
+      className="mx-5 my-2 ml-14 overflow-hidden rounded-md border-2 border-dashed"
       style={{ borderColor: `var(--${config.color})` }}
     >
       <div
-        className="flex items-center gap-2 px-3 py-2 border-b border-panel-border"
+        className="flex items-center gap-2 border-b border-[var(--ide-border-subtle)] px-3 py-2"
         style={{
           backgroundColor: `color-mix(in srgb, var(--${config.color}) 8%, transparent)`,
         }}
@@ -52,7 +52,7 @@ export function ApprovalRequest({
           {config.label}
         </span>
       </div>
-      <div className="px-3 py-2.5 bg-background/30">
+      <div className="bg-[var(--ide-surface-0)]/60 px-3 py-2.5">
         <p className="text-xs text-muted-foreground mb-1">
           Agent wants to execute:{" "}
           <span className="text-terminal-cyan font-mono">{toolName}</span>
@@ -76,7 +76,7 @@ export function ApprovalRequest({
           {onCancel && (
             <button
               onClick={onCancel}
-              className="flex items-center gap-1 px-3 py-1.5 rounded text-xs text-muted-foreground hover:text-terminal-fg hover:bg-[#b9bcc01c] border border-panel-border transition-colors"
+              className="flex items-center gap-1 rounded border border-[var(--ide-border-subtle)] px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-[var(--ide-hover)] hover:text-terminal-fg"
             >
               Cancel Turn
             </button>
@@ -84,7 +84,7 @@ export function ApprovalRequest({
           {onAlwaysApprove && (
             <button
               onClick={onAlwaysApprove}
-              className="flex items-center gap-1 px-3 py-1.5 rounded text-xs text-muted-foreground hover:text-terminal-fg hover:bg-[#b9bcc01c] border border-panel-border transition-colors"
+              className="flex items-center gap-1 rounded border border-[var(--ide-border-subtle)] px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-[var(--ide-hover)] hover:text-terminal-fg"
             >
               Approve for Session
             </button>

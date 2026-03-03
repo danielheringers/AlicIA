@@ -102,6 +102,7 @@ export function CommandInput({
     }
 
     if (e.key === "Escape" && showPalette) {
+      e.preventDefault()
       setShowPalette(false)
       setValue("")
     }
@@ -128,7 +129,11 @@ export function CommandInput({
   const isDisabled = Boolean(disabled || isSubmitting)
 
   return (
-    <div ref={containerRef} className="border-t border-panel-border bg-panel-bg p-3 shrink-0">
+    <div
+      ref={containerRef}
+      data-command-input="true"
+      className="shrink-0 border-t border-[var(--ide-border-subtle)] bg-[var(--ide-surface-1)] px-2 pb-1.5 pt-1 md:px-2.5"
+    >
       {showPalette && (
         <CommandPalette
           filter={paletteFilter}
@@ -142,17 +147,28 @@ export function CommandInput({
         />
       )}
 
+      {(value.length > 0 || pendingImages.length > 0 || pendingMentions.length > 0) && (
+        <div className="mb-1 flex items-center justify-end text-[10px] text-muted-foreground/50">
+          <span>{value.length > 0 ? `${value.length} caracteres` : "anexos prontos"}</span>
+        </div>
+      )}
+
       {(pendingImages.length > 0 || pendingMentions.length > 0) && (
-        <div className="mb-2 flex flex-wrap gap-1.5">
+        <div className="mb-1 flex flex-wrap gap-1">
           {pendingMentions.map((path, index) => (
             <span
               key={`mention-${path}-${index}`}
-              className="inline-flex items-center gap-1 rounded border border-terminal-blue/30 bg-terminal-blue/10 px-2 py-1 text-[10px] text-terminal-blue"
+              className="inline-flex items-center gap-1 rounded border border-terminal-blue/25 bg-terminal-blue/10 px-1.5 py-0.5 text-[10px] text-terminal-blue"
             >
               <AtSign className="h-3 w-3" />
               {fileLabel(path)}
               {onRemoveMention && (
-                <button onClick={() => onRemoveMention(index)} className="hover:text-terminal-fg">
+                <button
+                  type="button"
+                  aria-label={`Remover mencao ${fileLabel(path)}`}
+                  onClick={() => onRemoveMention(index)}
+                  className="hover:text-terminal-fg"
+                >
                   <X className="h-3 w-3" />
                 </button>
               )}
@@ -162,12 +178,17 @@ export function CommandInput({
           {pendingImages.map((path, index) => (
             <span
               key={`image-${path}-${index}`}
-              className="inline-flex items-center gap-1 rounded border border-terminal-purple/30 bg-terminal-purple/10 px-2 py-1 text-[10px] text-terminal-purple"
+              className="inline-flex items-center gap-1 rounded border border-terminal-purple/25 bg-terminal-purple/10 px-1.5 py-0.5 text-[10px] text-terminal-purple"
             >
               <ImagePlus className="h-3 w-3" />
               {fileLabel(path)}
               {onRemoveImage && (
-                <button onClick={() => onRemoveImage(index)} className="hover:text-terminal-fg">
+                <button
+                  type="button"
+                  aria-label={`Remover imagem ${fileLabel(path)}`}
+                  onClick={() => onRemoveImage(index)}
+                  className="hover:text-terminal-fg"
+                >
                   <X className="h-3 w-3" />
                 </button>
               )}
@@ -176,9 +197,9 @@ export function CommandInput({
         </div>
       )}
 
-      <div className="flex items-end gap-2 rounded-lg border border-panel-border bg-terminal-bg px-3 py-2 focus-within:border-terminal-green/30 transition-colors">
-        <div className="flex items-center gap-1 py-1">
-          <span className="text-terminal-green text-sm font-bold select-none">{">"}</span>
+      <div className="flex items-end gap-1.5 rounded border border-[var(--ide-border-subtle)] bg-[var(--terminal-bg)] px-2 py-1 transition-colors focus-within:border-terminal-blue/45">
+        <div className="flex items-center gap-1 py-0.5">
+          <span className="select-none text-xs font-semibold text-terminal-blue/90">{">"}</span>
         </div>
 
         <textarea
@@ -186,67 +207,73 @@ export function CommandInput({
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Ask Alicia anything... or type / for commands"
+          placeholder="Pergunte para a Alicia ou digite / para comandos"
           disabled={isDisabled}
           rows={1}
-          className="flex-1 bg-transparent text-sm text-terminal-fg placeholder:text-muted-foreground/40 outline-none resize-none min-h-[24px] max-h-[200px] py-1 disabled:opacity-50"
+          className="min-h-[20px] max-h-[200px] flex-1 resize-none bg-transparent py-0.5 text-[12px] leading-normal text-terminal-fg outline-none placeholder:text-muted-foreground/45 disabled:opacity-50"
         />
 
-        <div className="flex items-center gap-1 py-1">
+        <div className="flex items-center gap-0.5 py-0.5">
           <button
+            type="button"
+            aria-label="Anexar arquivo"
             onClick={() => void onAttachMention?.()}
-            className="p-1 rounded hover:bg-[#b9bcc01c] text-muted-foreground/40 hover:text-muted-foreground transition-colors"
-            title="Attach file"
+            className="rounded p-1 text-muted-foreground/45 transition-colors hover:bg-[var(--ide-hover)] hover:text-muted-foreground"
+            title="Anexar arquivo"
             disabled={isDisabled}
           >
             <Paperclip className="w-4 h-4" />
           </button>
 
           <button
+            type="button"
+            aria-label="Anexar imagem"
             onClick={() => void onAttachImage?.()}
-            className="p-1 rounded hover:bg-[#b9bcc01c] text-muted-foreground/40 hover:text-muted-foreground transition-colors"
-            title="Attach image"
+            className="rounded p-1 text-muted-foreground/45 transition-colors hover:bg-[var(--ide-hover)] hover:text-muted-foreground"
+            title="Anexar imagem"
             disabled={isDisabled}
           >
             <ImagePlus className="w-4 h-4" />
           </button>
 
           <button
+            type="button"
+            aria-label="Mencionar arquivo ou simbolo"
             onClick={() => void onAttachMention?.()}
-            className="p-1 rounded hover:bg-[#b9bcc01c] text-muted-foreground/40 hover:text-muted-foreground transition-colors"
-            title="Mention file or symbol"
+            className="rounded p-1 text-muted-foreground/45 transition-colors hover:bg-[var(--ide-hover)] hover:text-muted-foreground"
+            title="Mencionar arquivo ou simbolo"
             disabled={isDisabled}
           >
             <AtSign className="w-4 h-4" />
           </button>
 
           <button
+            type="button"
+            aria-label="Enviar prompt"
             onClick={() => void handleSubmit()}
             disabled={isDisabled || (!value.trim() && pendingImages.length === 0 && pendingMentions.length === 0)}
-            className="p-1 rounded bg-terminal-green/20 text-terminal-green hover:bg-terminal-green/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors ml-1"
+            className="ml-0.5 rounded border border-terminal-blue/30 bg-terminal-blue/10 p-1 text-terminal-blue transition-colors hover:bg-terminal-blue/20 disabled:cursor-not-allowed disabled:opacity-30"
           >
             <ArrowUp className="w-4 h-4" />
           </button>
         </div>
       </div>
 
-      <div className="flex items-center justify-between mt-2 px-1">
-        <div className="flex items-center gap-3 text-[10px] text-muted-foreground/40">
+      <div className="mt-1 flex items-center justify-start px-0.5">
+        <div className="flex items-center gap-2 overflow-x-auto text-[10px] text-muted-foreground/35">
           <span>
             <kbd className="px-1 py-0.5 rounded bg-background/50 border border-panel-border text-muted-foreground/50">Enter</kbd>
-            {" send"}
+            {" enviar"}
           </span>
           <span>
             <kbd className="px-1 py-0.5 rounded bg-background/50 border border-panel-border text-muted-foreground/50">Shift+Enter</kbd>
-            {" newline"}
+            {" nova linha"}
           </span>
           <span>
             <kbd className="px-1 py-0.5 rounded bg-background/50 border border-panel-border text-muted-foreground/50">/</kbd>
-            {" commands"}
+            {" comandos"}
           </span>
         </div>
-
-        <div className="text-[10px] text-muted-foreground/30">{value.length > 0 && `${value.length} chars`}</div>
       </div>
     </div>
   )

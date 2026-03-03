@@ -66,7 +66,7 @@ export function UserInputRequest({
   }, [request.timeoutMs])
 
   return (
-    <section className="mx-5 my-2 ml-14 rounded-lg border border-terminal-cyan/35 bg-terminal-cyan/5 p-3">
+    <section className="mx-5 my-2 ml-14 rounded-md border border-terminal-cyan/35 bg-terminal-cyan/5 p-3">
       <header className="mb-2">
         <p className="text-xs font-semibold text-terminal-fg">Input Required</p>
         <p className="mt-1 text-xs text-terminal-fg/85">
@@ -83,7 +83,10 @@ export function UserInputRequest({
           const isFreeText = question.options.length === 0
 
           return (
-            <fieldset key={question.id} className="rounded border border-panel-border p-2">
+            <fieldset
+              key={question.id}
+              className="rounded border border-[var(--ide-border-subtle)] bg-[var(--ide-surface-0)]/60 p-2"
+            >
               {question.header && (
                 <legend className="px-1 text-[11px] uppercase tracking-wide text-muted-foreground">
                   {question.header}
@@ -108,7 +111,7 @@ export function UserInputRequest({
                         [question.id]: nextValue,
                       }))
                     }}
-                    className="w-full rounded border border-panel-border bg-background/70 px-2 py-1.5 text-xs text-terminal-fg outline-none transition-colors placeholder:text-muted-foreground/70 focus:border-terminal-cyan/60"
+                    className="w-full rounded border border-[var(--ide-border-subtle)] bg-background/70 px-2 py-1.5 text-xs text-terminal-fg outline-none transition-colors placeholder:text-muted-foreground/70 focus:border-terminal-cyan/60"
                     placeholder="Type your answer"
                   />
                 </label>
@@ -130,7 +133,7 @@ export function UserInputRequest({
                         className={`w-full rounded border px-2 py-1.5 text-left transition-colors ${
                           selected
                             ? "border-terminal-cyan/60 bg-terminal-cyan/12"
-                            : "border-panel-border hover:bg-background/40"
+                            : "border-[var(--ide-border-subtle)] hover:bg-background/40"
                         }`}
                         aria-pressed={selected}
                       >
@@ -196,7 +199,7 @@ export function UserInputRequest({
               setSubmitting(false)
             }
           }}
-          className="rounded border border-panel-border px-3 py-1.5 text-xs text-muted-foreground hover:text-terminal-fg disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded border border-[var(--ide-border-subtle)] px-3 py-1.5 text-xs text-muted-foreground hover:bg-[var(--ide-hover)] hover:text-terminal-fg disabled:cursor-not-allowed disabled:opacity-50"
         >
           Cancel
         </button>

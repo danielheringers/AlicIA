@@ -23,6 +23,7 @@ import {
   Power,
   ChevronsUpDown,
   AppWindow,
+  Database,
 } from "lucide-react"
 import { useMemo, useState } from "react"
 import {
@@ -261,9 +262,20 @@ export function Sidebar({
     [groupedSessions],
   )
 
+  const hasCollapsibleItems = allYearKeys.length > 0
   const anyExpandedYear = allYearKeys.some((key) => !collapsedYears.has(key))
-  const anyExpandedDay = allDayTokens.some((token) => !collapsedDays.has(token))
-  const collapseAllLabel = anyExpandedYear || anyExpandedDay ? "Collapse all" : "Expand all"
+  const anyVisibleExpandedDay = groupedSessions.some((year) => {
+    if (collapsedYears.has(year.yearKey)) {
+      return false
+    }
+    return year.days.some((day) => !collapsedDays.has(`${year.yearKey}/${day.dayKey}`))
+  })
+  const shouldCollapseVisibleItems = anyExpandedYear || anyVisibleExpandedDay
+  const collapseAllLabel = !hasCollapsibleItems
+    ? "No sessions"
+    : shouldCollapseVisibleItems
+      ? "Collapse all"
+      : "Expand all"
 
   const toggleYearCollapse = (yearKey: string) => {
     setCollapsedYears((previous) => {
@@ -290,8 +302,11 @@ export function Sidebar({
   }
 
   const toggleCollapseAll = () => {
-    const shouldCollapseAll = anyExpandedYear || anyExpandedDay
-    if (shouldCollapseAll) {
+    if (!hasCollapsibleItems) {
+      return
+    }
+
+    if (shouldCollapseVisibleItems) {
       setCollapsedYears(new Set(allYearKeys))
       setCollapsedDays(new Set(allDayTokens))
       return
@@ -302,153 +317,176 @@ export function Sidebar({
   }
 
   return (
-    <div className="w-64 h-full max-h-full min-h-0 bg-sidebar border-r border-panel-border flex flex-col shrink-0 overflow-hidden">
-      <div className="p-4 border-b border-panel-border shrink-0">
-        <div className="flex items-center gap-3 mb-3">
-          <div className="w-9 h-9 rounded-lg bg-terminal-green/10 border border-terminal-green/20 flex items-center justify-center">
-            <Bot className="w-5 h-5 text-terminal-green" />
+    <div className="h-full max-h-full min-h-0 w-[var(--ide-sidebar-width)] shrink-0 overflow-hidden border-r border-[var(--ide-border-subtle)] bg-[var(--ide-surface-1)] flex flex-col">
+      <div className="shrink-0 border-b border-[var(--ide-border-subtle)] px-2.5 py-1.5">
+        <div className="mb-1 flex items-center gap-1.5">
+          <div className="flex h-6 w-6 items-center justify-center rounded-[4px] border border-terminal-green/20 bg-terminal-green/10">
+            <Bot className="h-4 w-4 text-terminal-green" />
           </div>
           <div>
-            <h2 className="text-sm font-semibold text-terminal-fg">Alicia Agent</h2>
-            <p className="text-xs text-muted-foreground">{modelLabel}</p>
+            <h2 className="text-[10px] font-semibold uppercase tracking-wider text-terminal-fg">Alicia Agent</h2>
+            <p className="max-w-[150px] truncate text-[10px] text-muted-foreground" title={modelLabel}>
+              {modelLabel}
+            </p>
           </div>
         </div>
-        <div className="flex items-center gap-4 text-xs text-muted-foreground">
+        <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
           <div className="flex items-center gap-1">
-            <Cpu className="w-3 h-3" />
+            <Cpu className="h-3 w-3" />
             <span>PID {sessionPid ?? "-"}</span>
           </div>
           <div className="flex items-center gap-1">
-            <Zap className="w-3 h-3 text-terminal-gold" />
+            <Zap className="h-3 w-3 text-terminal-gold" />
             <span className="capitalize">{runtimeState}</span>
           </div>
         </div>
-        <div className="mt-3 flex items-center gap-2">
+        <div className="mt-1 flex items-center gap-1.5">
           {!isRunning ? (
             <button
               onClick={onStartSession}
-              className="flex items-center gap-1 rounded px-2 py-1 text-xs bg-terminal-green/15 text-terminal-green hover:bg-terminal-green/25"
+              className="flex items-center gap-1 rounded-[4px] border border-terminal-green/25 bg-terminal-green/10 px-2 py-0.5 text-[10px] text-terminal-green hover:bg-terminal-green/20"
             >
-              <Power className="w-3 h-3" />
+              <Power className="h-3 w-3" />
               Start
             </button>
           ) : (
             <button
               onClick={onStopSession}
-              className="flex items-center gap-1 rounded px-2 py-1 text-xs bg-terminal-red/15 text-terminal-red hover:bg-terminal-red/25"
+              className="flex items-center gap-1 rounded-[4px] border border-terminal-red/25 bg-terminal-red/10 px-2 py-0.5 text-[10px] text-terminal-red hover:bg-terminal-red/20"
             >
-              <Power className="w-3 h-3" />
+              <Power className="h-3 w-3" />
               Stop
             </button>
           )}
         </div>
       </div>
 
-      <div className="p-3 border-b border-panel-border flex flex-col gap-1 shrink-0">
+      <div className="shrink-0 border-b border-[var(--ide-border-subtle)] px-1.5 py-1">
         <button
           onClick={() => onOpenPanel("model")}
-          className="flex items-center gap-2 px-2 py-1.5 rounded text-left w-full transition-colors hover:bg-[#b9bcc01c] group"
+          className="group flex w-full items-center gap-2 rounded-[4px] border border-transparent px-1.5 py-0.5 text-left transition-colors hover:border-[var(--ide-border-subtle)] hover:bg-[var(--ide-hover)]"
         >
-          <Cpu className="w-3.5 h-3.5 text-terminal-blue" />
+          <Cpu className="h-3 w-3 text-terminal-blue" />
           <div className="flex-1 min-w-0">
-            <span className="text-xs text-muted-foreground">Model</span>
+            <span className="text-[11px] text-muted-foreground">Model</span>
           </div>
-          <span className="text-[10px] text-terminal-fg/70 font-mono">{modelLabel}</span>
-          <ChevronRight className="w-3 h-3 text-muted-foreground/30 group-hover:text-muted-foreground transition-colors" />
+          <span className="max-w-[88px] truncate text-[10px] font-mono text-terminal-fg/70" title={modelLabel}>
+            {modelLabel}
+          </span>
+          <ChevronRight className="h-3 w-3 text-muted-foreground/40 transition-colors group-hover:text-muted-foreground" />
         </button>
 
         <button
           onClick={() => onOpenPanel("permissions")}
-          className="flex items-center gap-2 px-2 py-1.5 rounded text-left w-full transition-colors hover:bg-[#b9bcc01c] group"
+          className="group flex w-full items-center gap-2 rounded-[4px] border border-transparent px-1.5 py-0.5 text-left transition-colors hover:border-[var(--ide-border-subtle)] hover:bg-[var(--ide-hover)]"
         >
           <ApprovalIcon
-            className={`w-3.5 h-3.5 ${approvalColors[state.approvalPreset]}`}
+            className={`h-3 w-3 ${approvalColors[state.approvalPreset]}`}
           />
           <div className="flex-1 min-w-0">
-            <span className="text-xs text-muted-foreground">Permissions</span>
+            <span className="text-[11px] text-muted-foreground">Permissions</span>
           </div>
           <span className={`text-[10px] ${approvalColors[state.approvalPreset]}`}>
             {APPROVAL_PRESETS[state.approvalPreset].label}
           </span>
-          <ChevronRight className="w-3 h-3 text-muted-foreground/30 group-hover:text-muted-foreground transition-colors" />
+          <ChevronRight className="h-3 w-3 text-muted-foreground/40 transition-colors group-hover:text-muted-foreground" />
         </button>
 
         <button
           onClick={() => onOpenPanel("mcp")}
-          className="flex items-center gap-2 px-2 py-1.5 rounded text-left w-full transition-colors hover:bg-[#b9bcc01c] group"
+          className="group flex w-full items-center gap-2 rounded-[4px] border border-transparent px-1.5 py-0.5 text-left transition-colors hover:border-[var(--ide-border-subtle)] hover:bg-[var(--ide-hover)]"
         >
-          <PlugZap className="w-3.5 h-3.5 text-terminal-purple" />
+          <PlugZap className="h-3 w-3 text-terminal-purple" />
           <div className="flex-1 min-w-0">
-            <span className="text-xs text-muted-foreground">MCP</span>
+            <span className="text-[11px] text-muted-foreground">MCP</span>
           </div>
           <span className="text-[10px] text-terminal-fg/70">
             {connectedMcps.length}/{state.mcpServers.length}
           </span>
           <span className="text-[10px] text-muted-foreground/40">({totalTools} tools)</span>
-          <ChevronRight className="w-3 h-3 text-muted-foreground/30 group-hover:text-muted-foreground transition-colors" />
+          <ChevronRight className="h-3 w-3 text-muted-foreground/40 transition-colors group-hover:text-muted-foreground" />
+        </button>
+
+        <button
+          onClick={() => onOpenPanel("adt")}
+          className="group flex w-full items-center gap-2 rounded-[4px] border border-transparent px-1.5 py-0.5 text-left transition-colors hover:border-[var(--ide-border-subtle)] hover:bg-[var(--ide-hover)]"
+        >
+          <Database className="h-3 w-3 text-terminal-cyan" />
+          <div className="flex-1 min-w-0">
+            <span className="text-[11px] text-muted-foreground">ADT</span>
+          </div>
+          <ChevronRight className="h-3 w-3 text-muted-foreground/40 transition-colors group-hover:text-muted-foreground" />
         </button>
 
         <button
           onClick={() => onOpenPanel("apps")}
-          className="flex items-center gap-2 px-2 py-1.5 rounded text-left w-full transition-colors hover:bg-[#b9bcc01c] group"
+          className="group flex w-full items-center gap-2 rounded-[4px] border border-transparent px-1.5 py-0.5 text-left transition-colors hover:border-[var(--ide-border-subtle)] hover:bg-[var(--ide-hover)]"
         >
-          <AppWindow className="w-3.5 h-3.5 text-terminal-cyan" />
+          <AppWindow className="h-3 w-3 text-terminal-cyan" />
           <div className="flex-1 min-w-0">
-            <span className="text-xs text-muted-foreground">Apps/Auth</span>
+            <span className="text-[11px] text-muted-foreground">Apps/Auth</span>
           </div>
-          <span className="text-[10px] text-terminal-fg/70 tabular-nums">{state.apps.length}</span>
-          <span className="text-[10px] text-muted-foreground/40 truncate max-w-[80px]">
+          <span className="shrink-0 text-[10px] text-terminal-fg/70 tabular-nums">{state.apps.length}</span>
+          <span
+            className="max-w-[80px] truncate text-[10px] text-muted-foreground/40"
+            title={authModeSummary(state.account.authMode)}
+          >
             {authModeSummary(state.account.authMode)}
           </span>
-          <ChevronRight className="w-3 h-3 text-muted-foreground/30 group-hover:text-muted-foreground transition-colors" />
+          <ChevronRight className="h-3 w-3 text-muted-foreground/40 transition-colors group-hover:text-muted-foreground" />
         </button>
       </div>
 
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        <div className="p-3 min-h-0 flex-1 flex flex-col">
-          <div className="flex items-center justify-between px-1 mb-2 shrink-0">
+        <div className="px-1.5 py-1 min-h-0 flex-1 flex flex-col">
+          <div className="mb-1 flex shrink-0 items-center justify-between px-1">
             <div className="flex items-center gap-2">
-              <MessageSquare className="w-3.5 h-3.5 text-muted-foreground" />
-              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+              <MessageSquare className="h-3 w-3 text-muted-foreground" />
+              <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
                 Sessions
               </span>
             </div>
             <div className="flex items-center gap-1">
               <button
                 onClick={toggleCollapseAll}
-                className="p-0.5 rounded hover:bg-[#b9bcc01c] text-muted-foreground/40 hover:text-muted-foreground transition-colors"
+                disabled={!hasCollapsibleItems}
+                className="rounded p-0.5 text-muted-foreground/40 transition-colors hover:bg-[var(--ide-hover)] hover:text-muted-foreground"
                 title={collapseAllLabel}
+                aria-label={collapseAllLabel}
               >
                 <ChevronsUpDown className="w-3 h-3" />
               </button>
               <button
                 onClick={onResumeSession}
-                className="p-0.5 rounded hover:bg-[#b9bcc01c] text-muted-foreground/40 hover:text-muted-foreground transition-colors"
+                className="rounded p-0.5 text-muted-foreground/40 transition-colors hover:bg-[var(--ide-hover)] hover:text-muted-foreground"
                 title="Resume session"
+                aria-label="Resume session"
               >
                 <RotateCcw className="w-3 h-3" />
               </button>
               <button
                 onClick={onForkSession}
-                className="p-0.5 rounded hover:bg-[#b9bcc01c] text-muted-foreground/40 hover:text-muted-foreground transition-colors"
+                className="rounded p-0.5 text-muted-foreground/40 transition-colors hover:bg-[var(--ide-hover)] hover:text-muted-foreground"
                 title="Fork session"
+                aria-label="Fork session"
               >
                 <GitFork className="w-3 h-3" />
               </button>
               <button
                 onClick={onStartSession}
-                className="p-0.5 rounded hover:bg-[#b9bcc01c] text-muted-foreground/40 hover:text-muted-foreground transition-colors"
+                className="rounded p-0.5 text-muted-foreground/40 transition-colors hover:bg-[var(--ide-hover)] hover:text-muted-foreground"
                 title="New session"
+                aria-label="New session"
               >
                 <Plus className="w-3 h-3" />
               </button>
             </div>
           </div>
 
-          <div className="flex-1 min-h-0 overflow-y-auto pr-1">
-            <div className="flex flex-col gap-1">
+          <div className="flex-1 min-h-0 overflow-y-auto pr-0.5">
+            <div className="flex flex-col">
               {groupedSessions.length === 0 && (
-                <div className="px-2 py-2 text-[11px] text-muted-foreground/55 border border-panel-border rounded bg-background/20">
+                <div className="px-2 py-2 text-[11px] text-muted-foreground/55">
                   No sessions yet.
                 </div>
               )}
@@ -461,10 +499,10 @@ export function Sidebar({
                 )
 
                 return (
-                  <div key={yearGroup.yearKey} className="rounded border border-panel-border/40">
+                  <div key={yearGroup.yearKey} className="border-b border-[var(--ide-border-subtle)]/60 last:border-b-0">
                     <button
                       onClick={() => toggleYearCollapse(yearGroup.yearKey)}
-                      className="w-full flex items-center gap-1 px-2 py-1.5 text-[10px] text-muted-foreground/80 hover:bg-[#b9bcc01c]"
+                      className="flex w-full items-center gap-1 px-1.5 py-px text-[10px] text-muted-foreground/80 hover:bg-[var(--ide-hover)]"
                     >
                       {yearCollapsed ? (
                         <ChevronRight className="w-3 h-3" />
@@ -478,16 +516,16 @@ export function Sidebar({
                     </button>
 
                     {!yearCollapsed && (
-                      <div className="px-1 pb-1">
+                      <div className="pb-0.5">
                         {yearGroup.days.map((dayGroup) => {
                           const dayToken = `${yearGroup.yearKey}/${dayGroup.dayKey}`
                           const dayCollapsed = collapsedDays.has(dayToken)
 
                           return (
-                            <div key={dayToken} className="mb-1">
+                            <div key={dayToken} className="mb-0.5">
                               <button
                                 onClick={() => toggleDayCollapse(dayToken)}
-                                className="w-full flex items-center gap-1 px-2 py-1 text-[10px] text-muted-foreground/65 hover:bg-[#b9bcc01c] rounded"
+                                className="flex w-full items-center gap-1 rounded-[4px] px-1.5 py-px text-[10px] text-muted-foreground/65 hover:bg-[var(--ide-hover)]"
                               >
                                 {dayCollapsed ? (
                                   <ChevronRight className="w-3 h-3" />
@@ -501,15 +539,15 @@ export function Sidebar({
                               </button>
 
                               {!dayCollapsed && (
-                                <div className="flex flex-col gap-0.5 mt-0.5">
+                                <div className="mt-0.5 flex flex-col gap-px">
                                   {dayGroup.sessions.map((session) => (
                                     <button
                                       key={session.id}
                                       onClick={() => onSelectSession(session.id)}
-                                      className={`flex items-center gap-2 px-2 py-1.5 rounded text-left w-full transition-colors ${
+                                      className={`alicia-sidebar-session-row flex w-full items-center gap-1 rounded-[4px] px-1.5 py-0 text-left transition-colors ${
                                         session.active
                                           ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                                          : "text-muted-foreground hover:bg-[#b9bcc01c] hover:text-foreground"
+                                          : "text-muted-foreground hover:bg-[var(--ide-hover)] hover:text-foreground"
                                       }`}
                                     >
                                       <div
@@ -520,9 +558,9 @@ export function Sidebar({
                                         }`}
                                       />
                                       <div className="flex-1 min-w-0">
-                                        <p className="text-xs truncate">{session.name}</p>
+                                        <p className="truncate text-[10px] leading-tight">{session.name}</p>
                                       </div>
-                                      <span className="text-[10px] text-muted-foreground/60 shrink-0">
+                                      <span className="max-w-[62px] truncate text-[10px] text-muted-foreground/60 shrink-0" title={session.time}>
                                         {session.time}
                                       </span>
                                     </button>
@@ -541,7 +579,7 @@ export function Sidebar({
           </div>
         </div>
 
-        <div className="p-3 border-t border-panel-border shrink-0">
+        <div className="shrink-0 border-t border-panel-border px-1.5 py-1">
           <div
             role="button"
             tabIndex={0}
@@ -555,14 +593,16 @@ export function Sidebar({
                 onStartReview()
               }
             }}
-            className={`w-full rounded transition-colors ${
-              isReviewActive ? "bg-terminal-blue/10 border border-terminal-blue/25" : "hover:bg-[#b9bcc01c]"
+            className={`w-full rounded-[4px] border border-transparent transition-colors ${
+              isReviewActive
+                ? "border-terminal-blue/25 bg-terminal-blue/10"
+                : "hover:border-[var(--ide-border-subtle)] hover:bg-[var(--ide-hover)]"
             }`}
           >
-            <div className="flex items-center gap-2 px-2 py-1.5 mb-1">
-              <FileCode2 className={`w-3.5 h-3.5 ${isReviewActive ? "text-terminal-blue" : "text-muted-foreground"}`} />
+            <div className="mb-0.5 flex items-center gap-2 px-1.5 py-0.5">
+              <FileCode2 className={`h-3 w-3 ${isReviewActive ? "text-terminal-blue" : "text-muted-foreground"}`} />
               <span
-                className={`text-xs font-medium uppercase tracking-wider ${
+                className={`text-[10px] font-medium uppercase tracking-wider ${
                   isReviewActive ? "text-terminal-blue" : "text-muted-foreground"
                 }`}
               >
@@ -572,7 +612,7 @@ export function Sidebar({
                 {state.fileChanges.length}
               </span>
             </div>
-            <div className="flex flex-col gap-0.5 px-2 pb-2">
+            <div className="flex flex-col gap-0.5 px-1.5 pb-1">
               {state.fileChanges.slice(0, 6).map((file) => (
                 <button
                   key={file.name}
@@ -581,7 +621,7 @@ export function Sidebar({
                     event.stopPropagation()
                     onOpenFileChangeInEditor?.(file.name)
                   }}
-                  className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs hover:bg-[#b9bcc01c]"
+                  className="flex w-full items-center gap-2 rounded-[3px] px-1.5 py-0.5 text-left text-[10px] hover:bg-[var(--ide-hover)]"
                 >
                   <span className={`text-[10px] font-bold w-3 ${statusColor[file.status]}`}>
                     {statusLabel[file.status]}
@@ -590,7 +630,7 @@ export function Sidebar({
                 </button>
               ))}
               {state.fileChanges.length === 0 && (
-                <span className="px-2 py-1 text-xs text-muted-foreground/60 text-left">
+                <span className="px-2 py-1 text-[11px] text-muted-foreground/60 text-left">
                   No pending changes
                 </span>
               )}
@@ -598,35 +638,35 @@ export function Sidebar({
           </div>
         </div>
 
-        <div className="p-3 border-t border-panel-border shrink-0">
-          <div className="flex items-center gap-2 px-1 mb-2">
-            <FolderTree className="w-3.5 h-3.5 text-muted-foreground" />
-            <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+        <div className="shrink-0 border-t border-[var(--ide-border-subtle)] px-1.5 py-1">
+          <div className="mb-1 flex items-center gap-2 px-1">
+            <FolderTree className="h-3 w-3 text-muted-foreground" />
+            <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
               Project
             </span>
           </div>
-          <div className="flex flex-col gap-1.5 px-2 text-xs">
+          <div className="flex flex-col gap-0.5 px-2 text-[11px]">
             <div className="flex items-center gap-2 text-muted-foreground">
-              <GitBranch className="w-3 h-3" />
-              <span>main</span>
+              <GitBranch className="h-3 w-3" />
+              <span className="truncate">main</span>
             </div>
             <div className="flex items-center gap-2 text-muted-foreground">
-              <Layers className="w-3 h-3" />
-              <span>Rust + Next + Tauri</span>
+              <Layers className="h-3 w-3" />
+              <span className="truncate">Rust + Next + Tauri</span>
             </div>
             <div className="flex items-center gap-2 text-muted-foreground">
-              <Clock className="w-3 h-3" />
-              <span>Runtime: {runtimeState}</span>
+              <Clock className="h-3 w-3" />
+              <span className="truncate">Runtime: {runtimeState}</span>
             </div>
           </div>
         </div>
       </div>
 
-      <div className="p-3 border-t border-panel-border shrink-0">
-        <button className="flex items-center gap-2 px-2 py-1.5 w-full rounded text-xs text-muted-foreground hover:bg-[#b9bcc01c] hover:text-foreground transition-colors">
-          <Settings className="w-3.5 h-3.5" />
+      <div className="shrink-0 border-t border-[var(--ide-border-subtle)] px-1.5 py-1">
+        <button className="flex w-full items-center gap-2 rounded-[4px] border border-transparent px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:border-[var(--ide-border-subtle)] hover:bg-[var(--ide-hover)] hover:text-foreground">
+          <Settings className="h-3 w-3" />
           <span>Settings</span>
-          <kbd className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-background/50 border border-panel-border text-muted-foreground/60">
+          <kbd className="ml-auto rounded border border-panel-border bg-background/50 px-1.5 py-0.5 text-[10px] text-muted-foreground/60">
             ,
           </kbd>
         </button>

@@ -50,12 +50,36 @@ import type {
   CodexWorkspaceReadFileResponse,
   CodexWorkspaceWriteFileRequest,
   CodexWorkspaceWriteFileResponse,
+  CodexWorkspaceCreateDirectoryRequest,
+  CodexWorkspaceCreateDirectoryResponse,
+  CodexWorkspaceRenameEntryRequest,
+  CodexWorkspaceRenameEntryResponse,
+  CodexWorkspaceListDirectoryRequest,
+  CodexWorkspaceListDirectoryResponse,
   GitCommitApprovedReviewRequest,
   GitCommitApprovedReviewResponse,
   RuntimeCodexConfig,
   RuntimeStatusResponse,
   RuntimeCapabilitiesResponse,
   NeuroAdtObjectSummary,
+  NeuroAdtExplorerState,
+  NeuroAdtExplorerStatePatchRequest,
+  NeuroAdtFavoriteObjectItem,
+  NeuroAdtFavoritePackageItem,
+  NeuroAdtPackageInventoryNode,
+  NeuroAdtPackageInventoryMetadata,
+  NeuroAdtPackageInventoryPackageObjects,
+  NeuroAdtPackageInventoryRootMetadata,
+  NeuroAdtPackageInventoryRequest,
+  NeuroAdtPackageInventoryResponse,
+  NeuroAdtListObjectsRequest,
+  NeuroAdtListObjectsResponse,
+  NeuroAdtPackageSummary,
+  NeuroAdtNamespaceSummary,
+  NeuroAdtServerConnectResponse,
+  NeuroAdtServerListResponse,
+  NeuroAdtServerRecord,
+  NeuroAdtServerUpsertRequest,
   NeuroAdtSourceResponse,
   NeuroAdtUpdateSourceRequest,
   NeuroAdtUpdateSourceResponse,
@@ -103,6 +127,7 @@ interface RawNeuroAdtUpdateSourceRequest {
   object_uri: string
   source: string
   etag?: string | null
+  server_id?: string | null
 }
 
 interface RawNeuroAdtUpdateSourceResponse {
@@ -110,6 +135,184 @@ interface RawNeuroAdtUpdateSourceResponse {
   status_code: number
   etag?: string | null
 }
+
+interface RawNeuroAdtServerRecord {
+  id?: string | null
+  name?: string | null
+  base_url?: string | null
+  client?: string | null
+  language?: string | null
+  username?: string | null
+}
+
+interface RawNeuroAdtServerListResponse {
+  servers?: RawNeuroAdtServerRecord[] | null
+  selected_server_id?: string | null
+  selectedServerId?: string | null
+}
+
+interface RawNeuroAdtServerUpsertRequest {
+  id: string
+  name: string
+  base_url: string
+  client?: string | null
+  language?: string | null
+  username?: string | null
+  password?: string | null
+}
+
+interface RawNeuroAdtServerConnectResponse {
+  server_id?: string | null
+  connected?: boolean | null
+  message?: string | null
+}
+
+interface RawNeuroAdtPackageSummary {
+  name?: string | null
+  description?: string | null
+}
+
+interface RawNeuroAdtNamespaceSummary {
+  name?: string | null
+  package_name?: string | null
+  packageName?: string | null
+}
+
+interface RawNeuroAdtFavoritePackageItem {
+  name?: string | null
+  kind?: string | null
+}
+
+interface RawNeuroAdtFavoriteObjectItem {
+  uri?: string | null
+  name?: string | null
+  object_type?: string | null
+  objectType?: string | null
+  package?: string | null
+}
+
+interface RawNeuroAdtExplorerState {
+  working_package?: string | null
+  workingPackage?: string | null
+  focused_object_uri?: string | null
+  focusedObjectUri?: string | null
+  package_scope_roots?: string[] | null
+  packageScopeRoots?: string[] | null
+  favorite_packages?: RawNeuroAdtFavoritePackageItem[] | null
+  favoritePackages?: RawNeuroAdtFavoritePackageItem[] | null
+  favorite_objects?: RawNeuroAdtFavoriteObjectItem[] | null
+  favoriteObjects?: RawNeuroAdtFavoriteObjectItem[] | null
+}
+
+interface RawNeuroAdtExplorerStatePatchRequest {
+  working_package?: string | null
+  focused_object_uri?: string | null
+  package_scope_roots?: string[] | null
+  toggle_favorite_package?: {
+    name: string
+    kind: string
+  } | null
+  toggle_favorite_object?: {
+    uri: string
+    name: string
+    object_type?: string | null
+    package?: string | null
+  } | null
+}
+
+interface RawNeuroAdtListObjectsRequest {
+  scope: string
+  package_name?: string | null
+  package_kind?: string | null
+  namespace?: string | null
+  server_id?: string | null
+  max_results?: number | null
+}
+
+interface RawNeuroAdtListObjectsResponse {
+  scope?: string | null
+  objects?: RawNeuroAdtObjectSummary[] | null
+  namespaces?: RawNeuroAdtNamespaceSummary[] | null
+}
+
+interface RawNeuroAdtPackageInventoryRequest {
+  roots: string[]
+  include_subpackages?: boolean | null
+  include_objects?: boolean | null
+  max_packages?: number | null
+  max_objects_per_package?: number | null
+  server_id?: string | null
+}
+
+interface RawNeuroAdtPackageInventoryNode {
+  name?: string | null
+  parent_name?: string | null
+  parentName?: string | null
+  depth?: number | null
+  is_root?: boolean | null
+  isRoot?: boolean | null
+  object_count?: number | null
+  objectCount?: number | null
+}
+
+interface RawNeuroAdtPackageInventoryPackageObjects {
+  package_name?: string | null
+  packageName?: string | null
+  objects?: RawNeuroAdtObjectSummary[] | null
+}
+
+interface RawNeuroAdtPackageInventoryResponse {
+  roots?: string[] | null
+  packages?: RawNeuroAdtPackageInventoryNode[] | null
+  objects_by_package?: RawNeuroAdtPackageInventoryPackageObjects[] | null
+  objectsByPackage?: RawNeuroAdtPackageInventoryPackageObjects[] | null
+  metadata?: RawNeuroAdtPackageInventoryMetadata | null
+}
+
+interface RawNeuroAdtPackageInventoryRootMetadata {
+  root?: string | null
+  kind?: string | null
+  queries_executed?: number | null
+  queriesExecuted?: number | null
+  matched_packages?: number | null
+  matchedPackages?: number | null
+  returned_packages?: number | null
+  returnedPackages?: number | null
+  result_limit_hit?: boolean | null
+  resultLimitHit?: boolean | null
+  is_complete?: boolean | null
+  isComplete?: boolean | null
+  skipped_due_to_max_packages?: boolean | null
+  skippedDueToMaxPackages?: boolean | null
+}
+
+interface RawNeuroAdtPackageInventoryMetadata {
+  is_complete?: boolean | null
+  isComplete?: boolean | null
+  is_truncated?: boolean | null
+  isTruncated?: boolean | null
+  include_objects?: boolean | null
+  includeObjects?: boolean | null
+  max_packages_reached?: boolean | null
+  maxPackagesReached?: boolean | null
+  root_discovery_truncated?: boolean | null
+  rootDiscoveryTruncated?: boolean | null
+  object_results_truncated?: boolean | null
+  objectResultsTruncated?: boolean | null
+  max_packages?: number | null
+  maxPackages?: number | null
+  max_objects_per_package?: number | null
+  maxObjectsPerPackage?: number | null
+  returned_packages?: number | null
+  returnedPackages?: number | null
+  packages_with_truncated_objects?: number | null
+  packagesWithTruncatedObjects?: number | null
+  roots?: RawNeuroAdtPackageInventoryRootMetadata[] | null
+}
+
+type RawNeuroAdtListObjectsWireResponse =
+  | RawNeuroAdtListObjectsResponse
+  | RawNeuroAdtObjectSummary[]
 
 interface RawNeuroWsMessageEnvelope {
   id: string
@@ -175,6 +378,401 @@ function mapNeuroUpdateSourceResponse(
     statusCode: raw.status_code,
     etag: raw.etag,
   }
+}
+
+function asStringOrNull(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null
+  }
+  const normalized = value.trim()
+  return normalized.length > 0 ? normalized : null
+}
+
+function asFiniteNumberOrNull(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return null
+  }
+  return value
+}
+
+function asBooleanOrDefault(value: unknown, fallback = false): boolean {
+  return typeof value === 'boolean' ? value : fallback
+}
+
+function mapNeuroServerRecord(raw: RawNeuroAdtServerRecord): NeuroAdtServerRecord | null {
+  const id = asStringOrNull(raw.id)
+  const name = asStringOrNull(raw.name)
+  const baseUrl = asStringOrNull(raw.base_url)
+  if (!id || !name || !baseUrl) {
+    return null
+  }
+
+  return {
+    id,
+    name,
+    baseUrl,
+    client: asStringOrNull(raw.client),
+    language: asStringOrNull(raw.language),
+    username: asStringOrNull(raw.username),
+  }
+}
+
+function mapNeuroServerListResponse(raw: unknown): NeuroAdtServerListResponse {
+  if (Array.isArray(raw)) {
+    const servers = raw
+      .map(entry => mapNeuroServerRecord((entry ?? {}) as RawNeuroAdtServerRecord))
+      .filter((entry): entry is NeuroAdtServerRecord => entry !== null)
+    return {
+      servers,
+      selectedServerId: null,
+    }
+  }
+
+  const payload = (raw ?? {}) as RawNeuroAdtServerListResponse
+  const sourceServers = Array.isArray(payload.servers) ? payload.servers : []
+  return {
+    servers: sourceServers
+      .map(entry => mapNeuroServerRecord(entry))
+      .filter((entry): entry is NeuroAdtServerRecord => entry !== null),
+    selectedServerId: asStringOrNull(
+      payload.selectedServerId ?? payload.selected_server_id,
+    ),
+  }
+}
+
+function mapNeuroConnectResponse(
+  serverId: string,
+  raw: unknown,
+): NeuroAdtServerConnectResponse {
+  if (typeof raw === 'boolean') {
+    return {
+      serverId,
+      connected: raw,
+      message: null,
+    }
+  }
+
+  const payload = (raw ?? {}) as RawNeuroAdtServerConnectResponse
+  return {
+    serverId: asStringOrNull(payload.server_id) ?? serverId,
+    connected: payload.connected === true,
+    message: asStringOrNull(payload.message),
+  }
+}
+
+function mapNeuroPackageSummary(raw: RawNeuroAdtPackageSummary): NeuroAdtPackageSummary | null {
+  const name = asStringOrNull(raw.name)
+  if (!name) {
+    return null
+  }
+  return {
+    name,
+    description: asStringOrNull(raw.description),
+  }
+}
+
+function mapNeuroNamespaceSummary(
+  raw: RawNeuroAdtNamespaceSummary,
+): NeuroAdtNamespaceSummary | null {
+  const name = asStringOrNull(raw.name)
+  if (!name) {
+    return null
+  }
+  return {
+    name,
+    packageName: asStringOrNull(raw.packageName ?? raw.package_name),
+  }
+}
+
+function mapNeuroFavoritePackageItem(
+  raw: RawNeuroAdtFavoritePackageItem,
+): NeuroAdtFavoritePackageItem | null {
+  const name = asStringOrNull(raw.name)
+  const kindRaw = asStringOrNull(raw.kind)
+  if (!name || !kindRaw) {
+    return null
+  }
+  const kind = kindRaw === 'namespace' ? 'namespace' : kindRaw === 'package' ? 'package' : null
+  if (!kind) {
+    return null
+  }
+  return {
+    name,
+    kind,
+  }
+}
+
+function mapNeuroFavoriteObjectItem(
+  raw: RawNeuroAdtFavoriteObjectItem,
+): NeuroAdtFavoriteObjectItem | null {
+  const uri = asStringOrNull(raw.uri)
+  const name = asStringOrNull(raw.name)
+  if (!uri || !name) {
+    return null
+  }
+  return {
+    uri,
+    name,
+    objectType: asStringOrNull(raw.objectType ?? raw.object_type),
+    package: asStringOrNull(raw.package),
+  }
+}
+
+function mapNeuroExplorerState(raw: RawNeuroAdtExplorerState): NeuroAdtExplorerState {
+  const rawFavoritePackages = raw.favoritePackages ?? raw.favorite_packages
+  const rawFavoriteObjects = raw.favoriteObjects ?? raw.favorite_objects
+  const rawPackageScopeRoots = raw.packageScopeRoots ?? raw.package_scope_roots
+  const packageScopeRoots =
+    Array.isArray(rawPackageScopeRoots)
+      ? rawPackageScopeRoots.reduce<string[]>((accumulator, entry) => {
+          const normalized = asStringOrNull(entry)
+          if (!normalized) {
+            return accumulator
+          }
+          if (
+            accumulator.some((existing) => existing.toUpperCase() === normalized.toUpperCase())
+          ) {
+            return accumulator
+          }
+          accumulator.push(normalized)
+          return accumulator
+        }, [])
+      : []
+  return {
+    workingPackage: asStringOrNull(raw.workingPackage ?? raw.working_package),
+    focusedObjectUri: asStringOrNull(raw.focusedObjectUri ?? raw.focused_object_uri),
+    packageScopeRoots,
+    favoritePackages: Array.isArray(rawFavoritePackages)
+      ? rawFavoritePackages
+          .map(entry => mapNeuroFavoritePackageItem(entry))
+          .filter((entry): entry is NeuroAdtFavoritePackageItem => entry !== null)
+      : [],
+    favoriteObjects: Array.isArray(rawFavoriteObjects)
+      ? rawFavoriteObjects
+          .map(entry => mapNeuroFavoriteObjectItem(entry))
+          .filter((entry): entry is NeuroAdtFavoriteObjectItem => entry !== null)
+      : [],
+  }
+}
+
+function mapNeuroListObjectsResponse(
+  request: NeuroAdtListObjectsRequest,
+  raw: RawNeuroAdtListObjectsWireResponse,
+): NeuroAdtListObjectsResponse {
+  if (Array.isArray(raw)) {
+    return {
+      scope: request.scope,
+      objects: raw.map(mapNeuroObjectSummary),
+      namespaces: [],
+    }
+  }
+
+  const mappedScope = asStringOrNull(raw.scope) ?? request.scope
+  const objects = Array.isArray(raw.objects) ? raw.objects.map(mapNeuroObjectSummary) : []
+  const namespaces = Array.isArray(raw.namespaces)
+    ? raw.namespaces
+        .map(entry => mapNeuroNamespaceSummary(entry))
+        .filter((entry): entry is NeuroAdtNamespaceSummary => entry !== null)
+    : []
+
+  return {
+    scope:
+      mappedScope === 'local_objects' ||
+      mappedScope === 'favorite_packages' ||
+      mappedScope === 'favorite_objects' ||
+      mappedScope === 'system_library'
+        ? mappedScope
+        : request.scope,
+    objects,
+    namespaces,
+  }
+}
+
+function mapNeuroPackageInventoryNode(
+  raw: RawNeuroAdtPackageInventoryNode,
+): NeuroAdtPackageInventoryNode | null {
+  const name = asStringOrNull(raw.name)
+  if (!name) {
+    return null
+  }
+
+  const rawDepth = raw.depth
+  const rawObjectCount = raw.objectCount ?? raw.object_count
+  return {
+    name,
+    parentName: asStringOrNull(raw.parentName ?? raw.parent_name),
+    depth:
+      typeof rawDepth === 'number' && Number.isFinite(rawDepth) && rawDepth >= 0
+        ? Math.trunc(rawDepth)
+        : 0,
+    isRoot: (raw.isRoot ?? raw.is_root) === true,
+    objectCount:
+      typeof rawObjectCount === 'number' &&
+      Number.isFinite(rawObjectCount) &&
+      rawObjectCount >= 0
+        ? Math.trunc(rawObjectCount)
+        : 0,
+  }
+}
+
+function mapNeuroPackageInventoryPackageObjects(
+  raw: RawNeuroAdtPackageInventoryPackageObjects,
+): NeuroAdtPackageInventoryPackageObjects | null {
+  const packageName = asStringOrNull(raw.packageName ?? raw.package_name)
+  if (!packageName) {
+    return null
+  }
+
+  return {
+    packageName,
+    objects: Array.isArray(raw.objects) ? raw.objects.map(mapNeuroObjectSummary) : [],
+  }
+}
+
+function mapNeuroPackageInventoryRootMetadata(
+  raw: RawNeuroAdtPackageInventoryRootMetadata,
+): NeuroAdtPackageInventoryRootMetadata | null {
+  const root = asStringOrNull(raw.root)
+  const kind = asStringOrNull(raw.kind)
+  if (!root || !kind) {
+    return null
+  }
+
+  return {
+    root,
+    kind,
+    queriesExecuted:
+      Math.max(0, Math.trunc(asFiniteNumberOrNull(raw.queriesExecuted ?? raw.queries_executed) ?? 0)),
+    matchedPackages:
+      Math.max(0, Math.trunc(asFiniteNumberOrNull(raw.matchedPackages ?? raw.matched_packages) ?? 0)),
+    returnedPackages:
+      Math.max(0, Math.trunc(asFiniteNumberOrNull(raw.returnedPackages ?? raw.returned_packages) ?? 0)),
+    resultLimitHit: asBooleanOrDefault(raw.resultLimitHit ?? raw.result_limit_hit),
+    isComplete: asBooleanOrDefault(raw.isComplete ?? raw.is_complete),
+    skippedDueToMaxPackages: asBooleanOrDefault(
+      raw.skippedDueToMaxPackages ?? raw.skipped_due_to_max_packages,
+    ),
+  }
+}
+
+function mapNeuroPackageInventoryMetadata(
+  raw: RawNeuroAdtPackageInventoryMetadata | null | undefined,
+): NeuroAdtPackageInventoryMetadata | null {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+
+  const roots = Array.isArray(raw.roots)
+    ? raw.roots
+        .map((entry) => mapNeuroPackageInventoryRootMetadata(entry))
+        .filter((entry): entry is NeuroAdtPackageInventoryRootMetadata => entry !== null)
+    : []
+
+  return {
+    isComplete: asBooleanOrDefault(raw.isComplete ?? raw.is_complete),
+    isTruncated: asBooleanOrDefault(raw.isTruncated ?? raw.is_truncated),
+    includeObjects: asBooleanOrDefault(raw.includeObjects ?? raw.include_objects),
+    maxPackagesReached: asBooleanOrDefault(raw.maxPackagesReached ?? raw.max_packages_reached),
+    rootDiscoveryTruncated: asBooleanOrDefault(
+      raw.rootDiscoveryTruncated ?? raw.root_discovery_truncated,
+    ),
+    objectResultsTruncated: asBooleanOrDefault(
+      raw.objectResultsTruncated ?? raw.object_results_truncated,
+    ),
+    maxPackages:
+      Math.max(0, Math.trunc(asFiniteNumberOrNull(raw.maxPackages ?? raw.max_packages) ?? 0)),
+    maxObjectsPerPackage: Math.max(
+      0,
+      Math.trunc(
+        asFiniteNumberOrNull(raw.maxObjectsPerPackage ?? raw.max_objects_per_package) ?? 0,
+      ),
+    ),
+    returnedPackages:
+      Math.max(0, Math.trunc(asFiniteNumberOrNull(raw.returnedPackages ?? raw.returned_packages) ?? 0)),
+    packagesWithTruncatedObjects: Math.max(
+      0,
+      Math.trunc(
+        asFiniteNumberOrNull(
+          raw.packagesWithTruncatedObjects ?? raw.packages_with_truncated_objects,
+        ) ?? 0,
+      ),
+    ),
+    roots,
+  }
+}
+
+function mapNeuroPackageInventoryResponse(
+  raw: RawNeuroAdtPackageInventoryResponse,
+): NeuroAdtPackageInventoryResponse {
+  const roots = Array.isArray(raw.roots)
+    ? raw.roots
+        .map((entry) => asStringOrNull(entry))
+        .filter((entry): entry is string => entry !== null)
+    : []
+  const packages = Array.isArray(raw.packages)
+    ? raw.packages
+        .map((entry) => mapNeuroPackageInventoryNode(entry))
+        .filter((entry): entry is NeuroAdtPackageInventoryNode => entry !== null)
+    : []
+  const rawObjectsByPackage = raw.objectsByPackage ?? raw.objects_by_package
+  const objectsByPackage = Array.isArray(rawObjectsByPackage)
+    ? rawObjectsByPackage
+        .map((entry) => mapNeuroPackageInventoryPackageObjects(entry))
+        .filter((entry): entry is NeuroAdtPackageInventoryPackageObjects => entry !== null)
+    : []
+
+  return {
+    roots,
+    packages,
+    objectsByPackage,
+    metadata: mapNeuroPackageInventoryMetadata(raw.metadata),
+  }
+}
+
+function buildLegacyListObjectsPayload(
+  request: NeuroAdtListObjectsRequest,
+): RawNeuroAdtListObjectsRequest | null {
+  const common = {
+    server_id: request.serverId ?? null,
+    max_results: request.maxResults ?? null,
+  }
+
+  if (request.scope === 'local_objects') {
+    return {
+      ...common,
+      scope: 'local_objects',
+      package_name: request.packageName ?? null,
+      namespace: request.namespace ?? null,
+      package_kind: request.packageKind ?? null,
+    }
+  }
+
+  if (request.scope === 'favorite_packages') {
+    const isNamespaceScope =
+      request.packageKind === 'namespace' || asStringOrNull(request.namespace) !== null
+    return {
+      ...common,
+      scope: isNamespaceScope ? 'namespace' : 'package',
+      namespace: request.namespace ?? null,
+      package_name: request.packageName ?? null,
+      package_kind: request.packageKind ?? null,
+    }
+  }
+
+  if (request.scope === 'system_library') {
+    if (asStringOrNull(request.namespace) !== null) {
+      return {
+        ...common,
+        scope: 'namespace',
+        namespace: request.namespace ?? null,
+        package_name: request.packageName ?? null,
+        package_kind: request.packageKind ?? null,
+      }
+    }
+    return null
+  }
+
+  return null
 }
 
 function mapNeuroWsMessageEnvelope(raw: RawNeuroWsMessageEnvelope): NeuroWsMessageEnvelope {
@@ -302,6 +900,7 @@ export async function neuroRuntimeDiagnose(): Promise<NeuroRuntimeDiagnoseRespon
 export async function neuroSearchObjects(
   query: string,
   maxResults?: number,
+  serverId?: string | null,
 ): Promise<NeuroAdtObjectSummary[]> {
   try {
     const response = await invoke<RawNeuroCommandResponse<RawNeuroAdtObjectSummary[]>>(
@@ -309,6 +908,7 @@ export async function neuroSearchObjects(
       {
         query,
         maxResults,
+        serverId,
       },
     )
     const raw = unwrapNeuroResponse(response)
@@ -318,11 +918,14 @@ export async function neuroSearchObjects(
   }
 }
 
-export async function neuroGetSource(objectUri: string): Promise<NeuroAdtSourceResponse> {
+export async function neuroGetSource(
+  objectUri: string,
+  serverId?: string | null,
+): Promise<NeuroAdtSourceResponse> {
   try {
     const response = await invoke<RawNeuroCommandResponse<RawNeuroAdtSourceResponse>>(
       'neuro_get_source',
-      { objectUri },
+      { objectUri, serverId },
     )
     const raw = unwrapNeuroResponse(response)
     return mapNeuroSourceResponse(raw)
@@ -339,6 +942,7 @@ export async function neuroUpdateSource(
       object_uri: request.objectUri,
       source: request.source,
       etag: request.etag ?? null,
+      server_id: request.serverId ?? null,
     }
     const response = await invoke<RawNeuroCommandResponse<RawNeuroAdtUpdateSourceResponse>>(
       'neuro_update_source',
@@ -348,6 +952,269 @@ export async function neuroUpdateSource(
     )
     const raw = unwrapNeuroResponse(response)
     return mapNeuroUpdateSourceResponse(raw)
+  } catch (error) {
+    throw normalizeNeuroRuntimeError(error)
+  }
+}
+
+export async function neuroAdtServerList(): Promise<NeuroAdtServerListResponse> {
+  try {
+    const response = await invoke<RawNeuroCommandResponse<unknown>>(
+      'neuro_adt_server_list',
+    )
+    return mapNeuroServerListResponse(unwrapNeuroResponse(response))
+  } catch (error) {
+    throw normalizeNeuroRuntimeError(error)
+  }
+}
+
+export async function neuroAdtServerUpsert(
+  request: NeuroAdtServerUpsertRequest,
+): Promise<NeuroAdtServerRecord> {
+  try {
+    const payload: RawNeuroAdtServerUpsertRequest = {
+      id: request.id,
+      name: request.name,
+      base_url: request.baseUrl,
+      client: request.client ?? null,
+      language: request.language ?? null,
+      username: request.username ?? null,
+      password: request.password ?? null,
+    }
+
+    const response = await invoke<RawNeuroCommandResponse<RawNeuroAdtServerRecord>>(
+      'neuro_adt_server_upsert',
+      { request: payload },
+    )
+    const mapped = mapNeuroServerRecord(unwrapNeuroResponse(response))
+    if (!mapped) {
+      throw new Error('neuro_adt_server_upsert returned invalid server payload')
+    }
+    return mapped
+  } catch (error) {
+    throw normalizeNeuroRuntimeError(error)
+  }
+}
+
+export async function neuroAdtServerRemove(serverId: string): Promise<void> {
+  try {
+    const response = await invoke<RawNeuroCommandResponse<Record<string, unknown>>>(
+      'neuro_adt_server_remove',
+      { serverId },
+    )
+    unwrapNeuroResponse(response)
+  } catch (error) {
+    throw normalizeNeuroRuntimeError(error)
+  }
+}
+
+export async function neuroAdtServerSelect(serverId: string): Promise<string> {
+  try {
+    const response = await invoke<RawNeuroCommandResponse<Record<string, unknown>>>(
+      'neuro_adt_server_select',
+      { serverId },
+    )
+    const payload = unwrapNeuroResponse(response)
+    return asStringOrNull(payload.selectedServerId ?? payload.selected_server_id) ?? serverId
+  } catch (error) {
+    throw normalizeNeuroRuntimeError(error)
+  }
+}
+
+export async function neuroAdtServerConnect(
+  serverId: string,
+): Promise<NeuroAdtServerConnectResponse> {
+  try {
+    const response = await invoke<RawNeuroCommandResponse<unknown>>(
+      'neuro_adt_server_connect',
+      { serverId },
+    )
+    return mapNeuroConnectResponse(serverId, unwrapNeuroResponse(response))
+  } catch (error) {
+    throw normalizeNeuroRuntimeError(error)
+  }
+}
+
+export async function neuroAdtListPackages(
+  serverId?: string | null,
+): Promise<NeuroAdtPackageSummary[]> {
+  try {
+    const response = await invoke<RawNeuroCommandResponse<RawNeuroAdtPackageSummary[]>>(
+      'neuro_adt_list_packages',
+      { serverId },
+    )
+    const raw = unwrapNeuroResponse(response)
+    return raw
+      .map(entry => mapNeuroPackageSummary(entry))
+      .filter((entry): entry is NeuroAdtPackageSummary => entry !== null)
+  } catch (error) {
+    throw normalizeNeuroRuntimeError(error)
+  }
+}
+
+export async function neuroAdtListNamespaces(
+  packageName?: string | null,
+  serverId?: string | null,
+): Promise<NeuroAdtNamespaceSummary[]> {
+  try {
+    const response = await invoke<RawNeuroCommandResponse<RawNeuroAdtNamespaceSummary[]>>(
+      'neuro_adt_list_namespaces',
+      { packageName, serverId },
+    )
+    const raw = unwrapNeuroResponse(response)
+    return raw
+      .map(entry => mapNeuroNamespaceSummary(entry))
+      .filter((entry): entry is NeuroAdtNamespaceSummary => entry !== null)
+  } catch (error) {
+    throw normalizeNeuroRuntimeError(error)
+  }
+}
+
+export async function neuroAdtExplorerStateGet(
+  serverId?: string | null,
+): Promise<NeuroAdtExplorerState> {
+  try {
+    const response = await invoke<RawNeuroCommandResponse<RawNeuroAdtExplorerState>>(
+      'neuro_adt_explorer_state_get',
+      { serverId },
+    )
+    return mapNeuroExplorerState(unwrapNeuroResponse(response))
+  } catch (error) {
+    throw normalizeNeuroRuntimeError(error)
+  }
+}
+
+export async function neuroAdtExplorerStatePatch(
+  request: NeuroAdtExplorerStatePatchRequest,
+  serverId?: string | null,
+): Promise<NeuroAdtExplorerState> {
+  try {
+    const payload: RawNeuroAdtExplorerStatePatchRequest = {}
+    if (request.workingPackage !== undefined) {
+      payload.working_package = request.workingPackage
+    }
+    if (request.focusedObjectUri !== undefined) {
+      payload.focused_object_uri = request.focusedObjectUri
+    }
+    if (request.setPackageScopeRoots !== undefined) {
+      payload.package_scope_roots = request.setPackageScopeRoots ?? []
+    }
+    if (request.toggleFavoritePackage) {
+      payload.toggle_favorite_package = {
+        name: request.toggleFavoritePackage.name,
+        kind: request.toggleFavoritePackage.kind,
+      }
+    }
+    if (request.toggleFavoriteObject) {
+      payload.toggle_favorite_object = {
+        uri: request.toggleFavoriteObject.uri,
+        name: request.toggleFavoriteObject.name,
+        object_type: request.toggleFavoriteObject.objectType ?? null,
+        package: request.toggleFavoriteObject.package ?? null,
+      }
+    }
+    const response = await invoke<RawNeuroCommandResponse<RawNeuroAdtExplorerState>>(
+      'neuro_adt_explorer_state_patch',
+      {
+        request: payload,
+        serverId,
+      },
+    )
+    return mapNeuroExplorerState(unwrapNeuroResponse(response))
+  } catch (error) {
+    throw normalizeNeuroRuntimeError(error)
+  }
+}
+
+export async function neuroAdtListObjects(
+  request: NeuroAdtListObjectsRequest,
+): Promise<NeuroAdtListObjectsResponse> {
+  const payload: RawNeuroAdtListObjectsRequest = {
+    scope: request.scope,
+    package_name: request.packageName ?? null,
+    package_kind: request.packageKind ?? null,
+    namespace: request.namespace ?? null,
+    server_id: request.serverId ?? null,
+    max_results: request.maxResults ?? null,
+  }
+
+  try {
+    const response = await invoke<
+      RawNeuroCommandResponse<RawNeuroAdtListObjectsWireResponse>
+    >(
+      'neuro_adt_list_objects',
+      { request: payload },
+    )
+    return mapNeuroListObjectsResponse(request, unwrapNeuroResponse(response))
+  } catch (error) {
+    const normalizedError = normalizeNeuroRuntimeError(error)
+    const isCompatibilityScopeError =
+      normalizedError.code === 'invalid_argument' &&
+      normalizedError.message.toLowerCase().includes('scope')
+
+    if (request.scope === 'favorite_objects' && isCompatibilityScopeError) {
+      return {
+        scope: request.scope,
+        objects: [],
+        namespaces: [],
+      }
+    }
+
+    if (request.scope === 'system_library' && !asStringOrNull(request.namespace)) {
+      try {
+        const fallbackNamespaces = await neuroAdtListNamespaces(
+          request.packageName ?? null,
+          request.serverId ?? null,
+        )
+        return {
+          scope: request.scope,
+          objects: [],
+          namespaces: fallbackNamespaces,
+        }
+      } catch {
+        throw normalizedError
+      }
+    }
+
+    if (!isCompatibilityScopeError) {
+      throw normalizedError
+    }
+
+    const legacyPayload = buildLegacyListObjectsPayload(request)
+    if (!legacyPayload) {
+      throw normalizedError
+    }
+
+    try {
+      const legacyResponse = await invoke<
+        RawNeuroCommandResponse<RawNeuroAdtListObjectsWireResponse>
+      >('neuro_adt_list_objects', {
+        request: legacyPayload,
+      })
+      return mapNeuroListObjectsResponse(request, unwrapNeuroResponse(legacyResponse))
+    } catch {
+      throw normalizedError
+    }
+  }
+}
+
+export async function neuroAdtListPackageInventory(
+  request: NeuroAdtPackageInventoryRequest,
+): Promise<NeuroAdtPackageInventoryResponse> {
+  try {
+    const payload: RawNeuroAdtPackageInventoryRequest = {
+      roots: Array.isArray(request.roots) ? request.roots : [],
+      include_subpackages: request.includeSubpackages ?? null,
+      include_objects: request.includeObjects ?? null,
+      max_packages: request.maxPackages ?? null,
+      max_objects_per_package: request.maxObjectsPerPackage ?? null,
+      server_id: request.serverId ?? null,
+    }
+    const response = await invoke<RawNeuroCommandResponse<RawNeuroAdtPackageInventoryResponse>>(
+      'neuro_adt_list_package_inventory',
+      { request: payload },
+    )
+    return mapNeuroPackageInventoryResponse(unwrapNeuroResponse(response))
   } catch (error) {
     throw normalizeNeuroRuntimeError(error)
   }
@@ -567,6 +1434,33 @@ export async function codexWorkspaceWriteFile(
   })
 }
 
+export async function codexWorkspaceCreateDirectory(
+  request: CodexWorkspaceCreateDirectoryRequest,
+): Promise<CodexWorkspaceCreateDirectoryResponse> {
+  return invoke<CodexWorkspaceCreateDirectoryResponse>(
+    'codex_workspace_create_directory',
+    {
+      request,
+    },
+  )
+}
+
+export async function codexWorkspaceRenameEntry(
+  request: CodexWorkspaceRenameEntryRequest,
+): Promise<CodexWorkspaceRenameEntryResponse> {
+  return invoke<CodexWorkspaceRenameEntryResponse>('codex_workspace_rename_entry', {
+    request,
+  })
+}
+
+export async function codexWorkspaceListDirectory(
+  request?: CodexWorkspaceListDirectoryRequest,
+): Promise<CodexWorkspaceListDirectoryResponse> {
+  return invoke<CodexWorkspaceListDirectoryResponse>('codex_workspace_list_directory', {
+    request,
+  })
+}
+
 export async function gitCommitApprovedReview(
   request: GitCommitApprovedReviewRequest,
 ): Promise<GitCommitApprovedReviewResponse> {
@@ -659,6 +1553,10 @@ export async function pickImageFile(): Promise<string | null> {
 
 export async function pickMentionFile(): Promise<string | null> {
   return invoke<string | null>('pick_mention_file')
+}
+
+export async function pickWorkspaceFolder(): Promise<string | null> {
+  return invoke<string | null>('pick_workspace_folder')
 }
 
 export async function codexHelpSnapshot(): Promise<CodexHelpSnapshot> {

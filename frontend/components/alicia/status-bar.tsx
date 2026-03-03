@@ -16,6 +16,7 @@ import {
   Clock,
   Gauge,
   AppWindow,
+  Database,
 } from "lucide-react"
 import {
   type AliciaState,
@@ -37,6 +38,8 @@ interface StatusBarProps {
   usage: UsageStats | null
   reasoning: string | null
   isThinking: boolean
+  panelToolbar?: React.ReactNode
+  adtActiveServerId?: string | null
   onOpenPanel: (panel: AliciaState["activePanel"]) => void
 }
 
@@ -113,7 +116,7 @@ function ReasoningPulse({
   const color = effortColors[effort] || "#77797c"
 
   return (
-    <div className="flex items-center gap-1.5 min-w-0">
+    <div className="flex min-w-0 items-center gap-1.5">
       <div className="relative flex items-center justify-center w-3 h-3 shrink-0">
         <div
           className={`absolute w-full h-full rounded-full opacity-30 ${active ? "animate-ping" : ""}`}
@@ -122,7 +125,7 @@ function ReasoningPulse({
         <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: color }} />
       </div>
       <Brain className="w-2.5 h-2.5 shrink-0" style={{ color }} />
-      <span className="truncate max-w-[260px]" style={{ color }}>
+      <span className="max-w-[220px] truncate" style={{ color }} title={label}>
         {label}
       </span>
     </div>
@@ -184,7 +187,7 @@ function authModeColor(mode: AliciaState["account"]["authMode"]): string {
 }
 
 function Separator() {
-  return <div className="w-px h-3 bg-muted-foreground/10 mx-0.5" />
+  return <div className="mx-0.5 h-2 w-px bg-terminal-blue/25" />
 }
 
 export function StatusBar({
@@ -194,6 +197,8 @@ export function StatusBar({
   usage,
   reasoning,
   isThinking,
+  panelToolbar,
+  adtActiveServerId = null,
   onOpenPanel,
 }: StatusBarProps) {
   const ApprovalIcon = approvalIcons[state.approvalPreset]
@@ -231,16 +236,16 @@ export function StatusBar({
   const accountColorClass = authModeColor(state.account.authMode)
 
   return (
-    <div className="flex items-center justify-between h-7 bg-panel-bg border-t border-panel-border px-2 text-[10px] text-muted-foreground select-none shrink-0 gap-1">
-      <div className="flex items-center gap-0.5 min-w-0 flex-1">
-        <div className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-muted-foreground/5 transition-colors">
+    <div className="alicia-status-bar flex h-[var(--ide-status-height)] shrink-0 select-none items-center justify-between gap-1 px-1.5 text-[10px] text-muted-foreground">
+      <div className="flex min-w-0 flex-1 items-center gap-0.5">
+        <div className="flex items-center gap-1 rounded px-1 py-0 transition-colors hover:bg-[var(--ide-hover)]">
           <GitBranch className="w-3 h-3 text-terminal-purple" />
           <span className="text-terminal-purple">main</span>
         </div>
 
         <Separator />
 
-        <div className="flex items-center gap-1 px-1.5 py-0.5 rounded">
+        <div className="flex items-center gap-1 rounded px-1 py-0">
           <CircleDot
             className={`w-3 h-3 ${runtime.connected ? "text-terminal-green" : "text-terminal-red"}`}
           />
@@ -250,13 +255,19 @@ export function StatusBar({
 
         <Separator />
 
-        <div className="flex items-center px-1.5 py-0.5 rounded min-w-0 flex-1">
+        <div className="flex min-w-0 flex-1 items-center rounded px-1 py-0">
           <ReasoningPulse effort={state.reasoningEffort} label={reasoningLabel} active={isThinking} />
         </div>
       </div>
 
-      <div className="flex items-center gap-0.5 shrink-0">
-        <div className="hidden md:flex items-center gap-1.5 px-1.5 py-0.5 rounded bg-muted-foreground/[0.03] border border-muted-foreground/[0.06]">
+      <div className="flex h-full min-w-0 flex-1 items-center justify-center px-1 lg:min-w-[260px]">
+        <div className="max-w-full overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {panelToolbar}
+        </div>
+      </div>
+
+      <div className="flex min-w-0 shrink-0 items-center gap-0">
+        <div className="hidden md:flex items-center gap-1 rounded alicia-status-chip px-1.5 py-0 text-[9px]">
           <TokenRing percent={usagePercent} color={effortColor} size={14} />
           <Zap className="w-2.5 h-2.5 text-terminal-gold" />
           <span className="text-terminal-fg/80 tabular-nums">
@@ -272,9 +283,11 @@ export function StatusBar({
         <Separator />
 
         <button
+          type="button"
+          aria-label="Abrir permissoes"
           onClick={() => onOpenPanel("permissions")}
           title={approvalDescription}
-          className={`flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-muted-foreground/5 transition-colors ${approvalColors[state.approvalPreset]}`}
+            className={`flex items-center gap-1 rounded px-1 py-0 transition-colors hover:bg-[var(--ide-hover)] ${approvalColors[state.approvalPreset]}`}
         >
           <ApprovalIcon className="w-3 h-3" />
           <span>
@@ -289,8 +302,10 @@ export function StatusBar({
         <Separator />
 
         <button
+          type="button"
+          aria-label="Abrir painel MCP"
           onClick={() => onOpenPanel("mcp")}
-          className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-muted-foreground/5 transition-colors"
+          className="flex items-center gap-1 rounded px-1 py-0 transition-colors hover:bg-[var(--ide-hover)]"
         >
           <PlugZap className="w-3 h-3 text-terminal-purple" />
           <span>{connectedMcps.length}</span>
@@ -300,24 +315,46 @@ export function StatusBar({
         <Separator />
 
         <button
-          onClick={() => onOpenPanel("apps")}
-          className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-muted-foreground/5 transition-colors"
+          type="button"
+          aria-label="Abrir painel ADT"
+          onClick={() => onOpenPanel("adt")}
+          className="flex min-w-0 max-w-[160px] items-center gap-1 rounded px-1 py-0 transition-colors hover:bg-[var(--ide-hover)]"
         >
-          <AppWindow className="w-3 h-3 text-terminal-cyan" />
-          <span className={accountColorClass}>{accountLabel}</span>
-          <span className="text-muted-foreground/30">({state.apps.length})</span>
+          <Database className="w-3 h-3 text-terminal-cyan" />
+          <span className="truncate text-terminal-fg/80" title={adtActiveServerId ?? "sem-servidor"}>
+            {adtActiveServerId ?? "adt"}
+          </span>
         </button>
 
         <Separator />
 
         <button
+          type="button"
+          aria-label="Abrir painel de apps"
+          onClick={() => onOpenPanel("apps")}
+          className="flex min-w-0 max-w-[168px] items-center gap-1 rounded px-1 py-0 transition-colors hover:bg-[var(--ide-hover)]"
+        >
+          <AppWindow className="w-3 h-3 text-terminal-cyan" />
+          <span className={`${accountColorClass} truncate`} title={accountLabel}>
+            {accountLabel}
+          </span>
+          <span className="shrink-0 text-muted-foreground/30">({state.apps.length})</span>
+        </button>
+
+        <Separator />
+
+        <button
+          type="button"
+          aria-label="Abrir seletor de modelo"
           onClick={() => onOpenPanel("model")}
-          className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-muted-foreground/5 transition-colors max-w-[280px]"
+          className="flex min-w-0 max-w-[240px] items-center gap-1 rounded px-1 py-0 transition-colors hover:bg-[var(--ide-hover)]"
         >
           <Cpu className="w-3 h-3 text-terminal-cyan shrink-0" />
-          <span className="text-terminal-fg/80 truncate">{modelLabel}</span>
+          <span className="min-w-0 truncate text-terminal-fg/80" title={modelLabel}>
+            {modelLabel}
+          </span>
           <span
-            className="px-1 rounded text-[8px] font-bold uppercase tracking-wider"
+            className="shrink-0 rounded px-1 text-[8px] font-semibold uppercase tracking-wide"
             style={{ color: effortColor, backgroundColor: `${effortColor}15` }}
           >
             {state.reasoningEffort}
@@ -326,14 +363,14 @@ export function StatusBar({
 
         <Separator />
 
-        <div className="hidden lg:flex items-center gap-1 px-1.5 py-0.5">
+        <div className="hidden lg:flex items-center gap-1 px-1 py-0">
           <Gauge className="w-2.5 h-2.5" />
           <span>{runtime.state}</span>
         </div>
 
         <Separator />
 
-        <div className="hidden lg:flex items-center gap-1 px-1.5 py-0.5">
+        <div className="hidden lg:flex items-center gap-1 px-1 py-0">
           <Clock className="w-2.5 h-2.5" />
           <SessionElapsed
             key={elapsedKey}

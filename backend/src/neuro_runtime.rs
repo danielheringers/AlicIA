@@ -7,10 +7,13 @@ use neuro_types::{
     NeuroRuntimeErrorCode, RuntimeDiagnoseComponent, RuntimeDiagnoseResponse, SafetyPolicy,
     WsClientConfig, WsDomainRequest, WsMessageEnvelope,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::env;
+use std::fs;
 use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::{Mutex, OnceLock};
@@ -21,11 +24,25 @@ use crate::AppState;
 
 const DEFAULT_ADT_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_WS_TIMEOUT_SECS: u64 = 15;
-const DEFAULT_ADT_CSRF_FETCH_PATH: &str = "/sap/bc/adt";
+const DEFAULT_ADT_CSRF_FETCH_PATH: &str = "/sap/bc/adt/core/discovery";
 const DEFAULT_ADT_SEARCH_PATH: &str =
     "/sap/bc/adt/repository/informationsystem/search?operation=quickSearch";
 const NEURO_COMMAND_TELEMETRY_EVENT: &str = "neuro.command";
 const NEURO_RUNTIME_INIT_TELEMETRY_EVENT: &str = "neuro.runtime_init";
+const NEURO_RUNTIME_INIT_TELEMETRY_VERBOSE_ENV: &str = "NEURO_RUNTIME_INIT_TELEMETRY_VERBOSE";
+const ENV_DEFAULT_SERVER_ID: &str = "env_default";
+const DEFAULT_ADT_SERVER_STORE_RELATIVE_PATH: &str = "alicia/neuro/adt_servers.json";
+const NEURO_ADT_SERVER_STORE_PATH_ENV: &str = "NEURO_ADT_SERVER_STORE_PATH";
+const DEFAULT_PACKAGE_DISCOVERY_QUERY: &str = "*";
+const DEFAULT_NAMESPACE_DISCOVERY_QUERY: &str = "*";
+const DEFAULT_DISCOVERY_MAX_RESULTS: u32 = 5000;
+const DEFAULT_PACKAGE_INVENTORY_MAX_OBJECTS_PER_PACKAGE: u32 = 250;
+const MAX_PACKAGE_INVENTORY_MAX_PACKAGES: u32 = DEFAULT_DISCOVERY_MAX_RESULTS;
+const MAX_PACKAGE_INVENTORY_MAX_OBJECTS_PER_PACKAGE: u32 = 1000;
+const MAX_PACKAGE_INVENTORY_DISCOVERY_QUERIES_PER_ROOT: usize = 40;
+const PACKAGE_INVENTORY_DISCOVERY_BUCKETS: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_/$";
+const MAX_PACKAGE_SCOPE_ROOTS: usize = 200;
+const MAX_PACKAGE_SCOPE_ROOT_LENGTH: usize = 120;
 
 #[derive(Debug, Clone)]
 struct EnvValue {
@@ -79,6 +96,433 @@ struct RuntimeConfig {
     sap: SapConfig,
     ws: WsConfig,
     safety: SafetyConfig,
+    server_selection: ServerSelection,
+}
+
+#[derive(Debug, Clone)]
+struct ServerSelection {
+    cache_key: String,
+    server_id: Option<String>,
+    server_name: Option<String>,
+    source: &'static str,
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeInitTarget {
+    cache_key: String,
+    resolved_server_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdtServerUpsertRequest {
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    #[serde(default)]
+    pub client: Option<String>,
+    #[serde(default)]
+    pub language: Option<String>,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub verify_tls: Option<bool>,
+    #[serde(default)]
+    pub active: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AdtServerRecord {
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    pub verify_tls: bool,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AdtServerListResponse {
+    pub servers: Vec<AdtServerRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_server_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AdtServerSelectResponse {
+    pub selected_server_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AdtServerRemoveResponse {
+    pub removed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_server_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AdtServerConnectResponse {
+    pub server_id: String,
+    pub connected: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AdtPackageSummary {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AdtNamespaceSummary {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdtFavoritePackageKind {
+    Namespace,
+    Package,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdtFavoritePackage {
+    pub kind: AdtFavoritePackageKind,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdtFavoriteObject {
+    pub uri: String,
+    pub name: String,
+    #[serde(default)]
+    pub object_type: Option<String>,
+    #[serde(default)]
+    pub package: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AdtExplorerStateResponse {
+    pub server_id: String,
+    #[serde(default)]
+    pub selected_work_package: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_package: Option<String>,
+    #[serde(default)]
+    pub package_scope_roots: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focused_object_uri: Option<String>,
+    #[serde(default)]
+    pub favorite_packages: Vec<AdtFavoritePackage>,
+    #[serde(default)]
+    pub favorite_objects: Vec<AdtFavoriteObject>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum AdtFavoritePackageToggleRequest {
+    Name(String),
+    LegacyItem {
+        name: String,
+        #[serde(default)]
+        kind: Option<AdtFavoritePackageKind>,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct AdtExplorerStatePatchRequest {
+    #[serde(default)]
+    pub server_id: Option<String>,
+    #[serde(default)]
+    pub toggle_favorite_namespace: Option<String>,
+    #[serde(default)]
+    pub toggle_favorite_package: Option<AdtFavoritePackageToggleRequest>,
+    #[serde(default)]
+    pub toggle_favorite_object: Option<AdtFavoriteObject>,
+    #[serde(default)]
+    pub set_work_package: Option<Option<String>>,
+    #[serde(default)]
+    pub working_package: Option<Option<String>>,
+    #[serde(default, alias = "package_scope_roots", alias = "packageScopeRoots")]
+    pub package_scope_roots: Option<Vec<String>>,
+    #[serde(default, alias = "focusedObjectUri")]
+    pub focused_object_uri: Option<Option<String>>,
+}
+
+impl AdtExplorerStatePatchRequest {
+    fn requested_work_package(&self) -> Option<Option<String>> {
+        self.set_work_package
+            .clone()
+            .or_else(|| self.working_package.clone())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdtListObjectsScope {
+    LocalObjects,
+    FavoritePackages,
+    FavoriteObjects,
+    SystemLibrary,
+    Namespace,
+    Package,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdtListObjectsResponseScope {
+    LocalObjects,
+    FavoritePackages,
+    FavoriteObjects,
+    SystemLibrary,
+}
+
+impl AdtListObjectsScope {
+    fn response_scope(self) -> AdtListObjectsResponseScope {
+        match self {
+            AdtListObjectsScope::LocalObjects => AdtListObjectsResponseScope::LocalObjects,
+            AdtListObjectsScope::FavoritePackages | AdtListObjectsScope::Package => {
+                AdtListObjectsResponseScope::FavoritePackages
+            }
+            AdtListObjectsScope::FavoriteObjects => AdtListObjectsResponseScope::FavoriteObjects,
+            AdtListObjectsScope::SystemLibrary | AdtListObjectsScope::Namespace => {
+                AdtListObjectsResponseScope::SystemLibrary
+            }
+        }
+    }
+
+    fn is_legacy_namespace(self) -> bool {
+        matches!(self, AdtListObjectsScope::Namespace)
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AdtListObjectsResponse {
+    pub scope: AdtListObjectsResponseScope,
+    #[serde(default)]
+    pub objects: Vec<neuro_types::AdtObjectSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespaces: Option<Vec<AdtNamespaceSummary>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdtListObjectsRequest {
+    pub scope: AdtListObjectsScope,
+    #[serde(default, alias = "namespace")]
+    pub namespace: Option<String>,
+    #[serde(default, alias = "packageName")]
+    pub package_name: Option<String>,
+    #[serde(default, alias = "packageKind")]
+    pub package_kind: Option<AdtFavoritePackageKind>,
+    #[serde(default, alias = "maxResults")]
+    pub max_results: Option<u32>,
+    #[serde(default, alias = "serverId")]
+    pub server_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdtPackageInventoryRequest {
+    pub roots: Vec<String>,
+    #[serde(default, alias = "includeSubpackages")]
+    pub include_subpackages: Option<bool>,
+    #[serde(default, alias = "includeObjects", alias = "include_objects")]
+    pub include_objects: Option<bool>,
+    #[serde(default, alias = "maxPackages")]
+    pub max_packages: Option<u32>,
+    #[serde(
+        default,
+        alias = "maxObjectsPerPackage",
+        alias = "max_objects_per_package"
+    )]
+    pub max_objects_per_package: Option<u32>,
+    #[serde(default, alias = "serverId")]
+    pub server_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AdtPackageInventoryResponse {
+    pub roots: Vec<String>,
+    pub packages: Vec<AdtPackageInventoryNode>,
+    pub objects_by_package: Vec<AdtPackageInventoryPackageObjects>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<AdtPackageInventoryMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AdtPackageInventoryMetadata {
+    pub is_complete: bool,
+    pub is_truncated: bool,
+    pub include_objects: bool,
+    pub max_packages_reached: bool,
+    pub root_discovery_truncated: bool,
+    pub object_results_truncated: bool,
+    pub max_packages: u32,
+    pub max_objects_per_package: u32,
+    pub returned_packages: u32,
+    pub packages_with_truncated_objects: u32,
+    pub roots: Vec<AdtPackageInventoryRootMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AdtPackageInventoryRootMetadata {
+    pub root: String,
+    pub kind: String,
+    pub queries_executed: u32,
+    pub matched_packages: u32,
+    pub returned_packages: u32,
+    pub result_limit_hit: bool,
+    pub is_complete: bool,
+    pub skipped_due_to_max_packages: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AdtPackageInventoryNode {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_name: Option<String>,
+    pub depth: u32,
+    pub is_root: bool,
+    pub object_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AdtPackageInventoryPackageObjects {
+    pub package_name: String,
+    pub objects: Vec<neuro_types::AdtObjectSummary>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum AdtPackageRootKind {
+    Package,
+    Namespace,
+    Pattern,
+}
+
+#[derive(Debug, Clone)]
+struct AdtPackageRootSpec {
+    kind: AdtPackageRootKind,
+    query: String,
+    response_value: String,
+    dedupe_key: String,
+}
+
+#[derive(Debug, Clone)]
+struct AdtPackageInventoryVisit {
+    name: String,
+    parent_name: Option<String>,
+    depth: u32,
+    is_root: bool,
+    recurse_subpackages: bool,
+}
+
+#[derive(Debug, Clone)]
+struct AdtPackageInventoryRootSeed {
+    name: String,
+    recurse_subpackages: bool,
+}
+
+#[derive(Debug, Clone)]
+struct AdtNodeStructureRef {
+    name: String,
+    object_type: Option<String>,
+    parent_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct AdtPackageInventoryRootDiscovery {
+    packages: Vec<String>,
+    queries_executed: u32,
+    result_limit_hit: bool,
+    is_complete: bool,
+}
+
+#[derive(Debug, Clone)]
+struct AdtPackageInventoryRootDiscoverySummary {
+    packages: Vec<AdtPackageInventoryRootSeed>,
+    roots: Vec<AdtPackageInventoryRootMetadata>,
+    max_packages_reached: bool,
+    root_discovery_truncated: bool,
+}
+
+#[derive(Debug, Clone)]
+struct AdtPackageInventoryObjectsResult {
+    objects: Vec<neuro_types::AdtObjectSummary>,
+    is_truncated: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdtUpdateSourceCommandRequest {
+    pub object_uri: String,
+    pub source: String,
+    #[serde(default)]
+    pub etag: Option<String>,
+    #[serde(default)]
+    pub server_id: Option<String>,
+}
+
+impl AdtUpdateSourceCommandRequest {
+    fn into_update_request(self) -> neuro_types::AdtUpdateSourceRequest {
+        neuro_types::AdtUpdateSourceRequest {
+            object_uri: self.object_uri,
+            source: self.source,
+            etag: self.etag,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct AdtServerStore {
+    #[serde(default)]
+    servers: Vec<StoredAdtServer>,
+    #[serde(default)]
+    explorer_state_by_server: BTreeMap<String, StoredAdtExplorerState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredAdtServer {
+    id: String,
+    name: String,
+    base_url: String,
+    #[serde(default)]
+    client: Option<String>,
+    #[serde(default)]
+    language: Option<String>,
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
+    #[serde(default = "default_verify_tls")]
+    verify_tls: bool,
+    #[serde(default)]
+    active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct StoredAdtExplorerState {
+    #[serde(default)]
+    favorite_packages: Vec<AdtFavoritePackage>,
+    #[serde(default)]
+    favorite_objects: Vec<AdtFavoriteObject>,
+    #[serde(default)]
+    selected_work_package: Option<String>,
+    #[serde(default)]
+    package_scope_roots: Vec<String>,
+    #[serde(default)]
+    focused_object_uri: Option<String>,
+}
+
+fn default_verify_tls() -> bool {
+    true
 }
 
 pub struct NeuroRuntime {
@@ -87,8 +531,8 @@ pub struct NeuroRuntime {
 }
 
 impl NeuroRuntime {
-    async fn initialize() -> Result<Self, NeuroRuntimeError> {
-        let config = resolve_runtime_config()?;
+    async fn initialize(server_id: Option<&str>) -> Result<Self, NeuroRuntimeError> {
+        let config = resolve_runtime_config(server_id)?;
         let base_url = config
             .sap
             .url
@@ -212,6 +656,10 @@ fn emit_neuro_runtime_init_telemetry(
     duration: Duration,
     error: Option<&NeuroRuntimeError>,
 ) {
+    if !should_emit_neuro_runtime_init_telemetry(status) {
+        return;
+    }
+
     let mut payload = serde_json::Map::new();
     payload.insert(
         "event".to_string(),
@@ -227,6 +675,21 @@ fn emit_neuro_runtime_init_telemetry(
     }
 
     emit_neuro_telemetry(Value::Object(payload));
+}
+
+fn should_emit_neuro_runtime_init_telemetry(status: &str) -> bool {
+    match status {
+        "cache_hit" | "cache_hit_after_gate" => runtime_init_telemetry_verbose_enabled(),
+        _ => true,
+    }
+}
+
+fn runtime_init_telemetry_verbose_enabled() -> bool {
+    env::var(NEURO_RUNTIME_INIT_TELEMETRY_VERBOSE_ENV)
+        .ok()
+        .as_deref()
+        .and_then(parse_env_bool)
+        == Some(true)
 }
 
 async fn run_with_neuro_command_telemetry<T, F>(
@@ -276,6 +739,435 @@ fn parse_csv(raw: &str) -> Vec<String> {
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+fn normalize_optional_field(value: Option<String>) -> Option<String> {
+    value.and_then(|entry| {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn normalize_required_field(field: &str, value: &str) -> Result<String, NeuroRuntimeError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(runtime_error(
+            NeuroRuntimeErrorCode::InvalidArgument,
+            format!("{field} must not be empty"),
+            None,
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn normalize_stored_server(server: StoredAdtServer) -> Option<StoredAdtServer> {
+    let id = server.id.trim().to_string();
+    let name = server.name.trim().to_string();
+    let base_url = server.base_url.trim().to_string();
+    if id.is_empty() || name.is_empty() || base_url.is_empty() {
+        return None;
+    }
+
+    Some(StoredAdtServer {
+        id,
+        name,
+        base_url,
+        client: normalize_optional_field(server.client),
+        language: normalize_optional_field(server.language),
+        username: normalize_optional_field(server.username),
+        password: normalize_optional_field(server.password),
+        verify_tls: server.verify_tls,
+        active: server.active,
+    })
+}
+
+fn normalize_favorite_package(entry: AdtFavoritePackage) -> Option<AdtFavoritePackage> {
+    let name = normalize_optional_field(Some(entry.name))?;
+    Some(AdtFavoritePackage {
+        kind: entry.kind,
+        name,
+    })
+}
+
+fn normalize_favorite_object(entry: AdtFavoriteObject) -> Option<AdtFavoriteObject> {
+    let uri = normalize_optional_field(Some(entry.uri))?;
+    let name = normalize_optional_field(Some(entry.name))?;
+    Some(AdtFavoriteObject {
+        uri,
+        name,
+        object_type: normalize_optional_field(entry.object_type),
+        package: normalize_optional_field(entry.package),
+    })
+}
+
+fn favorite_package_cmp_key(entry: &AdtFavoritePackage) -> String {
+    format!("{:?}:{}", entry.kind, entry.name.to_ascii_uppercase())
+}
+
+fn favorite_object_cmp_key(entry: &AdtFavoriteObject) -> String {
+    entry.uri.to_ascii_uppercase()
+}
+
+fn normalize_package_scope_roots(entries: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::<String>::new();
+    let mut normalized = Vec::<String>::new();
+
+    for entry in entries {
+        let Some(trimmed) = normalize_optional_field(Some(entry)) else {
+            continue;
+        };
+        let capped = trimmed
+            .chars()
+            .take(MAX_PACKAGE_SCOPE_ROOT_LENGTH)
+            .collect::<String>();
+        let Some(root) = normalize_optional_field(Some(capped)) else {
+            continue;
+        };
+        let key = root.to_ascii_uppercase();
+        if !seen.insert(key) {
+            continue;
+        }
+        normalized.push(root);
+        if normalized.len() >= MAX_PACKAGE_SCOPE_ROOTS {
+            break;
+        }
+    }
+
+    normalized
+}
+
+fn normalize_explorer_state(state: &mut StoredAdtExplorerState) {
+    state.selected_work_package = normalize_optional_field(state.selected_work_package.take());
+    state.package_scope_roots =
+        normalize_package_scope_roots(std::mem::take(&mut state.package_scope_roots));
+    state.focused_object_uri = normalize_optional_field(state.focused_object_uri.take());
+
+    let mut package_seen = HashSet::<String>::new();
+    let mut normalized_packages = Vec::<AdtFavoritePackage>::new();
+    for entry in std::mem::take(&mut state.favorite_packages) {
+        let normalized = match normalize_favorite_package(entry) {
+            Some(value) => value,
+            None => continue,
+        };
+        let key = favorite_package_cmp_key(&normalized);
+        if !package_seen.insert(key) {
+            continue;
+        }
+        normalized_packages.push(normalized);
+    }
+    normalized_packages.sort_by(|left, right| {
+        left.kind
+            .cmp(&right.kind)
+            .then_with(|| {
+                left.name
+                    .to_ascii_uppercase()
+                    .cmp(&right.name.to_ascii_uppercase())
+            })
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    state.favorite_packages = normalized_packages;
+
+    let mut object_seen = HashSet::<String>::new();
+    let mut normalized_objects = Vec::<AdtFavoriteObject>::new();
+    for entry in std::mem::take(&mut state.favorite_objects) {
+        let normalized = match normalize_favorite_object(entry) {
+            Some(value) => value,
+            None => continue,
+        };
+        let key = favorite_object_cmp_key(&normalized);
+        if !object_seen.insert(key) {
+            continue;
+        }
+        normalized_objects.push(normalized);
+    }
+    normalized_objects.sort_by(|left, right| {
+        left.name
+            .to_ascii_uppercase()
+            .cmp(&right.name.to_ascii_uppercase())
+            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| {
+                left.uri
+                    .to_ascii_uppercase()
+                    .cmp(&right.uri.to_ascii_uppercase())
+            })
+            .then_with(|| left.uri.cmp(&right.uri))
+    });
+    state.favorite_objects = normalized_objects;
+}
+
+fn normalize_server_store(store: &mut AdtServerStore) {
+    let mut seen_ids = HashSet::<String>::new();
+    let mut normalized = Vec::<StoredAdtServer>::new();
+    let mut active_id: Option<String> = None;
+
+    for server in std::mem::take(&mut store.servers) {
+        let mut server = match normalize_stored_server(server) {
+            Some(entry) => entry,
+            None => continue,
+        };
+
+        if !seen_ids.insert(server.id.clone()) {
+            continue;
+        }
+
+        if server.active {
+            if active_id.is_none() {
+                active_id = Some(server.id.clone());
+            } else {
+                server.active = false;
+            }
+        }
+
+        normalized.push(server);
+    }
+
+    if let Some(active_id) = active_id {
+        for server in &mut normalized {
+            server.active = server.id == active_id;
+        }
+    }
+
+    store.servers = normalized;
+
+    let mut normalized_explorer_state = BTreeMap::<String, StoredAdtExplorerState>::new();
+    for (raw_server_id, mut state) in std::mem::take(&mut store.explorer_state_by_server) {
+        let Some(server_id) = normalize_optional_field(Some(raw_server_id)) else {
+            continue;
+        };
+        normalize_explorer_state(&mut state);
+        normalized_explorer_state.entry(server_id).or_insert(state);
+    }
+    store.explorer_state_by_server = normalized_explorer_state;
+}
+
+fn resolve_codex_home() -> PathBuf {
+    if let Some(path) = env::var_os("CODEX_HOME").filter(|value| !value.is_empty()) {
+        return PathBuf::from(path);
+    }
+    if let Some(path) = env::var_os("HOME").filter(|value| !value.is_empty()) {
+        return PathBuf::from(path).join(".codex");
+    }
+    if let Some(path) = env::var_os("USERPROFILE").filter(|value| !value.is_empty()) {
+        return PathBuf::from(path).join(".codex");
+    }
+    PathBuf::from(".codex")
+}
+
+fn resolve_server_store_path() -> PathBuf {
+    if let Some(path) =
+        env::var_os(NEURO_ADT_SERVER_STORE_PATH_ENV).filter(|value| !value.is_empty())
+    {
+        return PathBuf::from(path);
+    }
+
+    resolve_codex_home().join(DEFAULT_ADT_SERVER_STORE_RELATIVE_PATH)
+}
+
+fn load_server_store() -> Result<AdtServerStore, NeuroRuntimeError> {
+    let path = resolve_server_store_path();
+    if !path.exists() {
+        return Ok(AdtServerStore::default());
+    }
+
+    let raw = fs::read_to_string(&path).map_err(|error| {
+        runtime_error(
+            NeuroRuntimeErrorCode::RuntimeInitError,
+            format!(
+                "failed to read ADT server store at `{}`: {error}",
+                path.display()
+            ),
+            None,
+        )
+    })?;
+
+    let mut parsed: AdtServerStore = serde_json::from_str(&raw).map_err(|error| {
+        runtime_error(
+            NeuroRuntimeErrorCode::RuntimeInitError,
+            format!(
+                "failed to parse ADT server store at `{}`: {error}",
+                path.display()
+            ),
+            None,
+        )
+    })?;
+    normalize_server_store(&mut parsed);
+    Ok(parsed)
+}
+
+fn save_server_store(store: &AdtServerStore) -> Result<(), NeuroRuntimeError> {
+    let mut normalized_store = store.clone();
+    normalize_server_store(&mut normalized_store);
+
+    let path = resolve_server_store_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            runtime_error(
+                NeuroRuntimeErrorCode::RuntimeInitError,
+                format!(
+                    "failed to create ADT server store directory `{}`: {error}",
+                    parent.display()
+                ),
+                None,
+            )
+        })?;
+    }
+
+    let payload = serde_json::to_string_pretty(&normalized_store).map_err(|error| {
+        runtime_error(
+            NeuroRuntimeErrorCode::RuntimeInitError,
+            format!("failed to serialize ADT server store: {error}"),
+            None,
+        )
+    })?;
+
+    write_server_store_payload(path.as_path(), payload.as_str()).map_err(|error| {
+        runtime_error(
+            NeuroRuntimeErrorCode::RuntimeInitError,
+            format!(
+                "failed to write ADT server store at `{}`: {error}",
+                path.display()
+            ),
+            None,
+        )
+    })
+}
+
+#[cfg(unix)]
+fn write_server_store_payload(path: &Path, payload: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(payload.as_bytes())?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn write_server_store_payload(path: &Path, payload: &str) -> std::io::Result<()> {
+    // Windows ACL semantics do not map to Unix mode bits.
+    fs::write(path, payload)
+}
+
+fn selected_server_id(store: &AdtServerStore) -> Option<String> {
+    store
+        .servers
+        .iter()
+        .find(|server| server.active)
+        .map(|server| server.id.clone())
+}
+
+fn to_server_record(server: &StoredAdtServer) -> AdtServerRecord {
+    AdtServerRecord {
+        id: server.id.clone(),
+        name: server.name.clone(),
+        base_url: server.base_url.clone(),
+        client: server.client.clone(),
+        language: server.language.clone(),
+        username: server.username.clone(),
+        verify_tls: server.verify_tls,
+        active: server.active,
+    }
+}
+
+fn server_list_response(store: &AdtServerStore) -> AdtServerListResponse {
+    AdtServerListResponse {
+        servers: store.servers.iter().map(to_server_record).collect(),
+        selected_server_id: selected_server_id(store),
+    }
+}
+
+fn cache_key_for_server(server_id: &str) -> String {
+    format!("server:{server_id}")
+}
+
+fn resolve_server_selection(
+    requested_server_id: Option<&str>,
+) -> Result<(Option<StoredAdtServer>, ServerSelection), NeuroRuntimeError> {
+    let mut store = load_server_store()?;
+    normalize_server_store(&mut store);
+
+    let requested_server_id = requested_server_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    if let Some(server_id) = requested_server_id {
+        let server = store
+            .servers
+            .iter()
+            .find(|entry| entry.id == server_id)
+            .cloned()
+            .ok_or_else(|| {
+                runtime_error(
+                    NeuroRuntimeErrorCode::InvalidArgument,
+                    format!("ADT server `{server_id}` is not configured"),
+                    None,
+                )
+            })?;
+        return Ok((
+            Some(server.clone()),
+            ServerSelection {
+                cache_key: cache_key_for_server(server.id.as_str()),
+                server_id: Some(server.id.clone()),
+                server_name: Some(server.name.clone()),
+                source: "command.server_id",
+            },
+        ));
+    }
+
+    if let Some(server) = store.servers.iter().find(|entry| entry.active).cloned() {
+        return Ok((
+            Some(server.clone()),
+            ServerSelection {
+                cache_key: cache_key_for_server(server.id.as_str()),
+                server_id: Some(server.id.clone()),
+                server_name: Some(server.name.clone()),
+                source: "server_store.active",
+            },
+        ));
+    }
+
+    Ok((
+        None,
+        ServerSelection {
+            cache_key: "env_default".to_string(),
+            server_id: None,
+            server_name: None,
+            source: "env",
+        },
+    ))
+}
+
+fn resolve_runtime_init_target(
+    requested_server_id: Option<&str>,
+) -> Result<RuntimeInitTarget, NeuroRuntimeError> {
+    let (_, selection) = resolve_server_selection(requested_server_id)?;
+    Ok(RuntimeInitTarget {
+        cache_key: selection.cache_key,
+        resolved_server_id: selection.server_id,
+    })
+}
+
+fn server_env_value(value: &Option<String>) -> Option<EnvValue> {
+    value.as_ref().map(|entry| EnvValue {
+        value: entry.clone(),
+        source: "server_store",
+    })
+}
+
+fn server_required_env_value(value: &str) -> EnvValue {
+    EnvValue {
+        value: value.to_string(),
+        source: "server_store",
+    }
 }
 
 fn parse_env_bool_with_default(
@@ -347,7 +1239,11 @@ fn collect_ws_headers_from_prefix(prefix: &str) -> BTreeMap<String, String> {
     headers
 }
 
-fn resolve_runtime_config() -> Result<RuntimeConfig, NeuroRuntimeError> {
+fn resolve_runtime_config(
+    requested_server_id: Option<&str>,
+) -> Result<RuntimeConfig, NeuroRuntimeError> {
+    let (server_override, server_selection) = resolve_server_selection(requested_server_id)?;
+
     let (sap_insecure_tls, sap_insecure_tls_source) =
         parse_env_bool_with_default(&["NEURO_SAP_INSECURE", "SAP_INSECURE"], false)?;
     let (sap_timeout_secs, sap_timeout_source) = parse_env_u64_with_default(
@@ -355,12 +1251,42 @@ fn resolve_runtime_config() -> Result<RuntimeConfig, NeuroRuntimeError> {
         DEFAULT_ADT_TIMEOUT_SECS,
     )?;
 
+    let sap_url = server_override
+        .as_ref()
+        .map(|server| server_required_env_value(server.base_url.as_str()))
+        .or_else(|| first_non_empty_env(&["NEURO_SAP_URL", "SAP_URL"]));
+    let (sap_user, sap_password) = if let Some(server) = server_override.as_ref() {
+        // Prevent credential mixing when a server store entry is selected.
+        (
+            server_env_value(&server.username),
+            server_env_value(&server.password),
+        )
+    } else {
+        (
+            first_non_empty_env(&["NEURO_SAP_USER", "SAP_USER", "SAP_USERNAME"]),
+            first_non_empty_env(&["NEURO_SAP_PASSWORD", "SAP_PASSWORD", "SAP_PASS"]),
+        )
+    };
+    let sap_client = server_override
+        .as_ref()
+        .and_then(|server| server_env_value(&server.client))
+        .or_else(|| first_non_empty_env(&["NEURO_SAP_CLIENT", "SAP_CLIENT"]));
+    let sap_language = server_override
+        .as_ref()
+        .and_then(|server| server_env_value(&server.language))
+        .or_else(|| first_non_empty_env(&["NEURO_SAP_LANGUAGE", "SAP_LANGUAGE", "SAP_LANG"]));
+    let (sap_insecure_tls, sap_insecure_tls_source) = if let Some(server) = &server_override {
+        (!server.verify_tls, Some("server_store"))
+    } else {
+        (sap_insecure_tls, sap_insecure_tls_source)
+    };
+
     let sap = SapConfig {
-        url: first_non_empty_env(&["NEURO_SAP_URL", "SAP_URL"]),
-        user: first_non_empty_env(&["NEURO_SAP_USER", "SAP_USER", "SAP_USERNAME"]),
-        password: first_non_empty_env(&["NEURO_SAP_PASSWORD", "SAP_PASSWORD", "SAP_PASS"]),
-        client: first_non_empty_env(&["NEURO_SAP_CLIENT", "SAP_CLIENT"]),
-        language: first_non_empty_env(&["NEURO_SAP_LANGUAGE", "SAP_LANGUAGE", "SAP_LANG"]),
+        url: sap_url,
+        user: sap_user,
+        password: sap_password,
+        client: sap_client,
+        language: sap_language,
         insecure_tls: sap_insecure_tls,
         insecure_tls_source: sap_insecure_tls_source,
         timeout_secs: sap_timeout_secs,
@@ -418,7 +1344,12 @@ fn resolve_runtime_config() -> Result<RuntimeConfig, NeuroRuntimeError> {
         require_etag_for_updates_source,
     };
 
-    Ok(RuntimeConfig { sap, ws, safety })
+    Ok(RuntimeConfig {
+        sap,
+        ws,
+        safety,
+        server_selection,
+    })
 }
 
 fn now_epoch_secs() -> u64 {
@@ -432,6 +1363,22 @@ fn now_epoch_secs() -> u64 {
 fn metadata_for(runtime: &NeuroRuntime, cached_runtime: bool) -> BTreeMap<String, Value> {
     let mut metadata = BTreeMap::new();
     metadata.insert("cachedRuntime".to_string(), json!(cached_runtime));
+    metadata.insert(
+        "serverSelectionSource".to_string(),
+        json!(runtime.config.server_selection.source),
+    );
+    metadata.insert(
+        "serverCacheKey".to_string(),
+        json!(runtime.config.server_selection.cache_key.clone()),
+    );
+    metadata.insert(
+        "serverId".to_string(),
+        json!(runtime.config.server_selection.server_id.clone()),
+    );
+    metadata.insert(
+        "serverName".to_string(),
+        json!(runtime.config.server_selection.server_name.clone()),
+    );
     metadata.insert("sapReady".to_string(), json!(runtime.config.sap.is_ready()));
     metadata.insert(
         "sapUrlSource".to_string(),
@@ -588,14 +1535,14 @@ async fn success_response(
         RuntimeDiagnoseComponent {
             component: "sap_env_config".to_string(),
             status: DiagnoseStatus::Healthy,
-            detail: "Required SAP runtime environment variables are configured".to_string(),
+            detail: "Required SAP runtime configuration is available".to_string(),
             latency_ms: None,
         }
     } else {
         RuntimeDiagnoseComponent {
             component: "sap_env_config".to_string(),
             status: DiagnoseStatus::Degraded,
-            detail: "Missing one or more required SAP runtime environment variables".to_string(),
+            detail: "Missing one or more required SAP runtime settings".to_string(),
             latency_ms: None,
         }
     };
@@ -751,28 +1698,52 @@ fn map_mcp_error(error: NeuroMcpError) -> NeuroRuntimeError {
     }
 }
 
-pub async fn get_or_init(state: &AppState) -> Result<Arc<NeuroRuntime>, NeuroRuntimeError> {
+fn normalize_optional_server_id(server_id: Option<String>) -> Option<String> {
+    server_id.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+async fn clear_runtime_cache(state: &AppState) {
+    let _init_gate = state.neuro_runtime_init_gate.lock().await;
+    let mut cache = state.neuro_runtime_cache.lock().await;
+    cache.clear();
+}
+
+pub async fn get_or_init(
+    state: &AppState,
+    server_id: Option<&str>,
+) -> Result<Arc<NeuroRuntime>, NeuroRuntimeError> {
     let started_at = Instant::now();
+    let first_target = resolve_runtime_init_target(server_id)?;
 
     if let Some(runtime) = {
-        let cache = state.neuro_runtime.lock().await;
-        cache.clone()
+        let cache = state.neuro_runtime_cache.lock().await;
+        cache.get(first_target.cache_key.as_str()).cloned()
     } {
         emit_neuro_runtime_init_telemetry("cache_hit", started_at.elapsed(), None);
         return Ok(runtime);
     }
 
     let _init_gate = state.neuro_runtime_init_gate.lock().await;
+    let init_target = resolve_runtime_init_target(server_id)?;
+    let cache_key = init_target.cache_key;
+    let resolved_server_id = init_target.resolved_server_id;
 
     if let Some(runtime) = {
-        let cache = state.neuro_runtime.lock().await;
-        cache.clone()
+        let cache = state.neuro_runtime_cache.lock().await;
+        cache.get(cache_key.as_str()).cloned()
     } {
         emit_neuro_runtime_init_telemetry("cache_hit_after_gate", started_at.elapsed(), None);
         return Ok(runtime);
     }
 
-    let initialized = match NeuroRuntime::initialize().await {
+    let initialized = match NeuroRuntime::initialize(resolved_server_id.as_deref()).await {
         Ok(runtime) => Arc::new(runtime),
         Err(error) => {
             emit_neuro_runtime_init_telemetry("failed", started_at.elapsed(), Some(&error));
@@ -780,8 +1751,8 @@ pub async fn get_or_init(state: &AppState) -> Result<Arc<NeuroRuntime>, NeuroRun
         }
     };
 
-    let mut cache = state.neuro_runtime.lock().await;
-    *cache = Some(Arc::clone(&initialized));
+    let mut cache = state.neuro_runtime_cache.lock().await;
+    cache.insert(cache_key, Arc::clone(&initialized));
     emit_neuro_runtime_init_telemetry("initialized", started_at.elapsed(), None);
     Ok(initialized)
 }
@@ -796,26 +1767,525 @@ pub async fn neuro_runtime_diagnose_impl(
 }
 
 pub async fn neuro_runtime_diagnose_for_app_state(state: &AppState) -> RuntimeDiagnoseResponse {
-    if let Some(runtime) = {
-        let cache = state.neuro_runtime.lock().await;
-        cache.clone()
-    } {
-        return success_response(runtime, true).await;
+    if let Ok((_, selection)) = resolve_server_selection(None) {
+        if let Some(runtime) = {
+            let cache = state.neuro_runtime_cache.lock().await;
+            cache.get(selection.cache_key.as_str()).cloned()
+        } {
+            return success_response(runtime, true).await;
+        }
     }
 
-    match get_or_init(state).await {
+    match get_or_init(state, None).await {
         Ok(runtime) => success_response(runtime, false).await,
         Err(error) => init_error_response(error),
     }
+}
+
+fn upsert_server(
+    store: &mut AdtServerStore,
+    request: AdtServerUpsertRequest,
+) -> Result<StoredAdtServer, NeuroRuntimeError> {
+    let id = normalize_required_field("id", request.id.as_str())?;
+    let name = normalize_required_field("name", request.name.as_str())?;
+    let base_url = normalize_required_field("base_url", request.base_url.as_str())?;
+
+    let existing = store.servers.iter().find(|server| server.id == id).cloned();
+
+    let new_password = match request.password {
+        Some(password) => normalize_optional_field(Some(password)),
+        None => existing.as_ref().and_then(|server| server.password.clone()),
+    };
+
+    let server = StoredAdtServer {
+        id: id.clone(),
+        name,
+        base_url,
+        client: normalize_optional_field(request.client),
+        language: normalize_optional_field(request.language),
+        username: normalize_optional_field(request.username),
+        password: new_password,
+        verify_tls: request.verify_tls.unwrap_or(
+            existing
+                .as_ref()
+                .map(|server| server.verify_tls)
+                .unwrap_or(true),
+        ),
+        active: request.active.unwrap_or(
+            existing
+                .as_ref()
+                .map(|server| server.active)
+                .unwrap_or(false),
+        ),
+    };
+
+    if let Some(index) = store.servers.iter().position(|entry| entry.id == id) {
+        store.servers[index] = server.clone();
+    } else {
+        store.servers.push(server.clone());
+    }
+
+    if request.active == Some(true) {
+        for entry in &mut store.servers {
+            entry.active = entry.id == id;
+        }
+    } else if request.active == Some(false) {
+        for entry in &mut store.servers {
+            if entry.id == id {
+                entry.active = false;
+            }
+        }
+    }
+
+    normalize_server_store(store);
+
+    store
+        .servers
+        .iter()
+        .find(|entry| entry.id == id)
+        .cloned()
+        .ok_or_else(|| {
+            runtime_error(
+                NeuroRuntimeErrorCode::RuntimeInitError,
+                format!("failed to persist ADT server `{id}`"),
+                None,
+            )
+        })
+}
+
+fn select_server(store: &mut AdtServerStore, server_id: &str) -> Result<(), NeuroRuntimeError> {
+    let found = store.servers.iter().any(|server| server.id == server_id);
+    if !found {
+        return Err(runtime_error(
+            NeuroRuntimeErrorCode::InvalidArgument,
+            format!("ADT server `{server_id}` is not configured"),
+            None,
+        ));
+    }
+
+    for server in &mut store.servers {
+        server.active = server.id == server_id;
+    }
+
+    Ok(())
+}
+
+fn remove_server(store: &mut AdtServerStore, server_id: &str) -> bool {
+    let original_len = store.servers.len();
+    store.servers.retain(|server| server.id != server_id);
+    let removed = original_len != store.servers.len();
+    if removed {
+        store.explorer_state_by_server.remove(server_id);
+    }
+    removed
+}
+
+fn resolve_explorer_state_server_id(
+    requested_server_id: Option<String>,
+) -> Result<String, NeuroRuntimeError> {
+    let (_, selection) =
+        resolve_server_selection(normalize_optional_server_id(requested_server_id).as_deref())?;
+    Ok(selection
+        .server_id
+        .unwrap_or_else(|| ENV_DEFAULT_SERVER_ID.to_string()))
+}
+
+fn explorer_state_response(
+    server_id: String,
+    state: &StoredAdtExplorerState,
+) -> AdtExplorerStateResponse {
+    let selected_work_package = state.selected_work_package.clone();
+    AdtExplorerStateResponse {
+        server_id,
+        selected_work_package: selected_work_package.clone(),
+        working_package: selected_work_package,
+        package_scope_roots: state.package_scope_roots.clone(),
+        focused_object_uri: state.focused_object_uri.clone(),
+        favorite_packages: state.favorite_packages.clone(),
+        favorite_objects: state.favorite_objects.clone(),
+    }
+}
+
+fn normalize_package_name(value: String) -> Option<String> {
+    normalize_optional_field(Some(value))
+}
+
+fn normalize_namespace_name(value: String) -> Option<String> {
+    normalize_optional_field(Some(value))
+}
+
+fn toggle_favorite_package_entry(
+    state: &mut StoredAdtExplorerState,
+    kind: AdtFavoritePackageKind,
+    raw_name: String,
+) -> Result<(), NeuroRuntimeError> {
+    let Some(name) = normalize_optional_field(Some(raw_name)) else {
+        return Err(runtime_error(
+            NeuroRuntimeErrorCode::InvalidArgument,
+            "favorite package name must not be empty".to_string(),
+            None,
+        ));
+    };
+
+    let index = state
+        .favorite_packages
+        .iter()
+        .position(|entry| entry.kind == kind && entry.name.eq_ignore_ascii_case(name.as_str()));
+    if let Some(index) = index {
+        state.favorite_packages.remove(index);
+    } else {
+        state
+            .favorite_packages
+            .push(AdtFavoritePackage { kind, name });
+    }
+    normalize_explorer_state(state);
+    Ok(())
+}
+
+fn toggle_favorite_object_entry(
+    state: &mut StoredAdtExplorerState,
+    entry: AdtFavoriteObject,
+) -> Result<(), NeuroRuntimeError> {
+    let normalized = normalize_favorite_object(entry).ok_or_else(|| {
+        runtime_error(
+            NeuroRuntimeErrorCode::InvalidArgument,
+            "favorite object requires uri and name".to_string(),
+            None,
+        )
+    })?;
+
+    let index = state
+        .favorite_objects
+        .iter()
+        .position(|existing| existing.uri.eq_ignore_ascii_case(normalized.uri.as_str()));
+    if let Some(index) = index {
+        state.favorite_objects.remove(index);
+    } else {
+        state.favorite_objects.push(normalized);
+    }
+    normalize_explorer_state(state);
+    Ok(())
+}
+
+fn apply_explorer_state_patch(
+    state: &mut StoredAdtExplorerState,
+    request: &AdtExplorerStatePatchRequest,
+) -> Result<(), NeuroRuntimeError> {
+    if let Some(raw_namespace) = request.toggle_favorite_namespace.clone() {
+        let Some(namespace) = normalize_namespace_name(raw_namespace) else {
+            return Err(runtime_error(
+                NeuroRuntimeErrorCode::InvalidArgument,
+                "toggle_favorite_namespace must not be empty".to_string(),
+                None,
+            ));
+        };
+        toggle_favorite_package_entry(state, AdtFavoritePackageKind::Namespace, namespace)?;
+    }
+
+    if let Some(toggle) = request.toggle_favorite_package.clone() {
+        match toggle {
+            AdtFavoritePackageToggleRequest::Name(package_name) => {
+                let Some(normalized_name) = normalize_package_name(package_name) else {
+                    return Err(runtime_error(
+                        NeuroRuntimeErrorCode::InvalidArgument,
+                        "toggle_favorite_package must not be empty".to_string(),
+                        None,
+                    ));
+                };
+                toggle_favorite_package_entry(
+                    state,
+                    AdtFavoritePackageKind::Package,
+                    normalized_name,
+                )?;
+            }
+            AdtFavoritePackageToggleRequest::LegacyItem { name, kind } => {
+                let Some(normalized_name) = normalize_optional_field(Some(name)) else {
+                    return Err(runtime_error(
+                        NeuroRuntimeErrorCode::InvalidArgument,
+                        "toggle_favorite_package.name must not be empty".to_string(),
+                        None,
+                    ));
+                };
+                let resolved_kind = kind.unwrap_or(AdtFavoritePackageKind::Package);
+                toggle_favorite_package_entry(state, resolved_kind, normalized_name)?;
+            }
+        }
+    }
+
+    if let Some(favorite_object) = request.toggle_favorite_object.clone() {
+        toggle_favorite_object_entry(state, favorite_object)?;
+    }
+
+    if let Some(selected_work_package) = request.requested_work_package() {
+        state.selected_work_package =
+            selected_work_package.and_then(|value| normalize_optional_field(Some(value)));
+        normalize_explorer_state(state);
+    }
+
+    if let Some(package_scope_roots) = request.package_scope_roots.clone() {
+        state.package_scope_roots = normalize_package_scope_roots(package_scope_roots);
+    }
+
+    if let Some(Some(focused_object_uri)) = request.focused_object_uri.clone() {
+        state.focused_object_uri = normalize_optional_field(Some(focused_object_uri));
+        normalize_explorer_state(state);
+    }
+
+    Ok(())
+}
+
+fn object_matches_package_filter(
+    object: &neuro_types::AdtObjectSummary,
+    package_filter: Option<&str>,
+) -> bool {
+    match package_filter {
+        Some(filter) => object
+            .package
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|package| package.eq_ignore_ascii_case(filter)),
+        None => true,
+    }
+}
+
+fn object_namespace(object: &neuro_types::AdtObjectSummary) -> Option<String> {
+    extract_abap_namespace(object.name.as_str())
+        .or_else(|| object.package.as_deref().and_then(extract_abap_namespace))
+}
+
+fn object_matches_namespace_filter(
+    object: &neuro_types::AdtObjectSummary,
+    namespace_filter: Option<&str>,
+) -> bool {
+    match namespace_filter {
+        Some(filter) => object_namespace(object)
+            .as_deref()
+            .is_some_and(|namespace| namespace.eq_ignore_ascii_case(filter)),
+        None => true,
+    }
+}
+
+fn filter_objects_for_scope(
+    mut objects: Vec<neuro_types::AdtObjectSummary>,
+    scope: AdtListObjectsResponseScope,
+    namespace_filter: Option<&str>,
+    package_filter: Option<&str>,
+    max_results: Option<u32>,
+) -> Vec<neuro_types::AdtObjectSummary> {
+    objects.retain(|object| {
+        if !object_matches_package_filter(object, package_filter) {
+            return false;
+        }
+        if !object_matches_namespace_filter(object, namespace_filter) {
+            return false;
+        }
+
+        match scope {
+            AdtListObjectsResponseScope::LocalObjects => object_namespace(object).is_none(),
+            AdtListObjectsResponseScope::FavoritePackages
+            | AdtListObjectsResponseScope::FavoriteObjects => true,
+            AdtListObjectsResponseScope::SystemLibrary => object_namespace(object).is_some(),
+        }
+    });
+
+    truncate_objects(objects, max_results)
+}
+
+fn search_query_for_scope(
+    scope: AdtListObjectsResponseScope,
+    namespace_filter: Option<&str>,
+    package_filter: Option<&str>,
+) -> String {
+    match scope {
+        AdtListObjectsResponseScope::LocalObjects => package_filter
+            .unwrap_or(DEFAULT_PACKAGE_DISCOVERY_QUERY)
+            .to_string(),
+        AdtListObjectsResponseScope::FavoritePackages => namespace_filter
+            .or(package_filter)
+            .unwrap_or(DEFAULT_PACKAGE_DISCOVERY_QUERY)
+            .to_string(),
+        AdtListObjectsResponseScope::FavoriteObjects => DEFAULT_PACKAGE_DISCOVERY_QUERY.to_string(),
+        AdtListObjectsResponseScope::SystemLibrary => namespace_filter
+            .unwrap_or(DEFAULT_NAMESPACE_DISCOVERY_QUERY)
+            .to_string(),
+    }
+}
+
+fn truncate_objects(
+    mut objects: Vec<neuro_types::AdtObjectSummary>,
+    max_results: Option<u32>,
+) -> Vec<neuro_types::AdtObjectSummary> {
+    if let Some(limit) = max_results.and_then(|value| usize::try_from(value).ok()) {
+        objects.truncate(limit);
+    }
+    objects
+}
+
+fn truncate_namespaces(
+    mut namespaces: Vec<AdtNamespaceSummary>,
+    max_results: Option<u32>,
+) -> Vec<AdtNamespaceSummary> {
+    if let Some(limit) = max_results.and_then(|value| usize::try_from(value).ok()) {
+        namespaces.truncate(limit);
+    }
+    namespaces
+}
+
+fn resolve_favorite_package_filters(
+    package_kind: Option<AdtFavoritePackageKind>,
+    namespace_filter: Option<String>,
+    package_filter: Option<String>,
+) -> (Option<String>, Option<String>) {
+    match package_kind {
+        Some(AdtFavoritePackageKind::Namespace) => (namespace_filter.or(package_filter), None),
+        Some(AdtFavoritePackageKind::Package) => (None, package_filter.or(namespace_filter)),
+        None => (namespace_filter, package_filter),
+    }
+}
+
+fn favorite_objects_to_summaries(
+    state: &StoredAdtExplorerState,
+    max_results: Option<u32>,
+) -> Vec<neuro_types::AdtObjectSummary> {
+    let objects = state
+        .favorite_objects
+        .iter()
+        .map(|entry| neuro_types::AdtObjectSummary {
+            uri: entry.uri.clone(),
+            name: entry.name.clone(),
+            object_type: entry.object_type.clone(),
+            package: entry.package.clone(),
+        })
+        .collect();
+    truncate_objects(objects, max_results)
+}
+
+fn namespace_summaries_from_objects(
+    objects: Vec<neuro_types::AdtObjectSummary>,
+    package_filter: Option<&str>,
+) -> Vec<AdtNamespaceSummary> {
+    let package_filter = package_filter.map(|entry| entry.to_ascii_uppercase());
+    let mut namespaces = BTreeMap::<String, Option<String>>::new();
+
+    for object in objects {
+        let object_package = normalize_optional_field(object.package);
+        if let Some(filter) = package_filter.as_ref() {
+            let package_mismatch = object_package
+                .as_ref()
+                .map(|entry| entry.to_ascii_uppercase() != *filter)
+                .unwrap_or(true);
+            if package_mismatch {
+                continue;
+            }
+        }
+
+        let namespace = extract_abap_namespace(object.name.as_str())
+            .or_else(|| object_package.as_deref().and_then(extract_abap_namespace));
+        if let Some(namespace) = namespace {
+            namespaces
+                .entry(namespace)
+                .or_insert(object_package.clone());
+        }
+    }
+
+    namespaces
+        .into_iter()
+        .map(|(name, package_name)| AdtNamespaceSummary { name, package_name })
+        .collect()
+}
+
+fn parse_abap_namespaces_from_table_raw(raw: &str) -> Vec<String> {
+    fn is_namespace_char(ch: char) -> bool {
+        ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_'
+    }
+
+    let chars: Vec<char> = raw.chars().collect();
+    let mut namespaces = HashSet::<String>::new();
+    let mut index = 0usize;
+
+    while index < chars.len() {
+        if chars[index] != '/' {
+            index += 1;
+            continue;
+        }
+
+        let mut cursor = index + 1;
+        while cursor < chars.len() && is_namespace_char(chars[cursor]) {
+            cursor += 1;
+        }
+
+        if cursor > index + 1 && cursor < chars.len() && chars[cursor] == '/' {
+            let inner = chars[index + 1..cursor].iter().collect::<String>();
+            if inner.chars().any(|entry| entry.is_ascii_alphabetic()) {
+                namespaces.insert(format!("/{inner}/"));
+            }
+            index = cursor + 1;
+            continue;
+        }
+
+        index += 1;
+    }
+
+    let mut sorted = namespaces.into_iter().collect::<Vec<_>>();
+    sorted.sort_by(|left, right| {
+        left.to_ascii_uppercase()
+            .cmp(&right.to_ascii_uppercase())
+            .then_with(|| left.cmp(right))
+    });
+    sorted
+}
+
+async fn list_namespaces_from_ddic_table(
+    runtime: &NeuroRuntime,
+    table_name: &str,
+) -> Result<Vec<AdtNamespaceSummary>, NeuroRuntimeError> {
+    let normalized_table_name = table_name.trim().to_ascii_uppercase();
+    if normalized_table_name.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let endpoint = format!(
+        "/sap/bc/adt/datapreview/ddic?rowNumber={}&ddicEntityName={}",
+        DEFAULT_DISCOVERY_MAX_RESULTS.max(1),
+        normalized_table_name
+    );
+    let raw = runtime
+        .engine
+        .post_raw_text(endpoint.as_str(), None, None, Some("application/*"))
+        .await
+        .map_err(map_engine_error)?;
+    Ok(parse_abap_namespaces_from_table_raw(raw.as_str())
+        .into_iter()
+        .map(|name| AdtNamespaceSummary {
+            name,
+            package_name: None,
+        })
+        .collect())
+}
+
+fn extract_abap_namespace(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if !trimmed.starts_with('/') {
+        return None;
+    }
+    let mut slash_indices = trimmed.match_indices('/').map(|(index, _)| index);
+    let _leading = slash_indices.next()?;
+    let second = slash_indices.next()?;
+    Some(trimmed[..=second].to_string())
 }
 
 pub async fn neuro_search_objects_impl(
     state: State<'_, AppState>,
     query: String,
     max_results: Option<u32>,
+    server_id: Option<String>,
 ) -> Result<Vec<neuro_types::AdtObjectSummary>, NeuroRuntimeError> {
     run_with_neuro_command_telemetry("neuro_search_objects", async {
-        let runtime = get_or_init(state.inner()).await?;
+        let runtime = get_or_init(
+            state.inner(),
+            normalize_optional_server_id(server_id).as_deref(),
+        )
+        .await?;
         runtime
             .engine
             .search(query.as_str(), max_results)
@@ -828,9 +2298,14 @@ pub async fn neuro_search_objects_impl(
 pub async fn neuro_get_source_impl(
     state: State<'_, AppState>,
     object_uri: String,
+    server_id: Option<String>,
 ) -> Result<neuro_types::AdtSourceResponse, NeuroRuntimeError> {
     run_with_neuro_command_telemetry("neuro_get_source", async {
-        let runtime = get_or_init(state.inner()).await?;
+        let runtime = get_or_init(
+            state.inner(),
+            normalize_optional_server_id(server_id).as_deref(),
+        )
+        .await?;
         runtime
             .engine
             .get_source(object_uri.as_str())
@@ -842,15 +2317,1279 @@ pub async fn neuro_get_source_impl(
 
 pub async fn neuro_update_source_impl(
     state: State<'_, AppState>,
-    request: neuro_types::AdtUpdateSourceRequest,
+    request: AdtUpdateSourceCommandRequest,
 ) -> Result<neuro_types::AdtUpdateSourceResponse, NeuroRuntimeError> {
     run_with_neuro_command_telemetry("neuro_update_source", async {
-        let runtime = get_or_init(state.inner()).await?;
+        let server_id = normalize_optional_server_id(request.server_id.clone());
+        let runtime = get_or_init(state.inner(), server_id.as_deref()).await?;
         runtime
             .engine
-            .update_source(request)
+            .update_source(request.into_update_request())
             .await
             .map_err(map_engine_error)
+    })
+    .await
+}
+
+pub async fn neuro_adt_server_list_impl(
+    _state: State<'_, AppState>,
+) -> Result<AdtServerListResponse, NeuroRuntimeError> {
+    run_with_neuro_command_telemetry("neuro_adt_server_list", async {
+        let mut store = load_server_store()?;
+        normalize_server_store(&mut store);
+        Ok(server_list_response(&store))
+    })
+    .await
+}
+
+pub async fn neuro_adt_server_upsert_impl(
+    state: State<'_, AppState>,
+    request: AdtServerUpsertRequest,
+) -> Result<AdtServerRecord, NeuroRuntimeError> {
+    run_with_neuro_command_telemetry("neuro_adt_server_upsert", async {
+        let mut store = load_server_store()?;
+        let stored = upsert_server(&mut store, request)?;
+        save_server_store(&store)?;
+        clear_runtime_cache(state.inner()).await;
+        Ok(to_server_record(&stored))
+    })
+    .await
+}
+
+pub async fn neuro_adt_server_remove_impl(
+    state: State<'_, AppState>,
+    server_id: String,
+) -> Result<AdtServerRemoveResponse, NeuroRuntimeError> {
+    run_with_neuro_command_telemetry("neuro_adt_server_remove", async {
+        let mut store = load_server_store()?;
+        let normalized_server_id = normalize_required_field("server_id", server_id.as_str())?;
+        let removed = remove_server(&mut store, normalized_server_id.as_str());
+
+        if removed {
+            normalize_server_store(&mut store);
+            save_server_store(&store)?;
+            clear_runtime_cache(state.inner()).await;
+        }
+
+        Ok(AdtServerRemoveResponse {
+            removed,
+            selected_server_id: selected_server_id(&store),
+        })
+    })
+    .await
+}
+
+pub async fn neuro_adt_server_select_impl(
+    state: State<'_, AppState>,
+    server_id: String,
+) -> Result<AdtServerSelectResponse, NeuroRuntimeError> {
+    run_with_neuro_command_telemetry("neuro_adt_server_select", async {
+        let mut store = load_server_store()?;
+        let normalized_server_id = normalize_required_field("server_id", server_id.as_str())?;
+        select_server(&mut store, normalized_server_id.as_str())?;
+        save_server_store(&store)?;
+        clear_runtime_cache(state.inner()).await;
+        Ok(AdtServerSelectResponse {
+            selected_server_id: normalized_server_id,
+        })
+    })
+    .await
+}
+
+pub async fn neuro_adt_server_connect_impl(
+    state: State<'_, AppState>,
+    server_id: Option<String>,
+) -> Result<AdtServerConnectResponse, NeuroRuntimeError> {
+    run_with_neuro_command_telemetry("neuro_adt_server_connect", async {
+        let selected_server_id = normalize_optional_server_id(server_id);
+        let runtime = get_or_init(state.inner(), selected_server_id.as_deref()).await?;
+        let report = runtime.engine.diagnose().await;
+        let component = report
+            .components
+            .iter()
+            .find(|entry| entry.component == "adt_http");
+
+        let (connected, message) = match component {
+            Some(component) if component.status == DiagnoseStatus::Healthy => {
+                (true, Some(component.detail.clone()))
+            }
+            Some(component) => (false, Some(component.detail.clone())),
+            None => (
+                false,
+                Some("ADT diagnose component unavailable".to_string()),
+            ),
+        };
+
+        let response_server_id = runtime
+            .config
+            .server_selection
+            .server_id
+            .clone()
+            .or(selected_server_id)
+            .unwrap_or_else(|| "env_default".to_string());
+
+        Ok(AdtServerConnectResponse {
+            server_id: response_server_id,
+            connected,
+            message,
+        })
+    })
+    .await
+}
+
+pub async fn neuro_adt_list_packages_impl(
+    state: State<'_, AppState>,
+    server_id: Option<String>,
+) -> Result<Vec<AdtPackageSummary>, NeuroRuntimeError> {
+    run_with_neuro_command_telemetry("neuro_adt_list_packages", async {
+        let normalized_server_id = normalize_optional_server_id(server_id);
+        let runtime = get_or_init(state.inner(), normalized_server_id.as_deref()).await?;
+        let objects = runtime
+            .engine
+            .search(
+                DEFAULT_PACKAGE_DISCOVERY_QUERY,
+                Some(DEFAULT_DISCOVERY_MAX_RESULTS),
+            )
+            .await
+            .map_err(map_engine_error)?;
+
+        let mut package_names = HashSet::<String>::new();
+        for object in objects {
+            if let Some(package) = normalize_optional_field(object.package) {
+                package_names.insert(package);
+            }
+        }
+
+        let mut packages = package_names
+            .into_iter()
+            .map(|name| AdtPackageSummary {
+                name,
+                description: None,
+            })
+            .collect::<Vec<_>>();
+        packages.sort_by(|left, right| {
+            left.name
+                .to_ascii_lowercase()
+                .cmp(&right.name.to_ascii_lowercase())
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        Ok(packages)
+    })
+    .await
+}
+
+pub async fn neuro_adt_list_namespaces_impl(
+    state: State<'_, AppState>,
+    package_name: Option<String>,
+    server_id: Option<String>,
+) -> Result<Vec<AdtNamespaceSummary>, NeuroRuntimeError> {
+    run_with_neuro_command_telemetry("neuro_adt_list_namespaces", async {
+        let normalized_server_id = normalize_optional_server_id(server_id);
+        let normalized_package = normalize_optional_field(package_name);
+        let query = normalized_package
+            .as_deref()
+            .unwrap_or(DEFAULT_NAMESPACE_DISCOVERY_QUERY);
+
+        let runtime = get_or_init(state.inner(), normalized_server_id.as_deref()).await?;
+        if normalized_package.is_none() {
+            let mut seen = HashSet::<String>::new();
+            let mut merged = Vec::<AdtNamespaceSummary>::new();
+            for table_name in ["TRNSPACET", "TRNSPACE"] {
+                if let Ok(entries) = list_namespaces_from_ddic_table(&runtime, table_name).await {
+                    for entry in entries {
+                        if seen.insert(entry.name.to_ascii_uppercase()) {
+                            merged.push(entry);
+                        }
+                    }
+                }
+            }
+            if !merged.is_empty() {
+                merged.sort_by(|left, right| {
+                    left.name
+                        .to_ascii_uppercase()
+                        .cmp(&right.name.to_ascii_uppercase())
+                        .then_with(|| left.name.cmp(&right.name))
+                });
+                return Ok(merged);
+            }
+        }
+
+        let objects = runtime
+            .engine
+            .search(query, Some(DEFAULT_DISCOVERY_MAX_RESULTS))
+            .await
+            .map_err(map_engine_error)?;
+        Ok(namespace_summaries_from_objects(
+            objects,
+            normalized_package.as_deref(),
+        ))
+    })
+    .await
+}
+
+pub async fn neuro_adt_list_package_inventory_impl(
+    state: State<'_, AppState>,
+    request: AdtPackageInventoryRequest,
+) -> Result<AdtPackageInventoryResponse, NeuroRuntimeError> {
+    run_with_neuro_command_telemetry("neuro_adt_list_package_inventory", async {
+        let include_subpackages = request.include_subpackages.unwrap_or(true);
+        let include_objects = request.include_objects.unwrap_or(false);
+        let max_packages = normalize_inventory_limit(
+            request.max_packages,
+            DEFAULT_DISCOVERY_MAX_RESULTS,
+            "max_packages",
+            MAX_PACKAGE_INVENTORY_MAX_PACKAGES,
+        )?;
+        let max_objects_per_package = normalize_inventory_limit(
+            request.max_objects_per_package,
+            DEFAULT_PACKAGE_INVENTORY_MAX_OBJECTS_PER_PACKAGE,
+            "max_objects_per_package",
+            MAX_PACKAGE_INVENTORY_MAX_OBJECTS_PER_PACKAGE,
+        )?;
+        let roots = normalize_inventory_roots(request.roots)?;
+
+        let runtime = get_or_init(
+            state.inner(),
+            normalize_optional_server_id(request.server_id).as_deref(),
+        )
+        .await?;
+
+        let root_discovery =
+            discover_root_packages_for_inventory(&runtime, &roots, max_packages).await?;
+        let discovered_packages = collect_inventory_packages(
+            &runtime,
+            root_discovery.packages,
+            include_subpackages,
+            max_packages,
+        )
+        .await?;
+
+        let mut packages = Vec::<AdtPackageInventoryNode>::with_capacity(discovered_packages.len());
+        let mut objects_by_package = if include_objects {
+            Vec::<AdtPackageInventoryPackageObjects>::with_capacity(discovered_packages.len())
+        } else {
+            Vec::<AdtPackageInventoryPackageObjects>::new()
+        };
+        let mut packages_with_truncated_objects = 0u32;
+
+        for package in discovered_packages {
+            let package_name = package.name.clone();
+            let object_count = if include_objects {
+                let objects_result = list_source_objects_for_package_inventory(
+                    &runtime,
+                    package_name.as_str(),
+                    max_objects_per_package,
+                )
+                .await?;
+                if objects_result.is_truncated {
+                    packages_with_truncated_objects =
+                        packages_with_truncated_objects.saturating_add(1);
+                }
+                let count = u32::try_from(objects_result.objects.len()).unwrap_or(u32::MAX);
+                objects_by_package.push(AdtPackageInventoryPackageObjects {
+                    package_name: package_name.clone(),
+                    objects: objects_result.objects,
+                });
+                count
+            } else {
+                0
+            };
+
+            packages.push(AdtPackageInventoryNode {
+                name: package_name.clone(),
+                parent_name: package.parent_name,
+                depth: package.depth,
+                is_root: package.is_root,
+                object_count,
+            });
+        }
+
+        let returned_packages = u32::try_from(packages.len()).unwrap_or(u32::MAX);
+        let root_discovery_truncated = root_discovery.root_discovery_truncated;
+        let max_packages_reached = root_discovery.max_packages_reached;
+        let object_results_truncated = packages_with_truncated_objects > 0;
+        let is_truncated =
+            root_discovery_truncated || max_packages_reached || object_results_truncated;
+        let metadata = AdtPackageInventoryMetadata {
+            is_complete: !is_truncated,
+            is_truncated,
+            include_objects,
+            max_packages_reached,
+            root_discovery_truncated,
+            object_results_truncated,
+            max_packages,
+            max_objects_per_package,
+            returned_packages,
+            packages_with_truncated_objects,
+            roots: root_discovery.roots,
+        };
+
+        Ok(AdtPackageInventoryResponse {
+            roots: roots.into_iter().map(|root| root.response_value).collect(),
+            packages,
+            objects_by_package,
+            metadata: Some(metadata),
+        })
+    })
+    .await
+}
+
+fn normalize_inventory_limit(
+    value: Option<u32>,
+    default_value: u32,
+    field_name: &str,
+    max_value: u32,
+) -> Result<u32, NeuroRuntimeError> {
+    match value {
+        Some(0) => Err(runtime_error(
+            NeuroRuntimeErrorCode::InvalidArgument,
+            format!("{field_name} must be greater than zero"),
+            None,
+        )),
+        Some(limit) if limit > max_value => Err(runtime_error(
+            NeuroRuntimeErrorCode::InvalidArgument,
+            format!("{field_name} must be less than or equal to {max_value}"),
+            None,
+        )),
+        Some(limit) => Ok(limit),
+        None => Ok(default_value),
+    }
+}
+
+fn normalize_inventory_roots(
+    roots: Vec<String>,
+) -> Result<Vec<AdtPackageRootSpec>, NeuroRuntimeError> {
+    let mut normalized = Vec::<AdtPackageRootSpec>::new();
+    let mut seen = HashSet::<String>::new();
+
+    for raw_root in roots {
+        let Some(root) = parse_inventory_root(raw_root.as_str()) else {
+            continue;
+        };
+
+        if seen.insert(root.dedupe_key.clone()) {
+            normalized.push(root);
+        }
+    }
+
+    if normalized.is_empty() {
+        return Err(runtime_error(
+            NeuroRuntimeErrorCode::InvalidArgument,
+            "roots must contain at least one package, namespace, or pattern".to_string(),
+            None,
+        ));
+    }
+
+    Ok(normalized)
+}
+
+fn parse_inventory_root(raw_root: &str) -> Option<AdtPackageRootSpec> {
+    let trimmed = raw_root.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let (kind, query) = if let Some((prefix, raw_value)) = trimmed.split_once(':') {
+        let normalized_prefix = prefix.trim().to_ascii_lowercase();
+        if let Some(kind) = parse_inventory_root_kind(normalized_prefix.as_str()) {
+            (kind, raw_value.trim())
+        } else {
+            (infer_inventory_root_kind(trimmed), trimmed)
+        }
+    } else {
+        (infer_inventory_root_kind(trimmed), trimmed)
+    };
+
+    let query = match kind {
+        AdtPackageRootKind::Package => normalize_inventory_package_name(query)?,
+        AdtPackageRootKind::Namespace => normalize_inventory_namespace_name(query)?,
+        AdtPackageRootKind::Pattern => normalize_inventory_pattern(query)?,
+    };
+
+    let response_value = query.clone();
+
+    Some(AdtPackageRootSpec {
+        kind,
+        query: query.clone(),
+        response_value,
+        dedupe_key: format!(
+            "{}:{}",
+            inventory_root_kind_label(kind),
+            query.to_ascii_uppercase()
+        ),
+    })
+}
+
+fn parse_inventory_root_kind(value: &str) -> Option<AdtPackageRootKind> {
+    match value {
+        "package" | "pkg" => Some(AdtPackageRootKind::Package),
+        "namespace" | "ns" => Some(AdtPackageRootKind::Namespace),
+        "pattern" | "query" => Some(AdtPackageRootKind::Pattern),
+        _ => None,
+    }
+}
+
+fn infer_inventory_root_kind(value: &str) -> AdtPackageRootKind {
+    let trimmed = value.trim();
+    if trimmed.contains('*') || trimmed.contains('?') {
+        AdtPackageRootKind::Pattern
+    } else if trimmed.starts_with('/') || trimmed.ends_with('/') {
+        AdtPackageRootKind::Namespace
+    } else {
+        AdtPackageRootKind::Package
+    }
+}
+
+fn inventory_root_kind_label(kind: AdtPackageRootKind) -> &'static str {
+    match kind {
+        AdtPackageRootKind::Package => "package",
+        AdtPackageRootKind::Namespace => "namespace",
+        AdtPackageRootKind::Pattern => "pattern",
+    }
+}
+
+fn root_allows_subpackage_recursion(kind: AdtPackageRootKind) -> bool {
+    kind == AdtPackageRootKind::Package
+}
+
+fn normalize_inventory_package_name(value: &str) -> Option<String> {
+    normalize_optional_field(Some(value.to_ascii_uppercase()))
+}
+
+fn normalize_inventory_namespace_name(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.contains('*') || trimmed.contains('?') {
+        return None;
+    }
+
+    let inner = trimmed.trim_matches('/');
+    let normalized = normalize_optional_field(Some(inner.to_ascii_uppercase()))?;
+    Some(format!("/{normalized}/"))
+}
+
+fn normalize_inventory_pattern(value: &str) -> Option<String> {
+    normalize_optional_field(Some(value.to_ascii_uppercase()))
+}
+
+fn package_matches_inventory_root(package_name: &str, root: &AdtPackageRootSpec) -> bool {
+    let normalized_package = package_name.trim().to_ascii_uppercase();
+    if normalized_package.is_empty() {
+        return false;
+    }
+
+    match root.kind {
+        AdtPackageRootKind::Package => normalized_package.eq_ignore_ascii_case(root.query.as_str()),
+        AdtPackageRootKind::Namespace => normalized_package.starts_with(root.query.as_str()),
+        AdtPackageRootKind::Pattern => {
+            wildcard_match(normalized_package.as_str(), root.query.as_str())
+        }
+    }
+}
+
+fn wildcard_match(value: &str, pattern: &str) -> bool {
+    let value = value.as_bytes();
+    let pattern = pattern.as_bytes();
+    let mut value_index = 0usize;
+    let mut pattern_index = 0usize;
+    let mut last_star_index = None::<usize>;
+    let mut last_star_value_index = 0usize;
+
+    while value_index < value.len() {
+        if pattern_index < pattern.len()
+            && (pattern[pattern_index] == b'?' || pattern[pattern_index] == value[value_index])
+        {
+            value_index += 1;
+            pattern_index += 1;
+            continue;
+        }
+
+        if pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+            last_star_index = Some(pattern_index);
+            pattern_index += 1;
+            last_star_value_index = value_index;
+            continue;
+        }
+
+        if let Some(star_index) = last_star_index {
+            pattern_index = star_index + 1;
+            last_star_value_index += 1;
+            value_index = last_star_value_index;
+            continue;
+        }
+
+        return false;
+    }
+
+    while pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+        pattern_index += 1;
+    }
+
+    pattern_index == pattern.len()
+}
+
+fn is_package_object_type(object_type: &str) -> bool {
+    matches!(
+        object_type.trim().to_ascii_uppercase().as_str(),
+        "DEVC/K" | "DEVC" | "PACKAGE"
+    )
+}
+
+fn is_source_object_type_for_inventory(object_type: &str) -> bool {
+    matches!(
+        object_type.trim().to_ascii_uppercase().as_str(),
+        "PROG/P"
+            | "PROG/I"
+            | "CLAS/OC"
+            | "INTF/OI"
+            | "FUGR/FF"
+            | "DDLS/DF"
+            | "TABL/DT"
+            | "STRU/DS"
+            | "BDEF/BDO"
+            | "SRVD/SRV"
+            | "SRVB/SVB"
+    )
+}
+
+fn package_name_from_search_result(object: neuro_types::AdtObjectSummary) -> Option<String> {
+    normalize_optional_field(Some(object.name)).or_else(|| {
+        object
+            .package
+            .and_then(|package| normalize_optional_field(Some(package)))
+    })
+}
+
+fn cap_discovery_search_limit(requested_limit: u32) -> u32 {
+    requested_limit.clamp(1, DEFAULT_DISCOVERY_MAX_RESULTS)
+}
+
+async fn discover_root_packages_for_inventory(
+    runtime: &NeuroRuntime,
+    roots: &[AdtPackageRootSpec],
+    max_packages: u32,
+) -> Result<AdtPackageInventoryRootDiscoverySummary, NeuroRuntimeError> {
+    let mut discovered = Vec::<AdtPackageInventoryRootSeed>::new();
+    let mut discovered_indexes = HashMap::<String, usize>::new();
+    let mut roots_metadata = Vec::<AdtPackageInventoryRootMetadata>::with_capacity(roots.len());
+    let max_packages = usize::try_from(max_packages).unwrap_or(usize::MAX);
+    let mut max_packages_reached = false;
+    let mut root_discovery_truncated = false;
+
+    for (index, root) in roots.iter().enumerate() {
+        if discovered.len() >= max_packages {
+            max_packages_reached = true;
+            root_discovery_truncated = true;
+            roots_metadata.push(skipped_root_metadata(root));
+            for skipped_root in roots.iter().skip(index + 1) {
+                roots_metadata.push(skipped_root_metadata(skipped_root));
+            }
+            break;
+        }
+
+        let AdtPackageInventoryRootDiscovery {
+            mut packages,
+            queries_executed,
+            result_limit_hit,
+            mut is_complete,
+        } = discover_packages_for_inventory_root(runtime, root).await?;
+
+        let matched_packages = u32::try_from(packages.len()).unwrap_or(u32::MAX);
+        let mut returned_packages = 0u32;
+
+        for package_name in packages.drain(..) {
+            let normalized = package_name.to_ascii_uppercase();
+            if normalized.is_empty() {
+                continue;
+            }
+
+            let recurse_subpackages = root_allows_subpackage_recursion(root.kind);
+            if let Some(existing_index) = discovered_indexes.get(normalized.as_str()) {
+                if recurse_subpackages {
+                    discovered[*existing_index].recurse_subpackages = true;
+                }
+                continue;
+            }
+
+            let discovered_index = discovered.len();
+            discovered_indexes.insert(normalized.clone(), discovered_index);
+            discovered.push(AdtPackageInventoryRootSeed {
+                name: normalized,
+                recurse_subpackages,
+            });
+            returned_packages = returned_packages.saturating_add(1);
+            if discovered.len() >= max_packages {
+                max_packages_reached = true;
+                root_discovery_truncated = true;
+                is_complete = false;
+                break;
+            }
+        }
+
+        let root_metadata = AdtPackageInventoryRootMetadata {
+            root: root.response_value.clone(),
+            kind: inventory_root_kind_label(root.kind).to_string(),
+            queries_executed,
+            matched_packages,
+            returned_packages,
+            result_limit_hit,
+            is_complete,
+            skipped_due_to_max_packages: false,
+        };
+        root_discovery_truncated |= !root_metadata.is_complete;
+        roots_metadata.push(root_metadata);
+
+        if max_packages_reached {
+            for skipped_root in roots.iter().skip(index + 1) {
+                roots_metadata.push(skipped_root_metadata(skipped_root));
+            }
+            break;
+        }
+    }
+
+    Ok(AdtPackageInventoryRootDiscoverySummary {
+        packages: discovered,
+        roots: roots_metadata,
+        max_packages_reached,
+        root_discovery_truncated,
+    })
+}
+
+fn skipped_root_metadata(root: &AdtPackageRootSpec) -> AdtPackageInventoryRootMetadata {
+    AdtPackageInventoryRootMetadata {
+        root: root.response_value.clone(),
+        kind: inventory_root_kind_label(root.kind).to_string(),
+        queries_executed: 0,
+        matched_packages: 0,
+        returned_packages: 0,
+        result_limit_hit: false,
+        is_complete: false,
+        skipped_due_to_max_packages: true,
+    }
+}
+
+async fn discover_packages_for_inventory_root(
+    runtime: &NeuroRuntime,
+    root: &AdtPackageRootSpec,
+) -> Result<AdtPackageInventoryRootDiscovery, NeuroRuntimeError> {
+    if root.kind == AdtPackageRootKind::Package {
+        return Ok(AdtPackageInventoryRootDiscovery {
+            packages: vec![root.query.clone()],
+            queries_executed: 0,
+            result_limit_hit: false,
+            is_complete: true,
+        });
+    }
+
+    let search_limit = cap_discovery_search_limit(DEFAULT_DISCOVERY_MAX_RESULTS);
+    let mut packages = Vec::<String>::new();
+    let mut seen = HashSet::<String>::new();
+    let mut queries_executed = 0u32;
+    let mut result_limit_hit = false;
+
+    let base_query = root_inventory_discovery_query(root);
+    let (base_packages, base_limit_hit) =
+        discover_packages_for_inventory_query(runtime, root, base_query.as_str(), search_limit)
+            .await?;
+    queries_executed = queries_executed.saturating_add(1);
+    result_limit_hit |= base_limit_hit;
+    for package_name in base_packages {
+        if seen.insert(package_name.clone()) {
+            packages.push(package_name);
+        }
+    }
+
+    let mut chunk_budget_exhausted = false;
+    if base_limit_hit {
+        if let Some(chunk_prefix) = inventory_chunk_prefix_for_root(root) {
+            for chunk_query in inventory_chunk_queries_from_prefix(chunk_prefix.as_str()) {
+                if usize::try_from(queries_executed).unwrap_or(usize::MAX)
+                    >= MAX_PACKAGE_INVENTORY_DISCOVERY_QUERIES_PER_ROOT
+                {
+                    chunk_budget_exhausted = true;
+                    break;
+                }
+
+                let (chunk_packages, chunk_limit_hit) = discover_packages_for_inventory_query(
+                    runtime,
+                    root,
+                    chunk_query.as_str(),
+                    search_limit,
+                )
+                .await?;
+                queries_executed = queries_executed.saturating_add(1);
+                result_limit_hit |= chunk_limit_hit;
+
+                for package_name in chunk_packages {
+                    if seen.insert(package_name.clone()) {
+                        packages.push(package_name);
+                    }
+                }
+            }
+        }
+    }
+
+    packages.sort_by(|left, right| {
+        left.to_ascii_uppercase()
+            .cmp(&right.to_ascii_uppercase())
+            .then_with(|| left.cmp(right))
+    });
+
+    let is_complete = !result_limit_hit && !chunk_budget_exhausted;
+    Ok(AdtPackageInventoryRootDiscovery {
+        packages,
+        queries_executed,
+        result_limit_hit,
+        is_complete,
+    })
+}
+
+fn root_inventory_discovery_query(root: &AdtPackageRootSpec) -> String {
+    match root.kind {
+        AdtPackageRootKind::Namespace => format!("{}*", root.query),
+        _ => root.query.clone(),
+    }
+}
+
+fn inventory_chunk_prefix_for_root(root: &AdtPackageRootSpec) -> Option<String> {
+    match root.kind {
+        AdtPackageRootKind::Namespace => Some(root.query.clone()),
+        AdtPackageRootKind::Pattern => inventory_chunk_prefix_for_pattern(root.query.as_str()),
+        AdtPackageRootKind::Package => None,
+    }
+}
+
+fn inventory_chunk_prefix_for_pattern(pattern: &str) -> Option<String> {
+    if pattern.contains('?') {
+        return None;
+    }
+
+    let wildcard_count = pattern.chars().filter(|ch| *ch == '*').count();
+    if wildcard_count != 1 || !pattern.ends_with('*') {
+        return None;
+    }
+
+    let prefix = pattern.trim_end_matches('*');
+    if prefix.trim().is_empty() {
+        return None;
+    }
+
+    Some(prefix.to_string())
+}
+
+fn inventory_chunk_queries_from_prefix(prefix: &str) -> Vec<String> {
+    PACKAGE_INVENTORY_DISCOVERY_BUCKETS
+        .chars()
+        .map(|bucket| format!("{prefix}{bucket}*"))
+        .collect()
+}
+
+async fn discover_packages_for_inventory_query(
+    runtime: &NeuroRuntime,
+    root: &AdtPackageRootSpec,
+    query: &str,
+    search_limit: u32,
+) -> Result<(Vec<String>, bool), NeuroRuntimeError> {
+    let objects = runtime
+        .engine
+        .search(query, Some(search_limit))
+        .await
+        .map_err(map_engine_error)?;
+    let is_limit_hit = usize::try_from(search_limit)
+        .ok()
+        .is_some_and(|limit| objects.len() >= limit);
+
+    let mut discovered = Vec::<String>::new();
+    let mut seen = HashSet::<String>::new();
+
+    for object in objects {
+        let Some(object_type) = object.object_type.as_deref() else {
+            continue;
+        };
+        if !is_package_object_type(object_type) {
+            continue;
+        }
+
+        let Some(package_name) = package_name_from_search_result(object) else {
+            continue;
+        };
+
+        let normalized_package = package_name.to_ascii_uppercase();
+        if !package_matches_inventory_root(normalized_package.as_str(), root) {
+            continue;
+        }
+
+        if seen.insert(normalized_package.clone()) {
+            discovered.push(normalized_package);
+        }
+    }
+
+    discovered.sort_by(|left, right| {
+        left.to_ascii_uppercase()
+            .cmp(&right.to_ascii_uppercase())
+            .then_with(|| left.cmp(right))
+    });
+
+    Ok((discovered, is_limit_hit))
+}
+
+async fn collect_inventory_packages(
+    runtime: &NeuroRuntime,
+    root_packages: Vec<AdtPackageInventoryRootSeed>,
+    include_subpackages: bool,
+    max_packages: u32,
+) -> Result<Vec<AdtPackageInventoryVisit>, NeuroRuntimeError> {
+    let max_packages = usize::try_from(max_packages).unwrap_or(usize::MAX);
+    let mut queue = VecDeque::<AdtPackageInventoryVisit>::new();
+    let mut visited = HashSet::<String>::new();
+
+    for root_package in root_packages {
+        let Some(normalized_root) = normalize_inventory_package_name(root_package.name.as_str())
+        else {
+            continue;
+        };
+        if visited.insert(normalized_root.clone()) {
+            queue.push_back(AdtPackageInventoryVisit {
+                name: normalized_root,
+                parent_name: None,
+                depth: 0,
+                is_root: true,
+                recurse_subpackages: root_package.recurse_subpackages,
+            });
+        }
+    }
+
+    let mut discovered = Vec::<AdtPackageInventoryVisit>::new();
+    while let Some(current) = queue.pop_front() {
+        if discovered.len() >= max_packages {
+            break;
+        }
+
+        let current_name = current.name.clone();
+        let current_depth = current.depth;
+        let recurse_subpackages = current.recurse_subpackages;
+        discovered.push(current);
+
+        if !include_subpackages || !recurse_subpackages {
+            continue;
+        }
+
+        let subpackages = fetch_subpackages_for_package(runtime, current_name.as_str()).await?;
+        for subpackage in subpackages {
+            if visited.insert(subpackage.clone()) {
+                queue.push_back(AdtPackageInventoryVisit {
+                    name: subpackage,
+                    parent_name: Some(current_name.clone()),
+                    depth: current_depth.saturating_add(1),
+                    is_root: false,
+                    recurse_subpackages,
+                });
+            }
+        }
+    }
+
+    Ok(discovered)
+}
+
+async fn fetch_subpackages_for_package(
+    runtime: &NeuroRuntime,
+    package_name: &str,
+) -> Result<Vec<String>, NeuroRuntimeError> {
+    let endpoint = format!(
+        "/sap/bc/adt/repository/nodestructure?parent_type=DEVC%2FK&parent_name={}&withShortDescriptions=true",
+        encode_query_component(package_name)
+    );
+    let raw = runtime
+        .engine
+        .post_raw_text(endpoint.as_str(), None, None, Some("application/*"))
+        .await
+        .map_err(map_engine_error)?;
+    Ok(parse_nodestructure_subpackages(raw.as_str(), package_name))
+}
+
+fn encode_query_component(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0F) as usize] as char);
+        }
+    }
+    encoded
+}
+
+fn parse_nodestructure_subpackages(raw: &str, parent_package_name: &str) -> Vec<String> {
+    let normalized_parent = parent_package_name.trim().to_ascii_uppercase();
+    let mut seen = HashSet::<String>::new();
+    let mut out = Vec::<String>::new();
+
+    for reference in parse_nodestructure_references(raw) {
+        let Some(object_type) = reference.object_type.as_deref() else {
+            continue;
+        };
+        if !is_package_object_type(object_type) {
+            continue;
+        }
+
+        let Some(parent_name) = reference.parent_name.as_deref() else {
+            continue;
+        };
+        if !parent_name.eq_ignore_ascii_case(normalized_parent.as_str()) {
+            continue;
+        }
+
+        let child_name = reference.name.trim().to_ascii_uppercase();
+        if child_name.is_empty() || child_name == normalized_parent {
+            continue;
+        }
+
+        if seen.insert(child_name.clone()) {
+            out.push(child_name);
+        }
+    }
+
+    out.sort_by(|left, right| {
+        left.to_ascii_uppercase()
+            .cmp(&right.to_ascii_uppercase())
+            .then_with(|| left.cmp(right))
+    });
+    out
+}
+
+fn parse_nodestructure_references(raw: &str) -> Vec<AdtNodeStructureRef> {
+    let mut references = Vec::<AdtNodeStructureRef>::new();
+    let mut cursor = 0usize;
+
+    while let Some(tag_start_relative) = raw[cursor..].find('<') {
+        let tag_start = cursor + tag_start_relative;
+        let Some(tag_end_relative) = raw[tag_start..].find('>') else {
+            break;
+        };
+        let tag_end = tag_start + tag_end_relative;
+        let fragment = &raw[tag_start..=tag_end];
+        cursor = tag_end.saturating_add(1);
+
+        if !fragment.contains("objectReference") {
+            continue;
+        }
+
+        let Some(name) = extract_first_xml_attribute(fragment, &["adtcore:name", "name"])
+            .and_then(|value| normalize_optional_field(Some(value)))
+        else {
+            continue;
+        };
+
+        let object_type = extract_first_xml_attribute(fragment, &["adtcore:type", "type"])
+            .and_then(|value| normalize_optional_field(Some(value)));
+
+        let parent_name = extract_first_xml_attribute(
+            fragment,
+            &["adtcore:parentName", "parentName", "parent_name"],
+        )
+        .and_then(|value| normalize_optional_field(Some(value)))
+        .or_else(|| {
+            extract_first_xml_attribute(
+                fragment,
+                &["adtcore:parentUri", "parentUri", "parent_uri", "parent-uri"],
+            )
+            .and_then(|uri| package_name_from_uri(uri.as_str()))
+        });
+
+        references.push(AdtNodeStructureRef {
+            name,
+            object_type,
+            parent_name,
+        });
+    }
+
+    references
+}
+
+fn extract_first_xml_attribute(fragment: &str, names: &[&str]) -> Option<String> {
+    names
+        .iter()
+        .find_map(|name| extract_xml_attribute(fragment, name))
+}
+
+fn extract_xml_attribute(fragment: &str, name: &str) -> Option<String> {
+    let mut search_start = 0usize;
+    while let Some(relative_index) = fragment[search_start..].find(name) {
+        let index = search_start + relative_index;
+        search_start = index + name.len();
+
+        let bytes = fragment.as_bytes();
+        if index > 0 {
+            let previous = bytes[index - 1] as char;
+            if !(previous.is_ascii_whitespace() || previous == '<') {
+                continue;
+            }
+        }
+
+        let mut cursor = index + name.len();
+        while cursor < bytes.len() && (bytes[cursor] as char).is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if cursor >= bytes.len() || bytes[cursor] != b'=' {
+            continue;
+        }
+        cursor += 1;
+        while cursor < bytes.len() && (bytes[cursor] as char).is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if cursor >= bytes.len() || (bytes[cursor] != b'"' && bytes[cursor] != b'\'') {
+            continue;
+        }
+
+        let quote = bytes[cursor];
+        cursor += 1;
+        let value_start = cursor;
+        while cursor < bytes.len() && bytes[cursor] != quote {
+            cursor += 1;
+        }
+        if cursor >= bytes.len() {
+            continue;
+        }
+
+        let value = &fragment[value_start..cursor];
+        if value.trim().is_empty() {
+            continue;
+        }
+        return Some(value.to_string());
+    }
+
+    None
+}
+
+fn package_name_from_uri(uri: &str) -> Option<String> {
+    let path = uri.split('?').next().unwrap_or(uri);
+    let last_segment = path
+        .trim()
+        .trim_end_matches('/')
+        .split('/')
+        .next_back()
+        .unwrap_or_default();
+    let decoded_segment = decode_percent_component(last_segment);
+    normalize_optional_field(Some(decoded_segment.to_ascii_uppercase()))
+}
+
+fn decode_percent_component(value: &str) -> String {
+    fn hex_nibble(value: u8) -> Option<u8> {
+        match value {
+            b'0'..=b'9' => Some(value - b'0'),
+            b'a'..=b'f' => Some(value - b'a' + 10),
+            b'A'..=b'F' => Some(value - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::<u8>::with_capacity(bytes.len());
+    let mut index = 0usize;
+
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let high = hex_nibble(bytes[index + 1]);
+            let low = hex_nibble(bytes[index + 2]);
+            if let (Some(high), Some(low)) = (high, low) {
+                decoded.push((high << 4) | low);
+                index += 3;
+                continue;
+            }
+        }
+
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+
+    String::from_utf8_lossy(decoded.as_slice()).into_owned()
+}
+
+async fn list_source_objects_for_package_inventory(
+    runtime: &NeuroRuntime,
+    package_name: &str,
+    max_objects_per_package: u32,
+) -> Result<AdtPackageInventoryObjectsResult, NeuroRuntimeError> {
+    let search_limit = cap_discovery_search_limit(DEFAULT_DISCOVERY_MAX_RESULTS);
+    let raw_objects = runtime
+        .engine
+        .search(package_name, Some(search_limit))
+        .await
+        .map_err(map_engine_error)?;
+    let search_limit_hit = usize::try_from(search_limit)
+        .ok()
+        .is_some_and(|limit| raw_objects.len() >= limit);
+
+    let mut objects = raw_objects
+        .into_iter()
+        .filter(|object| {
+            object_matches_package_filter(object, Some(package_name))
+                && object
+                    .object_type
+                    .as_deref()
+                    .is_some_and(is_source_object_type_for_inventory)
+        })
+        .collect::<Vec<_>>();
+
+    objects.sort_by(|left, right| {
+        left.name
+            .to_ascii_uppercase()
+            .cmp(&right.name.to_ascii_uppercase())
+            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.uri.cmp(&right.uri))
+    });
+
+    let mut is_truncated = search_limit_hit;
+    if let Ok(limit) = usize::try_from(max_objects_per_package) {
+        if objects.len() > limit {
+            is_truncated = true;
+        }
+        objects.truncate(limit);
+    }
+
+    Ok(AdtPackageInventoryObjectsResult {
+        objects,
+        is_truncated,
+    })
+}
+
+pub async fn neuro_adt_explorer_state_get_impl(
+    _state: State<'_, AppState>,
+    server_id: Option<String>,
+) -> Result<AdtExplorerStateResponse, NeuroRuntimeError> {
+    run_with_neuro_command_telemetry("neuro_adt_explorer_state_get", async {
+        let resolved_server_id = resolve_explorer_state_server_id(server_id)?;
+        let mut store = load_server_store()?;
+        normalize_server_store(&mut store);
+        let state = store
+            .explorer_state_by_server
+            .get(resolved_server_id.as_str())
+            .cloned()
+            .unwrap_or_default();
+        Ok(explorer_state_response(resolved_server_id, &state))
+    })
+    .await
+}
+
+pub async fn neuro_adt_explorer_state_patch_impl(
+    _state: State<'_, AppState>,
+    request: AdtExplorerStatePatchRequest,
+) -> Result<AdtExplorerStateResponse, NeuroRuntimeError> {
+    run_with_neuro_command_telemetry("neuro_adt_explorer_state_patch", async {
+        let resolved_server_id = resolve_explorer_state_server_id(request.server_id.clone())?;
+        let mut store = load_server_store()?;
+        normalize_server_store(&mut store);
+
+        {
+            let state = store
+                .explorer_state_by_server
+                .entry(resolved_server_id.clone())
+                .or_default();
+            apply_explorer_state_patch(state, &request)?;
+        }
+
+        normalize_server_store(&mut store);
+        save_server_store(&store)?;
+
+        let updated = store
+            .explorer_state_by_server
+            .get(resolved_server_id.as_str())
+            .cloned()
+            .unwrap_or_default();
+        Ok(explorer_state_response(resolved_server_id, &updated))
+    })
+    .await
+}
+
+pub async fn neuro_adt_list_objects_impl(
+    state: State<'_, AppState>,
+    request: AdtListObjectsRequest,
+) -> Result<AdtListObjectsResponse, NeuroRuntimeError> {
+    run_with_neuro_command_telemetry("neuro_adt_list_objects", async {
+        let AdtListObjectsRequest {
+            scope,
+            namespace,
+            package_name,
+            package_kind,
+            max_results,
+            server_id,
+        } = request;
+        let response_scope = scope.response_scope();
+        let normalized_server_id = normalize_optional_server_id(server_id.clone());
+        let normalized_max_results = max_results.filter(|value| *value > 0);
+
+        if response_scope == AdtListObjectsResponseScope::FavoriteObjects {
+            let resolved_server_id = resolve_explorer_state_server_id(server_id)?;
+            let mut store = load_server_store()?;
+            normalize_server_store(&mut store);
+            let explorer_state = store
+                .explorer_state_by_server
+                .get(resolved_server_id.as_str())
+                .cloned()
+                .unwrap_or_default();
+            return Ok(AdtListObjectsResponse {
+                scope: response_scope,
+                objects: favorite_objects_to_summaries(&explorer_state, normalized_max_results),
+                namespaces: None,
+            });
+        }
+
+        let mut normalized_namespace = normalize_optional_field(namespace);
+        let mut normalized_package_name = normalize_optional_field(package_name);
+
+        if response_scope == AdtListObjectsResponseScope::FavoritePackages {
+            (normalized_namespace, normalized_package_name) = resolve_favorite_package_filters(
+                package_kind,
+                normalized_namespace,
+                normalized_package_name,
+            );
+        }
+
+        let query = search_query_for_scope(
+            response_scope,
+            normalized_namespace.as_deref(),
+            normalized_package_name.as_deref(),
+        );
+
+        let runtime = get_or_init(state.inner(), normalized_server_id.as_deref()).await?;
+        let objects = runtime
+            .engine
+            .search(query.as_str(), normalized_max_results)
+            .await
+            .map_err(map_engine_error)?;
+
+        let filtered_objects = filter_objects_for_scope(
+            objects,
+            response_scope,
+            normalized_namespace.as_deref(),
+            normalized_package_name.as_deref(),
+            normalized_max_results,
+        );
+
+        if response_scope == AdtListObjectsResponseScope::SystemLibrary
+            && normalized_namespace.is_none()
+            && !scope.is_legacy_namespace()
+        {
+            return Ok(AdtListObjectsResponse {
+                scope: response_scope,
+                objects: Vec::new(),
+                namespaces: Some(truncate_namespaces(
+                    namespace_summaries_from_objects(
+                        filtered_objects,
+                        normalized_package_name.as_deref(),
+                    ),
+                    normalized_max_results,
+                )),
+            });
+        }
+
+        Ok(AdtListObjectsResponse {
+            scope: response_scope,
+            objects: filtered_objects,
+            namespaces: None,
+        })
     })
     .await
 }
@@ -860,7 +3599,7 @@ pub async fn neuro_ws_request_impl(
     request: WsDomainRequest,
 ) -> Result<WsMessageEnvelope<Value>, NeuroRuntimeError> {
     run_with_neuro_command_telemetry("neuro_ws_request", async {
-        let runtime = get_or_init(state.inner()).await?;
+        let runtime = get_or_init(state.inner(), None).await?;
         runtime
             .engine
             .send_domain_request(
@@ -878,7 +3617,7 @@ pub async fn neuro_list_tools_impl(
     state: State<'_, AppState>,
 ) -> Result<Vec<NeuroToolSpec>, NeuroRuntimeError> {
     run_with_neuro_command_telemetry("neuro_list_tools", async {
-        let runtime = get_or_init(state.inner()).await?;
+        let runtime = get_or_init(state.inner(), None).await?;
         Ok(NeuroMcpFacade::new(runtime.engine.clone()).list_tools())
     })
     .await
@@ -890,7 +3629,7 @@ pub async fn neuro_invoke_tool_impl(
     arguments: Value,
 ) -> Result<Value, NeuroRuntimeError> {
     run_with_neuro_command_telemetry("neuro_invoke_tool", async {
-        let runtime = get_or_init(state.inner()).await?;
+        let runtime = get_or_init(state.inner(), None).await?;
         NeuroMcpFacade::new(runtime.engine.clone())
             .invoke(tool_name.as_str(), arguments)
             .await
@@ -902,7 +3641,12 @@ pub async fn neuro_invoke_tool_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
     use std::time::Duration;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -912,6 +3656,23 @@ mod tests {
     fn telemetry_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn telemetry_async_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
+
+    fn unique_temp_path(label: &str) -> PathBuf {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "alicia_backend_neuro_runtime_{label}_{}_{}",
+            std::process::id(),
+            now
+        ))
     }
 
     fn take_single_telemetry_event() -> Value {
@@ -945,6 +3706,214 @@ mod tests {
         }
     }
 
+    fn sample_object(
+        uri: &str,
+        name: &str,
+        object_type: Option<&str>,
+        package: Option<&str>,
+    ) -> neuro_types::AdtObjectSummary {
+        neuro_types::AdtObjectSummary {
+            uri: uri.to_string(),
+            name: name.to_string(),
+            object_type: object_type.map(str::to_string),
+            package: package.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn normalize_inventory_roots_parses_kinds_and_deduplicates() {
+        let roots = normalize_inventory_roots(vec![
+            " zpkg ".to_string(),
+            "package:ZPKG".to_string(),
+            "namespace:/abap/".to_string(),
+            "/ABAP/".to_string(),
+            "pattern: zcl_* ".to_string(),
+            "zcl_*".to_string(),
+        ])
+        .expect("roots should normalize");
+
+        assert_eq!(roots.len(), 3);
+        assert_eq!(roots[0].kind, AdtPackageRootKind::Package);
+        assert_eq!(roots[0].query, "ZPKG");
+        assert_eq!(roots[0].response_value, "ZPKG");
+
+        assert_eq!(roots[1].kind, AdtPackageRootKind::Namespace);
+        assert_eq!(roots[1].query, "/ABAP/");
+        assert_eq!(roots[1].response_value, "/ABAP/");
+
+        assert_eq!(roots[2].kind, AdtPackageRootKind::Pattern);
+        assert_eq!(roots[2].query, "ZCL_*");
+        assert_eq!(roots[2].response_value, "ZCL_*");
+    }
+
+    #[test]
+    fn package_inventory_request_include_objects_supports_aliases_and_defaults() {
+        let default_request: AdtPackageInventoryRequest = serde_json::from_value(json!({
+            "roots": ["ZPKG"]
+        }))
+        .expect("default request should deserialize");
+        assert_eq!(default_request.include_objects, None);
+
+        let camel_case: AdtPackageInventoryRequest = serde_json::from_value(json!({
+            "roots": ["ZPKG"],
+            "includeObjects": true
+        }))
+        .expect("camelCase includeObjects should deserialize");
+        assert_eq!(camel_case.include_objects, Some(true));
+
+        let snake_case: AdtPackageInventoryRequest = serde_json::from_value(json!({
+            "roots": ["ZPKG"],
+            "include_objects": false
+        }))
+        .expect("snake_case include_objects should deserialize");
+        assert_eq!(snake_case.include_objects, Some(false));
+    }
+
+    #[test]
+    fn normalize_inventory_limit_rejects_values_above_maximum() {
+        let error = normalize_inventory_limit(Some(5001), 250, "max_packages", 5000)
+            .expect_err("value above max should fail");
+        assert_eq!(error.code, NeuroRuntimeErrorCode::InvalidArgument);
+        assert!(error.message.contains("max_packages"));
+    }
+
+    #[test]
+    fn normalize_inventory_limit_accepts_boundary_value() {
+        let value = normalize_inventory_limit(Some(1000), 250, "max_objects_per_package", 1000)
+            .expect("boundary value should be accepted");
+        assert_eq!(value, 1000);
+    }
+
+    #[test]
+    fn normalize_inventory_roots_requires_at_least_one_valid_root() {
+        let error = normalize_inventory_roots(vec![
+            "".to_string(),
+            "   ".to_string(),
+            "namespace: ".to_string(),
+        ])
+        .expect_err("empty roots should fail");
+
+        assert_eq!(error.code, NeuroRuntimeErrorCode::InvalidArgument);
+        assert!(error.message.contains("roots"));
+    }
+
+    #[test]
+    fn parse_nodestructure_refs_and_subpackages_filters_by_parent() {
+        let payload = r#"
+            <adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
+                <adtcore:objectReference
+                    adtcore:name="ZCHILD_ONE"
+                    adtcore:type="DEVC/K"
+                    adtcore:parentUri="/sap/bc/adt/packages/ZROOT" />
+                <adtcore:objectReference
+                    adtcore:name="zchild_two"
+                    adtcore:type="DEVC/K"
+                    parentName="ZROOT" />
+                <adtcore:objectReference
+                    adtcore:name="ZWRONG_PARENT"
+                    adtcore:type="DEVC/K"
+                    adtcore:parentName="ZOTHER" />
+                <adtcore:objectReference
+                    adtcore:name="ZLEGACY_PACKAGE_NAME"
+                    adtcore:type="DEVC/K"
+                    adtcore:packageName="ZROOT" />
+                <adtcore:objectReference
+                    adtcore:name="ZCL_ANY"
+                    adtcore:type="CLAS/OC" />
+            </adtcore:objectReferences>
+        "#;
+
+        let refs = parse_nodestructure_references(payload);
+        assert_eq!(refs.len(), 5);
+        assert_eq!(refs[0].name, "ZCHILD_ONE");
+        assert_eq!(refs[0].object_type.as_deref(), Some("DEVC/K"));
+        assert_eq!(refs[0].parent_name.as_deref(), Some("ZROOT"));
+        assert_eq!(refs[3].name, "ZLEGACY_PACKAGE_NAME");
+        assert_eq!(refs[3].parent_name, None);
+
+        let subpackages = parse_nodestructure_subpackages(payload, "zroot");
+        assert_eq!(
+            subpackages,
+            vec!["ZCHILD_ONE".to_string(), "ZCHILD_TWO".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_nodestructure_subpackages_supports_percent_encoded_parent_uri() {
+        let payload = r#"
+            <adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
+                <adtcore:objectReference
+                    adtcore:name="ZABC_CHILD"
+                    adtcore:type="DEVC/K"
+                    adtcore:parentUri="/sap/bc/adt/packages/%2FABC%2F" />
+            </adtcore:objectReferences>
+        "#;
+
+        let subpackages = parse_nodestructure_subpackages(payload, "/abc/");
+        assert_eq!(subpackages, vec!["ZABC_CHILD".to_string()]);
+    }
+
+    #[test]
+    fn cap_discovery_search_limit_preserves_low_values_and_caps_high_values() {
+        assert_eq!(cap_discovery_search_limit(7), 7);
+        assert_eq!(
+            cap_discovery_search_limit(DEFAULT_DISCOVERY_MAX_RESULTS + 1),
+            DEFAULT_DISCOVERY_MAX_RESULTS
+        );
+    }
+
+    #[test]
+    fn inventory_chunk_prefix_for_pattern_requires_single_trailing_wildcard() {
+        assert_eq!(
+            inventory_chunk_prefix_for_pattern("ZPKG*"),
+            Some("ZPKG".to_string())
+        );
+        assert_eq!(inventory_chunk_prefix_for_pattern("ZPKG"), None);
+        assert_eq!(inventory_chunk_prefix_for_pattern("Z*PKG"), None);
+        assert_eq!(inventory_chunk_prefix_for_pattern("ZPKG?*"), None);
+        assert_eq!(inventory_chunk_prefix_for_pattern("*"), None);
+    }
+
+    #[test]
+    fn root_inventory_discovery_query_adds_wildcard_for_namespace() {
+        let namespace_root = AdtPackageRootSpec {
+            kind: AdtPackageRootKind::Namespace,
+            query: "/ABC/".to_string(),
+            response_value: "/ABC/".to_string(),
+            dedupe_key: "namespace:/ABC/".to_string(),
+        };
+        assert_eq!(root_inventory_discovery_query(&namespace_root), "/ABC/*");
+
+        let pattern_root = AdtPackageRootSpec {
+            kind: AdtPackageRootKind::Pattern,
+            query: "ZPKG*".to_string(),
+            response_value: "ZPKG*".to_string(),
+            dedupe_key: "pattern:ZPKG*".to_string(),
+        };
+        assert_eq!(root_inventory_discovery_query(&pattern_root), "ZPKG*");
+    }
+
+    #[test]
+    fn root_allows_subpackage_recursion_only_for_explicit_package_roots() {
+        assert!(root_allows_subpackage_recursion(
+            AdtPackageRootKind::Package
+        ));
+        assert!(!root_allows_subpackage_recursion(
+            AdtPackageRootKind::Namespace
+        ));
+        assert!(!root_allows_subpackage_recursion(
+            AdtPackageRootKind::Pattern
+        ));
+    }
+
+    #[test]
+    fn inventory_chunk_queries_from_prefix_uses_expected_bucket_order() {
+        let queries = inventory_chunk_queries_from_prefix("/ABC/");
+        assert_eq!(queries.first().map(String::as_str), Some("/ABC/A*"));
+        assert_eq!(queries.last().map(String::as_str), Some("/ABC/$*"));
+        assert_eq!(queries.len(), PACKAGE_INVENTORY_DISCOVERY_BUCKETS.len());
+    }
+
     #[test]
     fn parse_env_bool_supports_common_values() {
         assert_eq!(parse_env_bool("true"), Some(true));
@@ -956,22 +3925,82 @@ mod tests {
     }
 
     #[test]
-    fn resolve_runtime_config_prefers_neuro_env_over_fallbacks() {
+    fn default_csrf_fetch_path_matches_contract_and_canonical_value() {
+        assert_eq!(DEFAULT_ADT_CSRF_FETCH_PATH, "/sap/bc/adt/core/discovery");
+        let contract_default: AdtHttpConfig = serde_json::from_value(json!({
+            "base_url": "https://contract.local"
+        }))
+        .expect("contract default should deserialize");
+        assert_eq!(
+            DEFAULT_ADT_CSRF_FETCH_PATH,
+            contract_default.csrf_fetch_path.as_str()
+        );
+    }
+
+    #[test]
+    fn resolve_runtime_config_uses_default_csrf_path_when_unset() {
+        let store_path = unique_temp_path("resolve_default_csrf")
+            .join("alicia")
+            .join("neuro")
+            .join("adt_servers.json");
+        let store_path_text = store_path.to_string_lossy().to_string();
+
         with_env_overrides(
             &[
+                (
+                    NEURO_ADT_SERVER_STORE_PATH_ENV,
+                    Some(store_path_text.as_str()),
+                ),
+                ("NEURO_SAP_URL", Some("https://env.local")),
+                ("NEURO_SAP_USER", Some("env-user")),
+                ("NEURO_SAP_PASSWORD", Some("env-pass")),
+                ("NEURO_ADT_CSRF_FETCH_PATH", None),
+                ("SAP_ADT_CSRF_FETCH_PATH", None),
+            ],
+            || {
+                let config = resolve_runtime_config(None).expect("runtime config should resolve");
+                assert_eq!(
+                    config.sap.csrf_fetch_path.value,
+                    DEFAULT_ADT_CSRF_FETCH_PATH
+                );
+                assert_eq!(config.sap.csrf_fetch_path.source, "default");
+            },
+        );
+
+        if let Some(parent) = store_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn resolve_runtime_config_prefers_neuro_env_over_fallbacks() {
+        let store_path = unique_temp_path("resolve_env_prefers")
+            .join("alicia")
+            .join("neuro")
+            .join("adt_servers.json");
+        let store_path_text = store_path.to_string_lossy().to_string();
+
+        with_env_overrides(
+            &[
+                (
+                    NEURO_ADT_SERVER_STORE_PATH_ENV,
+                    Some(store_path_text.as_str()),
+                ),
                 ("NEURO_SAP_URL", Some("https://neuro.local")),
                 ("SAP_URL", Some("https://legacy.local")),
                 ("NEURO_SAP_USER", Some("neuro-user")),
                 ("SAP_USER", Some("legacy-user")),
                 ("NEURO_SAP_PASSWORD", Some("neuro-pass")),
                 ("SAP_PASSWORD", Some("legacy-pass")),
+                ("NEURO_ADT_CSRF_FETCH_PATH", Some("/custom/neuro/csrf")),
+                ("SAP_ADT_CSRF_FETCH_PATH", Some("/custom/legacy/csrf")),
                 ("NEURO_WS_URL", Some("wss://neuro.ws")),
                 ("SAP_WS_URL", Some("wss://legacy.ws")),
                 ("NEURO_SAFETY_READ_ONLY", Some("false")),
                 ("NEURO_UPDATE_REQUIRE_ETAG", Some("true")),
             ],
             || {
-                let config = resolve_runtime_config().expect("runtime config should resolve");
+                let config = resolve_runtime_config(None).expect("runtime config should resolve");
                 assert_eq!(
                     config.sap.url.as_ref().map(|value| value.value.as_str()),
                     Some("https://neuro.local")
@@ -992,24 +4021,848 @@ mod tests {
                     config.ws.url.as_ref().map(|value| value.value.as_str()),
                     Some("wss://neuro.ws")
                 );
+                assert_eq!(config.sap.csrf_fetch_path.value, "/custom/neuro/csrf");
+                assert_eq!(
+                    config.sap.csrf_fetch_path.source,
+                    "NEURO_ADT_CSRF_FETCH_PATH"
+                );
                 assert!(!config.safety.read_only);
                 assert!(config.safety.require_etag_for_updates);
             },
         );
+
+        if let Some(parent) = store_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
     }
 
     #[test]
     fn resolve_runtime_config_rejects_invalid_boolean_values() {
-        with_env_overrides(&[("NEURO_SAP_INSECURE", Some("not-bool"))], || {
-            let error = resolve_runtime_config().expect_err("invalid boolean must fail");
-            assert_eq!(error.code, NeuroRuntimeErrorCode::InvalidArgument);
-            assert!(error.message.contains("NEURO_SAP_INSECURE"));
-        });
+        let store_path = unique_temp_path("resolve_invalid_bool")
+            .join("alicia")
+            .join("neuro")
+            .join("adt_servers.json");
+        let store_path_text = store_path.to_string_lossy().to_string();
+        with_env_overrides(
+            &[
+                (
+                    NEURO_ADT_SERVER_STORE_PATH_ENV,
+                    Some(store_path_text.as_str()),
+                ),
+                ("NEURO_SAP_INSECURE", Some("not-bool")),
+            ],
+            || {
+                let error = resolve_runtime_config(None).expect_err("invalid boolean must fail");
+                assert_eq!(error.code, NeuroRuntimeErrorCode::InvalidArgument);
+                assert!(error.message.contains("NEURO_SAP_INSECURE"));
+            },
+        );
+
+        if let Some(parent) = store_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn server_store_upsert_select_remove_roundtrip() {
+        let store_path = unique_temp_path("server_store_roundtrip")
+            .join("alicia")
+            .join("neuro")
+            .join("adt_servers.json");
+        let store_path_text = store_path.to_string_lossy().to_string();
+
+        with_env_overrides(
+            &[(
+                NEURO_ADT_SERVER_STORE_PATH_ENV,
+                Some(store_path_text.as_str()),
+            )],
+            || {
+                let mut store = AdtServerStore::default();
+
+                let first = upsert_server(
+                    &mut store,
+                    AdtServerUpsertRequest {
+                        id: "srv_a".to_string(),
+                        name: "Server A".to_string(),
+                        base_url: "https://srv-a.local".to_string(),
+                        client: Some("100".to_string()),
+                        language: Some("EN".to_string()),
+                        username: Some("alice".to_string()),
+                        password: Some("secret-a".to_string()),
+                        verify_tls: Some(true),
+                        active: None,
+                    },
+                )
+                .expect("first upsert should succeed");
+                assert_eq!(first.id, "srv_a");
+                assert!(!first.active);
+
+                let second = upsert_server(
+                    &mut store,
+                    AdtServerUpsertRequest {
+                        id: "srv_b".to_string(),
+                        name: "Server B".to_string(),
+                        base_url: "https://srv-b.local".to_string(),
+                        client: Some("200".to_string()),
+                        language: Some("PT".to_string()),
+                        username: Some("bob".to_string()),
+                        password: Some("secret-b".to_string()),
+                        verify_tls: Some(false),
+                        active: Some(true),
+                    },
+                )
+                .expect("second upsert should succeed");
+                assert_eq!(second.id, "srv_b");
+                assert!(second.active);
+
+                save_server_store(&store).expect("store should persist");
+                let persisted = load_server_store().expect("store should load");
+                assert_eq!(persisted.servers.len(), 2);
+                assert_eq!(selected_server_id(&persisted).as_deref(), Some("srv_b"));
+
+                let mut reloaded = persisted.clone();
+                select_server(&mut reloaded, "srv_a").expect("select should succeed");
+                assert_eq!(selected_server_id(&reloaded).as_deref(), Some("srv_a"));
+
+                let removed = remove_server(&mut reloaded, "srv_a");
+                assert!(removed);
+                assert_eq!(selected_server_id(&reloaded), None);
+            },
+        );
+
+        if store_path.exists() {
+            let _ = fs::remove_file(&store_path);
+        }
+        if let Some(parent) = store_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn explorer_state_persists_isolated_by_server_id() {
+        let store_path = unique_temp_path("explorer_isolation")
+            .join("alicia")
+            .join("neuro")
+            .join("adt_servers.json");
+        let store_path_text = store_path.to_string_lossy().to_string();
+
+        with_env_overrides(
+            &[(
+                NEURO_ADT_SERVER_STORE_PATH_ENV,
+                Some(store_path_text.as_str()),
+            )],
+            || {
+                let mut store = AdtServerStore::default();
+                store.explorer_state_by_server.insert(
+                    "srv_a".to_string(),
+                    StoredAdtExplorerState {
+                        favorite_packages: vec![AdtFavoritePackage {
+                            kind: AdtFavoritePackageKind::Package,
+                            name: "ZPKG_A".to_string(),
+                        }],
+                        favorite_objects: vec![AdtFavoriteObject {
+                            uri: "adt://obj/a".to_string(),
+                            name: "ZCL_A".to_string(),
+                            object_type: Some("CLAS".to_string()),
+                            package: Some("ZPKG_A".to_string()),
+                        }],
+                        selected_work_package: Some("ZPKG_A".to_string()),
+                        package_scope_roots: vec!["ZPKG_A".to_string()],
+                        focused_object_uri: Some("adt://obj/a".to_string()),
+                    },
+                );
+                store.explorer_state_by_server.insert(
+                    "srv_b".to_string(),
+                    StoredAdtExplorerState {
+                        favorite_packages: vec![AdtFavoritePackage {
+                            kind: AdtFavoritePackageKind::Namespace,
+                            name: "/ABC/".to_string(),
+                        }],
+                        favorite_objects: vec![AdtFavoriteObject {
+                            uri: "adt://obj/b".to_string(),
+                            name: "/ABC/CL_B".to_string(),
+                            object_type: Some("CLAS".to_string()),
+                            package: Some("/ABC/PKG".to_string()),
+                        }],
+                        selected_work_package: Some("/ABC/PKG".to_string()),
+                        package_scope_roots: vec!["/ABC/PKG".to_string()],
+                        focused_object_uri: Some("adt://obj/b".to_string()),
+                    },
+                );
+
+                save_server_store(&store).expect("store should persist");
+                let reloaded = load_server_store().expect("store should reload");
+
+                let state_a = reloaded
+                    .explorer_state_by_server
+                    .get("srv_a")
+                    .expect("srv_a state should persist");
+                assert_eq!(state_a.selected_work_package.as_deref(), Some("ZPKG_A"));
+                assert_eq!(state_a.focused_object_uri.as_deref(), Some("adt://obj/a"));
+                assert_eq!(state_a.favorite_packages.len(), 1);
+                assert_eq!(state_a.favorite_objects.len(), 1);
+                assert_eq!(state_a.favorite_packages[0].name, "ZPKG_A");
+                assert_eq!(state_a.package_scope_roots, vec!["ZPKG_A"]);
+
+                let state_b = reloaded
+                    .explorer_state_by_server
+                    .get("srv_b")
+                    .expect("srv_b state should persist");
+                assert_eq!(state_b.selected_work_package.as_deref(), Some("/ABC/PKG"));
+                assert_eq!(state_b.focused_object_uri.as_deref(), Some("adt://obj/b"));
+                assert_eq!(state_b.favorite_packages.len(), 1);
+                assert_eq!(state_b.favorite_objects.len(), 1);
+                assert_eq!(state_b.favorite_packages[0].name, "/ABC/");
+                assert_eq!(state_b.package_scope_roots, vec!["/ABC/PKG"]);
+            },
+        );
+
+        if store_path.exists() {
+            let _ = fs::remove_file(&store_path);
+        }
+        if let Some(parent) = store_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn explorer_state_toggle_favorites_adds_and_removes_entries() {
+        let mut state = StoredAdtExplorerState::default();
+        let patch = AdtExplorerStatePatchRequest {
+            toggle_favorite_namespace: Some("/ABC/".to_string()),
+            toggle_favorite_package: Some(AdtFavoritePackageToggleRequest::Name(
+                "ZPKG".to_string(),
+            )),
+            toggle_favorite_object: Some(AdtFavoriteObject {
+                uri: "adt://obj".to_string(),
+                name: "ZCL_OBJECT".to_string(),
+                object_type: Some("CLAS".to_string()),
+                package: Some("ZPKG".to_string()),
+            }),
+            ..AdtExplorerStatePatchRequest::default()
+        };
+
+        apply_explorer_state_patch(&mut state, &patch).expect("add patch should succeed");
+        assert_eq!(state.favorite_packages.len(), 2);
+        assert_eq!(state.favorite_objects.len(), 1);
+
+        apply_explorer_state_patch(&mut state, &patch).expect("remove patch should succeed");
+        assert!(state.favorite_packages.is_empty());
+        assert!(state.favorite_objects.is_empty());
+    }
+
+    #[test]
+    fn explorer_state_set_work_package_is_persisted() {
+        let store_path = unique_temp_path("explorer_work_package")
+            .join("alicia")
+            .join("neuro")
+            .join("adt_servers.json");
+        let store_path_text = store_path.to_string_lossy().to_string();
+
+        with_env_overrides(
+            &[(
+                NEURO_ADT_SERVER_STORE_PATH_ENV,
+                Some(store_path_text.as_str()),
+            )],
+            || {
+                let mut store = AdtServerStore::default();
+                let mut state = StoredAdtExplorerState::default();
+                let patch = AdtExplorerStatePatchRequest {
+                    set_work_package: Some(Some("Z_WORK".to_string())),
+                    ..AdtExplorerStatePatchRequest::default()
+                };
+                apply_explorer_state_patch(&mut state, &patch)
+                    .expect("set_work_package patch should succeed");
+                store
+                    .explorer_state_by_server
+                    .insert("srv_work".to_string(), state);
+                save_server_store(&store).expect("store should persist");
+
+                let reloaded = load_server_store().expect("store should reload");
+                let persisted = reloaded
+                    .explorer_state_by_server
+                    .get("srv_work")
+                    .expect("srv_work state should persist");
+                assert_eq!(persisted.selected_work_package.as_deref(), Some("Z_WORK"));
+            },
+        );
+
+        if store_path.exists() {
+            let _ = fs::remove_file(&store_path);
+        }
+        if let Some(parent) = store_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn explorer_state_focused_object_uri_patch_is_normalized_and_persisted() {
+        let mut state = StoredAdtExplorerState::default();
+        let patch = AdtExplorerStatePatchRequest {
+            focused_object_uri: Some(Some("  adt://obj/focus  ".to_string())),
+            ..AdtExplorerStatePatchRequest::default()
+        };
+        apply_explorer_state_patch(&mut state, &patch).expect("focused object patch should work");
+        assert_eq!(state.focused_object_uri.as_deref(), Some("adt://obj/focus"));
+
+        let no_change_patch = AdtExplorerStatePatchRequest {
+            focused_object_uri: Some(None),
+            ..AdtExplorerStatePatchRequest::default()
+        };
+        apply_explorer_state_patch(&mut state, &no_change_patch)
+            .expect("null focused object patch should be ignored");
+        assert_eq!(state.focused_object_uri.as_deref(), Some("adt://obj/focus"));
+    }
+
+    #[test]
+    fn explorer_state_package_scope_roots_patch_dedupes_and_trims() {
+        let mut state = StoredAdtExplorerState::default();
+        let patch = AdtExplorerStatePatchRequest {
+            package_scope_roots: Some(vec![
+                "  ZPKG_A  ".to_string(),
+                "".to_string(),
+                " zpkg_a ".to_string(),
+                "  /ABC/PKG  ".to_string(),
+            ]),
+            ..AdtExplorerStatePatchRequest::default()
+        };
+        apply_explorer_state_patch(&mut state, &patch)
+            .expect("package scope roots patch should work");
+        assert_eq!(
+            state.package_scope_roots,
+            vec!["ZPKG_A".to_string(), "/ABC/PKG".to_string()]
+        );
+    }
+
+    #[test]
+    fn explorer_state_package_scope_roots_patch_clears_with_empty_list() {
+        let mut state = StoredAdtExplorerState {
+            package_scope_roots: vec!["ZPKG_A".to_string(), "/ABC/PKG".to_string()],
+            ..StoredAdtExplorerState::default()
+        };
+        let patch = AdtExplorerStatePatchRequest {
+            package_scope_roots: Some(vec![]),
+            ..AdtExplorerStatePatchRequest::default()
+        };
+        apply_explorer_state_patch(&mut state, &patch).expect("clear patch should work");
+        assert!(state.package_scope_roots.is_empty());
+    }
+
+    #[test]
+    fn explorer_state_package_scope_roots_patch_is_persisted() {
+        let store_path = unique_temp_path("explorer_scope_roots")
+            .join("alicia")
+            .join("neuro")
+            .join("adt_servers.json");
+        let store_path_text = store_path.to_string_lossy().to_string();
+
+        with_env_overrides(
+            &[(
+                NEURO_ADT_SERVER_STORE_PATH_ENV,
+                Some(store_path_text.as_str()),
+            )],
+            || {
+                let mut store = AdtServerStore::default();
+                let mut state = StoredAdtExplorerState::default();
+                let patch = AdtExplorerStatePatchRequest {
+                    package_scope_roots: Some(vec![
+                        "  ZPKG_A ".to_string(),
+                        "zpkg_a".to_string(),
+                        " /ABC/PKG ".to_string(),
+                    ]),
+                    ..AdtExplorerStatePatchRequest::default()
+                };
+                apply_explorer_state_patch(&mut state, &patch)
+                    .expect("scope roots patch should work");
+                store
+                    .explorer_state_by_server
+                    .insert("srv_scope".to_string(), state);
+                save_server_store(&store).expect("store should persist");
+
+                let reloaded = load_server_store().expect("store should reload");
+                let persisted = reloaded
+                    .explorer_state_by_server
+                    .get("srv_scope")
+                    .expect("srv_scope state should persist");
+                assert_eq!(
+                    persisted.package_scope_roots,
+                    vec!["ZPKG_A".to_string(), "/ABC/PKG".to_string()]
+                );
+            },
+        );
+
+        if store_path.exists() {
+            let _ = fs::remove_file(&store_path);
+        }
+        if let Some(parent) = store_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn explorer_state_patch_request_accepts_package_scope_roots_aliases() {
+        let snake_case: AdtExplorerStatePatchRequest = serde_json::from_value(json!({
+            "package_scope_roots": ["ZPKG_A"]
+        }))
+        .expect("snake_case alias should deserialize");
+        assert_eq!(
+            snake_case.package_scope_roots,
+            Some(vec!["ZPKG_A".to_string()])
+        );
+
+        let camel_case: AdtExplorerStatePatchRequest = serde_json::from_value(json!({
+            "packageScopeRoots": ["/ABC/PKG"]
+        }))
+        .expect("camelCase alias should deserialize");
+        assert_eq!(
+            camel_case.package_scope_roots,
+            Some(vec!["/ABC/PKG".to_string()])
+        );
+    }
+
+    #[test]
+    fn explorer_state_response_exposes_focused_object_uri() {
+        let response = explorer_state_response(
+            "srv_focus".to_string(),
+            &StoredAdtExplorerState {
+                focused_object_uri: Some("adt://obj/focus".to_string()),
+                ..StoredAdtExplorerState::default()
+            },
+        );
+        assert_eq!(response.server_id, "srv_focus");
+        assert_eq!(
+            response.focused_object_uri.as_deref(),
+            Some("adt://obj/focus")
+        );
+    }
+
+    #[test]
+    fn explorer_state_response_exposes_package_scope_roots() {
+        let response = explorer_state_response(
+            "srv_scope".to_string(),
+            &StoredAdtExplorerState {
+                package_scope_roots: vec!["ZPKG_A".to_string(), "/ABC/PKG".to_string()],
+                ..StoredAdtExplorerState::default()
+            },
+        );
+        assert_eq!(response.server_id, "srv_scope");
+        assert_eq!(
+            response.package_scope_roots,
+            vec!["ZPKG_A".to_string(), "/ABC/PKG".to_string()]
+        );
+    }
+
+    #[test]
+    fn list_objects_scope_supports_current_and_legacy_values() {
+        let modern: AdtListObjectsRequest = serde_json::from_value(json!({
+            "scope": "system_library"
+        }))
+        .expect("modern scope should deserialize");
+        assert_eq!(
+            modern.scope.response_scope(),
+            AdtListObjectsResponseScope::SystemLibrary
+        );
+
+        let legacy: AdtListObjectsRequest = serde_json::from_value(json!({
+            "scope": "namespace"
+        }))
+        .expect("legacy scope should deserialize");
+        assert_eq!(
+            legacy.scope.response_scope(),
+            AdtListObjectsResponseScope::SystemLibrary
+        );
+    }
+
+    #[test]
+    fn list_objects_scope_filters_basically() {
+        let objects = vec![
+            sample_object("adt://1", "ZCL_LOCAL", Some("CLAS"), Some("ZPKG")),
+            sample_object("adt://2", "/ABC/CL_NS", Some("CLAS"), Some("/ABC/PKG")),
+            sample_object("adt://3", "ZCL_OTHER", Some("CLAS"), Some("ZOTHER")),
+            sample_object("adt://4", "/XYZ/IF_IN_PKG", Some("INTF"), Some("ZPKG")),
+        ];
+
+        let local = filter_objects_for_scope(
+            objects.clone(),
+            AdtListObjectsResponseScope::LocalObjects,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(local.len(), 2);
+        assert!(local.iter().any(|entry| entry.uri == "adt://1"));
+        assert!(local.iter().any(|entry| entry.uri == "adt://3"));
+
+        let namespace = filter_objects_for_scope(
+            objects.clone(),
+            AdtListObjectsResponseScope::SystemLibrary,
+            Some("/ABC/"),
+            None,
+            None,
+        );
+        assert_eq!(namespace.len(), 1);
+        assert_eq!(namespace[0].uri, "adt://2");
+
+        let package = filter_objects_for_scope(
+            objects,
+            AdtListObjectsResponseScope::FavoritePackages,
+            None,
+            Some("zpkg"),
+            Some(1),
+        );
+        assert_eq!(package.len(), 1);
+        assert!(package[0].uri == "adt://1" || package[0].uri == "adt://4");
+    }
+
+    #[test]
+    fn parse_abap_namespaces_from_table_raw_extracts_namespace_tokens() {
+        let raw = r#"
+<dpr:result>
+  <dpr:value>/S4TAX/</dpr:value>
+  <dpr:value>/1BEA/</dpr:value>
+  <dpr:value>/sap/</dpr:value>
+  <dpr:value>/AB_C/</dpr:value>
+</dpr:result>
+"#;
+        let namespaces = parse_abap_namespaces_from_table_raw(raw);
+        assert_eq!(namespaces, vec!["/1BEA/", "/AB_C/", "/S4TAX/"]);
+    }
+
+    #[test]
+    fn parse_abap_namespaces_from_table_raw_ignores_uri_paths() {
+        let raw = r#"
+<dpr:meta href="http://www.sap.com/adt/datapreview/ddic"/>
+<dpr:value>/SAP/BASIS</dpr:value>
+<dpr:value>/CPD/MAIN/</dpr:value>
+"#;
+        let namespaces = parse_abap_namespaces_from_table_raw(raw);
+        assert_eq!(namespaces, vec!["/CPD/", "/SAP/"]);
+    }
+
+    #[test]
+    fn resolve_runtime_config_prefers_explicit_server_over_active_and_env() {
+        let store_path = unique_temp_path("resolve_explicit")
+            .join("alicia")
+            .join("neuro")
+            .join("adt_servers.json");
+        let store_path_text = store_path.to_string_lossy().to_string();
+
+        with_env_overrides(
+            &[
+                (
+                    NEURO_ADT_SERVER_STORE_PATH_ENV,
+                    Some(store_path_text.as_str()),
+                ),
+                ("NEURO_SAP_URL", Some("https://env.local")),
+                ("NEURO_SAP_USER", Some("env-user")),
+                ("NEURO_SAP_PASSWORD", Some("env-pass")),
+                ("NEURO_ADT_CSRF_FETCH_PATH", Some("/custom/neuro/csrf")),
+                ("SAP_ADT_CSRF_FETCH_PATH", Some("/custom/legacy/csrf")),
+            ],
+            || {
+                let mut store = AdtServerStore::default();
+                upsert_server(
+                    &mut store,
+                    AdtServerUpsertRequest {
+                        id: "srv_a".to_string(),
+                        name: "Server A".to_string(),
+                        base_url: "https://srv-a.local".to_string(),
+                        client: None,
+                        language: None,
+                        username: Some("alice".to_string()),
+                        password: Some("secret-a".to_string()),
+                        verify_tls: Some(true),
+                        active: Some(false),
+                    },
+                )
+                .expect("first upsert should succeed");
+                upsert_server(
+                    &mut store,
+                    AdtServerUpsertRequest {
+                        id: "srv_b".to_string(),
+                        name: "Server B".to_string(),
+                        base_url: "https://srv-b.local".to_string(),
+                        client: None,
+                        language: None,
+                        username: Some("bob".to_string()),
+                        password: Some("secret-b".to_string()),
+                        verify_tls: Some(false),
+                        active: Some(true),
+                    },
+                )
+                .expect("second upsert should succeed");
+                save_server_store(&store).expect("store should persist");
+
+                let config = resolve_runtime_config(Some("srv_a"))
+                    .expect("runtime config for explicit server should resolve");
+                assert_eq!(
+                    config.sap.url.as_ref().map(|entry| entry.value.as_str()),
+                    Some("https://srv-a.local")
+                );
+                assert_eq!(
+                    config.sap.url.as_ref().map(|entry| entry.source),
+                    Some("server_store")
+                );
+                assert_eq!(
+                    config.sap.user.as_ref().map(|entry| entry.value.as_str()),
+                    Some("alice")
+                );
+                assert_eq!(
+                    config
+                        .sap
+                        .password
+                        .as_ref()
+                        .map(|entry| entry.value.as_str()),
+                    Some("secret-a")
+                );
+                assert_eq!(config.server_selection.server_id.as_deref(), Some("srv_a"));
+                assert_eq!(config.server_selection.source, "command.server_id");
+            },
+        );
+
+        if store_path.exists() {
+            let _ = fs::remove_file(&store_path);
+        }
+        if let Some(parent) = store_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn resolve_runtime_config_uses_active_server_then_env_fallback() {
+        let store_path = unique_temp_path("resolve_active")
+            .join("alicia")
+            .join("neuro")
+            .join("adt_servers.json");
+        let store_path_text = store_path.to_string_lossy().to_string();
+
+        with_env_overrides(
+            &[
+                (
+                    NEURO_ADT_SERVER_STORE_PATH_ENV,
+                    Some(store_path_text.as_str()),
+                ),
+                ("NEURO_SAP_URL", Some("https://env.local")),
+                ("NEURO_SAP_USER", Some("env-user")),
+                ("NEURO_SAP_PASSWORD", Some("env-pass")),
+                ("NEURO_ADT_CSRF_FETCH_PATH", Some("/custom/neuro/csrf")),
+                ("SAP_ADT_CSRF_FETCH_PATH", Some("/custom/legacy/csrf")),
+            ],
+            || {
+                let mut store = AdtServerStore::default();
+                upsert_server(
+                    &mut store,
+                    AdtServerUpsertRequest {
+                        id: "srv_active".to_string(),
+                        name: "Server Active".to_string(),
+                        base_url: "https://active.local".to_string(),
+                        client: None,
+                        language: None,
+                        username: Some("active-user".to_string()),
+                        password: Some("active-pass".to_string()),
+                        verify_tls: Some(true),
+                        active: Some(true),
+                    },
+                )
+                .expect("active upsert should succeed");
+                save_server_store(&store).expect("store should persist");
+
+                let active_config =
+                    resolve_runtime_config(None).expect("active server should resolve");
+                assert_eq!(
+                    active_config
+                        .sap
+                        .url
+                        .as_ref()
+                        .map(|entry| entry.value.as_str()),
+                    Some("https://active.local")
+                );
+                assert_eq!(
+                    active_config.server_selection.server_id.as_deref(),
+                    Some("srv_active")
+                );
+                assert_eq!(active_config.server_selection.source, "server_store.active");
+                assert_eq!(
+                    active_config.sap.csrf_fetch_path.value,
+                    "/custom/neuro/csrf"
+                );
+                assert_eq!(
+                    active_config.sap.csrf_fetch_path.source,
+                    "NEURO_ADT_CSRF_FETCH_PATH"
+                );
+
+                let removed = fs::remove_file(&store_path);
+                assert!(removed.is_ok(), "store file should be removable");
+
+                let env_config = resolve_runtime_config(None).expect("env fallback should resolve");
+                assert_eq!(
+                    env_config
+                        .sap
+                        .url
+                        .as_ref()
+                        .map(|entry| entry.value.as_str()),
+                    Some("https://env.local")
+                );
+                assert_eq!(env_config.server_selection.server_id, None);
+                assert_eq!(env_config.server_selection.source, "env");
+                assert_eq!(env_config.sap.csrf_fetch_path.value, "/custom/neuro/csrf");
+                assert_eq!(
+                    env_config.sap.csrf_fetch_path.source,
+                    "NEURO_ADT_CSRF_FETCH_PATH"
+                );
+            },
+        );
+
+        if store_path.exists() {
+            let _ = fs::remove_file(&store_path);
+        }
+        if let Some(parent) = store_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn resolve_runtime_config_does_not_mix_env_credentials_for_server_override() {
+        let store_path = unique_temp_path("resolve_no_credential_mix")
+            .join("alicia")
+            .join("neuro")
+            .join("adt_servers.json");
+        let store_path_text = store_path.to_string_lossy().to_string();
+
+        with_env_overrides(
+            &[
+                (
+                    NEURO_ADT_SERVER_STORE_PATH_ENV,
+                    Some(store_path_text.as_str()),
+                ),
+                ("NEURO_SAP_USER", Some("env-user")),
+                ("NEURO_SAP_PASSWORD", Some("env-pass")),
+            ],
+            || {
+                let mut store = AdtServerStore::default();
+                upsert_server(
+                    &mut store,
+                    AdtServerUpsertRequest {
+                        id: "srv_a".to_string(),
+                        name: "Server A".to_string(),
+                        base_url: "https://srv-a.local".to_string(),
+                        client: None,
+                        language: None,
+                        username: Some("store-user".to_string()),
+                        password: None,
+                        verify_tls: Some(true),
+                        active: Some(true),
+                    },
+                )
+                .expect("upsert should succeed");
+                save_server_store(&store).expect("store should persist");
+
+                let config = resolve_runtime_config(Some("srv_a"))
+                    .expect("runtime config for explicit server should resolve");
+                assert_eq!(
+                    config.sap.user.as_ref().map(|entry| entry.value.as_str()),
+                    Some("store-user")
+                );
+                assert!(config.sap.password.is_none());
+                assert!(!config.sap.is_ready());
+            },
+        );
+
+        if store_path.exists() {
+            let _ = fs::remove_file(&store_path);
+        }
+        if let Some(parent) = store_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn resolve_runtime_init_target_uses_same_server_id_and_cache_key() {
+        let store_path = unique_temp_path("resolve_init_target")
+            .join("alicia")
+            .join("neuro")
+            .join("adt_servers.json");
+        let store_path_text = store_path.to_string_lossy().to_string();
+
+        with_env_overrides(
+            &[(
+                NEURO_ADT_SERVER_STORE_PATH_ENV,
+                Some(store_path_text.as_str()),
+            )],
+            || {
+                let mut store = AdtServerStore::default();
+                upsert_server(
+                    &mut store,
+                    AdtServerUpsertRequest {
+                        id: "srv_active".to_string(),
+                        name: "Server Active".to_string(),
+                        base_url: "https://active.local".to_string(),
+                        client: None,
+                        language: None,
+                        username: Some("active-user".to_string()),
+                        password: Some("active-pass".to_string()),
+                        verify_tls: Some(true),
+                        active: Some(true),
+                    },
+                )
+                .expect("upsert should succeed");
+                save_server_store(&store).expect("store should persist");
+
+                let target = resolve_runtime_init_target(None).expect("target should resolve");
+                assert_eq!(target.resolved_server_id.as_deref(), Some("srv_active"));
+                assert_eq!(target.cache_key, "server:srv_active");
+
+                let explicit_target = resolve_runtime_init_target(Some("srv_active"))
+                    .expect("explicit target should resolve");
+                assert_eq!(
+                    explicit_target.resolved_server_id.as_deref(),
+                    Some("srv_active")
+                );
+                assert_eq!(explicit_target.cache_key, "server:srv_active");
+            },
+        );
+
+        if store_path.exists() {
+            let _ = fs::remove_file(&store_path);
+        }
+        if let Some(parent) = store_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_server_store_uses_restrictive_permissions() {
+        let store_path = unique_temp_path("store_permissions")
+            .join("alicia")
+            .join("neuro")
+            .join("adt_servers.json");
+        let store_path_text = store_path.to_string_lossy().to_string();
+
+        with_env_overrides(
+            &[(
+                NEURO_ADT_SERVER_STORE_PATH_ENV,
+                Some(store_path_text.as_str()),
+            )],
+            || {
+                save_server_store(&AdtServerStore::default()).expect("store write should succeed");
+                let metadata = fs::metadata(&store_path).expect("store metadata should exist");
+                let mode = metadata.permissions().mode() & 0o777;
+                assert_eq!(mode, 0o600);
+            },
+        );
+
+        if store_path.exists() {
+            let _ = fs::remove_file(&store_path);
+        }
+        if let Some(parent) = store_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
     }
 
     #[tokio::test]
     async fn telemetry_reports_success_without_changing_result() {
-        let _guard = telemetry_lock().lock().expect("telemetry lock poisoned");
+        let _guard = telemetry_async_lock().lock().await;
         drain_test_telemetry_events();
 
         let result = run_with_neuro_command_telemetry("neuro_search_objects", async {
@@ -1033,7 +4886,7 @@ mod tests {
 
     #[tokio::test]
     async fn telemetry_reports_failure_and_preserves_error_details() {
-        let _guard = telemetry_lock().lock().expect("telemetry lock poisoned");
+        let _guard = telemetry_async_lock().lock().await;
         drain_test_telemetry_events();
 
         let expected = runtime_error(
@@ -1100,5 +4953,124 @@ mod tests {
             event.get("errorCode"),
             Some(&error_code_value(&NeuroRuntimeErrorCode::RuntimeInitError))
         );
+    }
+
+    #[test]
+    fn runtime_init_telemetry_suppresses_cache_hit_by_default() {
+        with_env_overrides(&[(NEURO_RUNTIME_INIT_TELEMETRY_VERBOSE_ENV, None)], || {
+            let _guard = telemetry_lock().lock().expect("telemetry lock poisoned");
+            drain_test_telemetry_events();
+
+            emit_neuro_runtime_init_telemetry("cache_hit", Duration::from_millis(9), None);
+            assert!(
+                drain_test_telemetry_events().is_empty(),
+                "cache-hit telemetry should be suppressed by default"
+            );
+        });
+    }
+
+    #[test]
+    fn runtime_init_telemetry_emits_cache_hit_when_verbose_env_enabled() {
+        with_env_overrides(
+            &[(NEURO_RUNTIME_INIT_TELEMETRY_VERBOSE_ENV, Some("1"))],
+            || {
+                let _guard = telemetry_lock().lock().expect("telemetry lock poisoned");
+                drain_test_telemetry_events();
+
+                emit_neuro_runtime_init_telemetry(
+                    "cache_hit_after_gate",
+                    Duration::from_millis(9),
+                    None,
+                );
+
+                let event = take_single_telemetry_event();
+                assert_eq!(
+                    event.get("event"),
+                    Some(&json!(NEURO_RUNTIME_INIT_TELEMETRY_EVENT))
+                );
+                assert_eq!(event.get("status"), Some(&json!("cache_hit_after_gate")));
+                assert_eq!(event.get("success"), Some(&json!(true)));
+                assert!(event.get("errorCode").is_none());
+                assert!(event.get("errorMessage").is_none());
+            },
+        );
+    }
+
+    #[test]
+    fn clear_runtime_cache_waits_for_init_gate_before_clearing_cache() {
+        let store_path = unique_temp_path("clear_cache_gate")
+            .join("alicia")
+            .join("neuro")
+            .join("adt_servers.json");
+        let store_path_text = store_path.to_string_lossy().to_string();
+
+        with_env_overrides(
+            &[
+                (
+                    NEURO_ADT_SERVER_STORE_PATH_ENV,
+                    Some(store_path_text.as_str()),
+                ),
+                ("NEURO_SAP_URL", Some("https://example.local")),
+                ("NEURO_SAP_USER", Some("tester")),
+                ("NEURO_SAP_PASSWORD", Some("secret")),
+            ],
+            || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_time()
+                    .build()
+                    .expect("runtime should build");
+
+                runtime.block_on(async {
+                    let state = Arc::new(AppState::default());
+                    let target = resolve_runtime_init_target(None)
+                        .expect("runtime init target should resolve");
+
+                    let _runtime = get_or_init(state.as_ref(), None)
+                        .await
+                        .expect("runtime init should succeed");
+                    {
+                        let cache = state.neuro_runtime_cache.lock().await;
+                        assert!(
+                            cache.contains_key(target.cache_key.as_str()),
+                            "cache should contain initialized runtime before invalidation"
+                        );
+                    }
+
+                    let gate_guard = state.neuro_runtime_init_gate.lock().await;
+                    let clear_state = Arc::clone(&state);
+                    let clear_task = tokio::spawn(async move {
+                        clear_runtime_cache(clear_state.as_ref()).await;
+                    });
+
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                    assert!(
+                        !clear_task.is_finished(),
+                        "clear_runtime_cache should wait for init gate"
+                    );
+                    {
+                        let cache = state.neuro_runtime_cache.lock().await;
+                        assert!(
+                            cache.contains_key(target.cache_key.as_str()),
+                            "cache should remain populated while clear is blocked by init gate"
+                        );
+                    }
+
+                    drop(gate_guard);
+                    clear_task.await.expect("clear task should complete");
+                    let cache = state.neuro_runtime_cache.lock().await;
+                    assert!(
+                        cache.is_empty(),
+                        "cache should be cleared after gate release"
+                    );
+                });
+            },
+        );
+
+        if store_path.exists() {
+            let _ = fs::remove_file(&store_path);
+        }
+        if let Some(parent) = store_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
     }
 }

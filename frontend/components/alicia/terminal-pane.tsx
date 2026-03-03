@@ -20,52 +20,65 @@ export function TerminalPane({
   onCreateTab,
 }: TerminalPaneProps) {
   return (
-    <div className="h-full flex flex-col border-t border-panel-border bg-terminal-bg">
-      <div className="h-9 border-b border-panel-border px-2 flex items-center gap-1 overflow-x-auto">
-        <div className="inline-flex items-center gap-1 text-[10px] text-muted-foreground px-2">
-          <TerminalSquare className="w-3.5 h-3.5 text-terminal-blue" />
-          Terminal
+    <section className="alicia-panel-chrome flex h-full min-h-0 flex-col overflow-hidden" aria-label="Painel de terminal">
+      <div className="alicia-panel-titlebar flex h-[30px] items-center gap-1 border-b border-[var(--ide-border-strong)] bg-[var(--ide-surface-2)] px-1.5 shadow-[inset_0_-1px_0_0_#0d0e11]">
+        <div className="inline-flex shrink-0 items-center gap-1 px-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+          <TerminalSquare className="h-3.5 w-3.5 text-terminal-blue/90" />
+          terminal
         </div>
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => onSelectTab(tab.id)}
-            className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs border ${
-              tab.id === activeTerminalId
-                ? "border-terminal-blue/40 bg-terminal-blue/10 text-terminal-fg"
-                : "border-transparent text-muted-foreground hover:bg-panel-bg"
-            }`}
-          >
-            <span>{tab.title}</span>
-            {!tab.alive && <span className="text-terminal-red">exit</span>}
-            <span
-              className="ml-1 hover:text-terminal-red"
-              onClick={(ev) => {
-                ev.stopPropagation()
-                onCloseTab(tab.id)
-              }}
+        <div className="flex min-w-0 flex-1 items-center overflow-x-auto">
+          {tabs.map((tab) => (
+            <div
+              key={tab.id}
+              className={`group inline-flex h-[28px] shrink-0 items-center gap-1.5 border-r border-t px-1.5 text-[10px] ${
+                tab.id === activeTerminalId
+                  ? "border-[var(--ide-border-strong)] bg-[var(--terminal-bg)] text-terminal-fg"
+                  : "border-transparent text-muted-foreground hover:border-[var(--ide-border-subtle)] hover:bg-[var(--ide-hover)]"
+              }`}
             >
-              <X className="w-3 h-3" />
-            </span>
-          </button>
-        ))}
+              <button
+                type="button"
+                aria-label={`Abrir aba ${tab.title}`}
+                onClick={() => onSelectTab(tab.id)}
+                className="inline-flex items-center gap-1.5 text-[11px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terminal-blue/50"
+              >
+                <span>{tab.title}</span>
+              </button>
+              {!tab.alive && <span className="text-terminal-red">exit</span>}
+              <button
+                type="button"
+                aria-label={`Fechar aba ${tab.title}`}
+                title={`Fechar aba ${tab.title}`}
+                className="terminal-tab-close ml-0.5 rounded p-0.5 text-muted-foreground opacity-100 transition hover:bg-[var(--ide-hover)] hover:text-terminal-red focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terminal-blue/50"
+                onClick={(ev) => {
+                  ev.stopPropagation()
+                  onCloseTab(tab.id)
+                }}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          ))}
+        </div>
         <button
+          type="button"
+          aria-label="Criar nova aba de terminal"
           onClick={onCreateTab}
-          className="ml-auto inline-flex items-center gap-1 px-2 py-1 rounded text-xs border border-panel-border text-muted-foreground hover:bg-panel-bg"
+          className="ml-1 inline-flex shrink-0 items-center gap-1 rounded border border-[var(--ide-border-strong)] bg-[var(--ide-surface-1)] px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-[var(--ide-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terminal-blue/50"
         >
           <Plus className="w-3.5 h-3.5" />
-          New terminal
+          Novo
         </button>
       </div>
-      <div className="px-3 py-1 text-[10px] text-muted-foreground/70 border-b border-panel-border/70">
-        Click inside the terminal pane to run local shell commands.
+      <div className="border-b border-[var(--ide-border-subtle)] bg-[var(--terminal-bg)] px-2.5 py-0.5 text-[10px] text-muted-foreground/60">
+        Clique no terminal para executar comandos locais.
       </div>
-      <div className="flex-1 min-h-0 p-2">
+      <div className="min-h-0 flex-1 bg-[var(--terminal-bg)] p-1">
         <div
           ref={terminalContainerRef}
-          className="h-full w-full rounded border border-panel-border bg-terminal-bg"
+          className="h-full w-full rounded border border-[var(--ide-border-subtle)] bg-terminal-bg"
         />
       </div>
-    </div>
+    </section>
   )
 }

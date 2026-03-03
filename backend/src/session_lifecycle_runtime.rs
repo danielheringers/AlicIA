@@ -1,11 +1,12 @@
-use std::env;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use tauri::{AppHandle, State};
 
 use crate::{
     default_codex_binary, emit_lifecycle, lock_active_session, resolve_codex_launch,
-    ActiveSessionTransport, AppState, StartCodexSessionConfig, StartCodexSessionResponse,
+    workspace_runtime::resolve_default_session_cwd_from_env, ActiveSessionTransport, AppState,
+    StartCodexSessionConfig, StartCodexSessionResponse,
 };
 
 fn binary_for_launch(program: &str, args: &[String]) -> String {
@@ -98,11 +99,16 @@ async fn start_codex_session_internal(
     let cwd = config
         .cwd
         .map(PathBuf::from)
-        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        .unwrap_or_else(resolve_default_session_cwd_from_env);
 
     if !cwd.exists() {
         return Err(format!("session cwd does not exist: {}", cwd.display()));
     }
+    if !cwd.is_dir() {
+        return Err(format!("session cwd is not a directory: {}", cwd.display()));
+    }
+
+    let cwd = fs::canonicalize(&cwd).unwrap_or(cwd);
 
     let session_id = state.next_session_id.fetch_add(1, Ordering::Relaxed);
 

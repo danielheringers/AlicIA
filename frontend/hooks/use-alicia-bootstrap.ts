@@ -164,6 +164,7 @@ export function useAliciaBootstrap({
         }
 
         let hasActiveSession = status.sessionId != null
+        let activeWorkspace = status.workspace
         if (status.sessionId != null) {
           setActiveSessionEntry(
             status.sessionId,
@@ -172,6 +173,25 @@ export function useAliciaBootstrap({
         } else {
           setBootStatus("Starting Codex session...")
           hasActiveSession = await ensureRuntimeSession(false)
+        }
+
+        if (hasActiveSession) {
+          try {
+            const liveStatus = await codexRuntimeStatus()
+            activeWorkspace = liveStatus.workspace
+            if (mounted) {
+              setRuntime((prev) => ({
+                ...prev,
+                connected: true,
+                state: liveStatus.sessionId != null ? "running" : "idle",
+                sessionId: liveStatus.sessionId ?? null,
+                pid: liveStatus.pid ?? null,
+                workspace: liveStatus.workspace,
+              }))
+            }
+          } catch {
+            // best effort: keep previously known workspace
+          }
         }
 
         if (hasActiveSession) {
@@ -209,7 +229,7 @@ export function useAliciaBootstrap({
 
         // Startup terminal must be idempotent: exactly one automatic tab.
         if (!autoTerminalCreatedRef.current && !wasAutoTerminalBootDone()) {
-          const created = await createTerminalTab(status.workspace)
+          const created = await createTerminalTab(activeWorkspace)
           if (created) {
             autoTerminalCreatedRef.current = true
             markAutoTerminalBootDone(true)

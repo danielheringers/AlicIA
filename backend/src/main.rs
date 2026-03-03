@@ -25,6 +25,7 @@ mod session_runtime;
 mod session_turn_runtime;
 mod status_runtime;
 mod terminal_runtime;
+mod workspace_runtime;
 use crate::account_runtime::{
     AccountLoginStartRequest, AccountLoginStartResponse, AccountLogoutResponse,
     AccountRateLimitsReadResponse, AccountReadRequest, AccountReadResponse, AppListRequest,
@@ -355,6 +356,63 @@ struct CodexWorkspaceWriteFileRequest {
 #[serde(rename_all = "camelCase")]
 struct CodexWorkspaceWriteFileResponse {
     path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexWorkspaceCreateDirectoryRequest {
+    path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexWorkspaceCreateDirectoryResponse {
+    path: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexWorkspaceListDirectoryRequest {
+    path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum CodexWorkspaceListDirectoryEntryKind {
+    File,
+    Directory,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexWorkspaceListDirectoryEntry {
+    name: String,
+    path: String,
+    kind: CodexWorkspaceListDirectoryEntryKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    has_children: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexWorkspaceListDirectoryResponse {
+    cwd: String,
+    path: String,
+    entries: Vec<CodexWorkspaceListDirectoryEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexWorkspaceRenameEntryRequest {
+    path: String,
+    new_name: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexWorkspaceRenameEntryResponse {
+    path: String,
+    new_path: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -776,7 +834,7 @@ struct AppState {
     native_codex_runtime: AsyncMutex<Option<Arc<codex_native_runtime::NativeCodexRuntime>>>,
     #[cfg(feature = "native-codex-runtime")]
     native_codex_runtime_init_gate: AsyncMutex<()>,
-    neuro_runtime: AsyncMutex<Option<Arc<neuro_runtime::NeuroRuntime>>>,
+    neuro_runtime_cache: AsyncMutex<HashMap<String, Arc<neuro_runtime::NeuroRuntime>>>,
     neuro_runtime_init_gate: AsyncMutex<()>,
 }
 
@@ -794,7 +852,7 @@ impl Default for AppState {
             native_codex_runtime: AsyncMutex::new(None),
             #[cfg(feature = "native-codex-runtime")]
             native_codex_runtime_init_gate: AsyncMutex::new(()),
-            neuro_runtime: AsyncMutex::new(None),
+            neuro_runtime_cache: AsyncMutex::new(HashMap::new()),
             neuro_runtime_init_gate: AsyncMutex::new(()),
         }
     }
@@ -815,19 +873,21 @@ fn lock_runtime_config(state: &AppState) -> Result<MutexGuard<'_, RuntimeCodexCo
 
 #[tauri::command]
 fn codex_runtime_status(state: State<'_, AppState>) -> Result<RuntimeStatusResponse, String> {
-    let (session_id, pid) = {
+    let (session_id, pid, session_workspace) = {
         let active = lock_active_session(state.inner())?;
         (
             active.as_ref().map(|session| session.session_id),
             active.as_ref().and_then(|session| session.pid),
+            active.as_ref().map(|session| session.cwd.clone()),
         )
     };
 
     let runtime_config = lock_runtime_config(state.inner())?.clone();
-    let workspace = env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .to_string_lossy()
-        .to_string();
+    let process_cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let workspace = crate::workspace_runtime::resolve_runtime_status_workspace(
+        session_workspace.as_deref(),
+        process_cwd.as_path(),
+    );
 
     Ok(RuntimeStatusResponse {
         session_id,
@@ -868,9 +928,12 @@ async fn neuro_search_objects(
     state: State<'_, AppState>,
     query: String,
     max_results: Option<u32>,
+    server_id: Option<String>,
 ) -> Result<neuro_types::NeuroCommandResponse<Vec<neuro_types::AdtObjectSummary>>, String> {
     Ok(
-        match crate::neuro_runtime::neuro_search_objects_impl(state, query, max_results).await {
+        match crate::neuro_runtime::neuro_search_objects_impl(state, query, max_results, server_id)
+            .await
+        {
             Ok(data) => neuro_types::NeuroCommandResponse::success(data),
             Err(error) => neuro_types::NeuroCommandResponse::failure(error),
         },
@@ -881,9 +944,10 @@ async fn neuro_search_objects(
 async fn neuro_get_source(
     state: State<'_, AppState>,
     object_uri: String,
+    server_id: Option<String>,
 ) -> Result<neuro_types::NeuroCommandResponse<neuro_types::AdtSourceResponse>, String> {
     Ok(
-        match crate::neuro_runtime::neuro_get_source_impl(state, object_uri).await {
+        match crate::neuro_runtime::neuro_get_source_impl(state, object_uri, server_id).await {
             Ok(data) => neuro_types::NeuroCommandResponse::success(data),
             Err(error) => neuro_types::NeuroCommandResponse::failure(error),
         },
@@ -893,10 +957,160 @@ async fn neuro_get_source(
 #[tauri::command]
 async fn neuro_update_source(
     state: State<'_, AppState>,
-    request: neuro_types::AdtUpdateSourceRequest,
+    request: neuro_runtime::AdtUpdateSourceCommandRequest,
 ) -> Result<neuro_types::NeuroCommandResponse<neuro_types::AdtUpdateSourceResponse>, String> {
     Ok(
         match crate::neuro_runtime::neuro_update_source_impl(state, request).await {
+            Ok(data) => neuro_types::NeuroCommandResponse::success(data),
+            Err(error) => neuro_types::NeuroCommandResponse::failure(error),
+        },
+    )
+}
+
+#[tauri::command]
+async fn neuro_adt_server_list(
+    state: State<'_, AppState>,
+) -> Result<neuro_types::NeuroCommandResponse<neuro_runtime::AdtServerListResponse>, String> {
+    Ok(
+        match crate::neuro_runtime::neuro_adt_server_list_impl(state).await {
+            Ok(data) => neuro_types::NeuroCommandResponse::success(data),
+            Err(error) => neuro_types::NeuroCommandResponse::failure(error),
+        },
+    )
+}
+
+#[tauri::command]
+async fn neuro_adt_server_upsert(
+    state: State<'_, AppState>,
+    request: neuro_runtime::AdtServerUpsertRequest,
+) -> Result<neuro_types::NeuroCommandResponse<neuro_runtime::AdtServerRecord>, String> {
+    Ok(
+        match crate::neuro_runtime::neuro_adt_server_upsert_impl(state, request).await {
+            Ok(data) => neuro_types::NeuroCommandResponse::success(data),
+            Err(error) => neuro_types::NeuroCommandResponse::failure(error),
+        },
+    )
+}
+
+#[tauri::command]
+async fn neuro_adt_server_remove(
+    state: State<'_, AppState>,
+    server_id: String,
+) -> Result<neuro_types::NeuroCommandResponse<neuro_runtime::AdtServerRemoveResponse>, String> {
+    Ok(
+        match crate::neuro_runtime::neuro_adt_server_remove_impl(state, server_id).await {
+            Ok(data) => neuro_types::NeuroCommandResponse::success(data),
+            Err(error) => neuro_types::NeuroCommandResponse::failure(error),
+        },
+    )
+}
+
+#[tauri::command]
+async fn neuro_adt_server_select(
+    state: State<'_, AppState>,
+    server_id: String,
+) -> Result<neuro_types::NeuroCommandResponse<neuro_runtime::AdtServerSelectResponse>, String> {
+    Ok(
+        match crate::neuro_runtime::neuro_adt_server_select_impl(state, server_id).await {
+            Ok(data) => neuro_types::NeuroCommandResponse::success(data),
+            Err(error) => neuro_types::NeuroCommandResponse::failure(error),
+        },
+    )
+}
+
+#[tauri::command]
+async fn neuro_adt_server_connect(
+    state: State<'_, AppState>,
+    server_id: Option<String>,
+) -> Result<neuro_types::NeuroCommandResponse<neuro_runtime::AdtServerConnectResponse>, String> {
+    Ok(
+        match crate::neuro_runtime::neuro_adt_server_connect_impl(state, server_id).await {
+            Ok(data) => neuro_types::NeuroCommandResponse::success(data),
+            Err(error) => neuro_types::NeuroCommandResponse::failure(error),
+        },
+    )
+}
+
+#[tauri::command]
+async fn neuro_adt_list_packages(
+    state: State<'_, AppState>,
+    server_id: Option<String>,
+) -> Result<neuro_types::NeuroCommandResponse<Vec<neuro_runtime::AdtPackageSummary>>, String> {
+    Ok(
+        match crate::neuro_runtime::neuro_adt_list_packages_impl(state, server_id).await {
+            Ok(data) => neuro_types::NeuroCommandResponse::success(data),
+            Err(error) => neuro_types::NeuroCommandResponse::failure(error),
+        },
+    )
+}
+
+#[tauri::command]
+async fn neuro_adt_list_namespaces(
+    state: State<'_, AppState>,
+    package_name: Option<String>,
+    server_id: Option<String>,
+) -> Result<neuro_types::NeuroCommandResponse<Vec<neuro_runtime::AdtNamespaceSummary>>, String> {
+    Ok(
+        match crate::neuro_runtime::neuro_adt_list_namespaces_impl(state, package_name, server_id)
+            .await
+        {
+            Ok(data) => neuro_types::NeuroCommandResponse::success(data),
+            Err(error) => neuro_types::NeuroCommandResponse::failure(error),
+        },
+    )
+}
+
+#[tauri::command]
+async fn neuro_adt_explorer_state_get(
+    state: State<'_, AppState>,
+    server_id: Option<String>,
+) -> Result<neuro_types::NeuroCommandResponse<neuro_runtime::AdtExplorerStateResponse>, String> {
+    Ok(
+        match crate::neuro_runtime::neuro_adt_explorer_state_get_impl(state, server_id).await {
+            Ok(data) => neuro_types::NeuroCommandResponse::success(data),
+            Err(error) => neuro_types::NeuroCommandResponse::failure(error),
+        },
+    )
+}
+
+#[tauri::command]
+async fn neuro_adt_explorer_state_patch(
+    state: State<'_, AppState>,
+    mut request: neuro_runtime::AdtExplorerStatePatchRequest,
+    server_id: Option<String>,
+) -> Result<neuro_types::NeuroCommandResponse<neuro_runtime::AdtExplorerStateResponse>, String> {
+    if request.server_id.is_none() {
+        request.server_id = server_id;
+    }
+
+    Ok(
+        match crate::neuro_runtime::neuro_adt_explorer_state_patch_impl(state, request).await {
+            Ok(data) => neuro_types::NeuroCommandResponse::success(data),
+            Err(error) => neuro_types::NeuroCommandResponse::failure(error),
+        },
+    )
+}
+
+#[tauri::command]
+async fn neuro_adt_list_objects(
+    state: State<'_, AppState>,
+    request: neuro_runtime::AdtListObjectsRequest,
+) -> Result<neuro_types::NeuroCommandResponse<neuro_runtime::AdtListObjectsResponse>, String> {
+    Ok(
+        match crate::neuro_runtime::neuro_adt_list_objects_impl(state, request).await {
+            Ok(data) => neuro_types::NeuroCommandResponse::success(data),
+            Err(error) => neuro_types::NeuroCommandResponse::failure(error),
+        },
+    )
+}
+
+#[tauri::command]
+async fn neuro_adt_list_package_inventory(
+    state: State<'_, AppState>,
+    request: neuro_runtime::AdtPackageInventoryRequest,
+) -> Result<neuro_types::NeuroCommandResponse<neuro_runtime::AdtPackageInventoryResponse>, String> {
+    Ok(
+        match crate::neuro_runtime::neuro_adt_list_package_inventory_impl(state, request).await {
             Ok(data) => neuro_types::NeuroCommandResponse::success(data),
             Err(error) => neuro_types::NeuroCommandResponse::failure(error),
         },
@@ -1223,6 +1437,30 @@ fn codex_workspace_write_file(
 ) -> Result<CodexWorkspaceWriteFileResponse, String> {
     crate::command_runtime::codex_workspace_write_file_impl(state, request)
 }
+
+#[tauri::command]
+fn codex_workspace_create_directory(
+    state: State<'_, AppState>,
+    request: CodexWorkspaceCreateDirectoryRequest,
+) -> Result<CodexWorkspaceCreateDirectoryResponse, String> {
+    crate::command_runtime::codex_workspace_create_directory_impl(state, request)
+}
+
+#[tauri::command]
+fn codex_workspace_list_directory(
+    state: State<'_, AppState>,
+    request: Option<CodexWorkspaceListDirectoryRequest>,
+) -> Result<CodexWorkspaceListDirectoryResponse, String> {
+    crate::command_runtime::codex_workspace_list_directory_impl(state, request.unwrap_or_default())
+}
+
+#[tauri::command]
+fn codex_workspace_rename_entry(
+    state: State<'_, AppState>,
+    request: CodexWorkspaceRenameEntryRequest,
+) -> Result<CodexWorkspaceRenameEntryResponse, String> {
+    crate::command_runtime::codex_workspace_rename_entry_impl(state, request)
+}
 #[tauri::command]
 fn codex_models_list(state: State<'_, AppState>) -> Result<CodexModelListResponse, String> {
     crate::command_runtime::codex_models_list_impl(state)
@@ -1296,6 +1534,11 @@ async fn codex_mcp_reload(state: State<'_, AppState>) -> Result<McpReloadRespons
 }
 
 #[tauri::command]
+fn pick_workspace_folder() -> Option<String> {
+    crate::command_runtime::pick_workspace_folder_impl()
+}
+
+#[tauri::command]
 fn pick_image_file() -> Option<String> {
     rfd::FileDialog::new()
         .add_filter(
@@ -1356,6 +1599,17 @@ fn main() {
             neuro_search_objects,
             neuro_get_source,
             neuro_update_source,
+            neuro_adt_server_list,
+            neuro_adt_server_upsert,
+            neuro_adt_server_remove,
+            neuro_adt_server_select,
+            neuro_adt_server_connect,
+            neuro_adt_list_packages,
+            neuro_adt_list_namespaces,
+            neuro_adt_explorer_state_get,
+            neuro_adt_explorer_state_patch,
+            neuro_adt_list_objects,
+            neuro_adt_list_package_inventory,
             neuro_ws_request,
             neuro_list_tools,
             neuro_invoke_tool,
@@ -1372,6 +1626,9 @@ fn main() {
             git_workspace_changes,
             codex_workspace_read_file,
             codex_workspace_write_file,
+            codex_workspace_create_directory,
+            codex_workspace_list_directory,
+            codex_workspace_rename_entry,
             codex_models_list,
             codex_app_list,
             codex_account_read,
@@ -1382,6 +1639,7 @@ fn main() {
             codex_mcp_login,
             codex_mcp_reload,
             codex_wait_for_mcp_startup,
+            pick_workspace_folder,
             pick_image_file,
             pick_mention_file,
             codex_help_snapshot

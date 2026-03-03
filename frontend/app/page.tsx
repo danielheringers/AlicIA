@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Bot } from "lucide-react"
+import { Bot, Minimize2 } from "lucide-react"
 import { TitleBar } from "@/components/alicia/title-bar"
 import { Sidebar } from "@/components/alicia/sidebar"
 import { ConversationPane } from "@/components/alicia/conversation-pane"
@@ -10,14 +10,25 @@ import { ModelPicker } from "@/components/alicia/model-picker"
 import { PermissionsPanel } from "@/components/alicia/permissions-panel"
 import { McpPanel } from "@/components/alicia/mcp-panel"
 import { AppsPanel } from "@/components/alicia/apps-panel"
+import { AdtPanel } from "@/components/alicia/adt-panel"
 import { SessionPicker } from "@/components/alicia/session-picker"
 import { ReviewMode } from "@/components/alicia/review-mode"
 import { TerminalPane } from "@/components/alicia/terminal-pane"
 import { SourceEditorPanel } from "@/components/alicia/source-editor-panel"
+import { AliciaDesktopShell } from "@/components/ide/desktop-shell"
+import { IdeSapExplorer } from "@/components/ide/sap-explorer"
+import { type IdeSidebarView } from "@/components/ide/activity-bar"
+import {
+  IdePanelToolbar,
+  type IdeShellMode,
+  type IdeViewMode,
+} from "@/components/ide/panel-toolbar"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { type AliciaState } from "@/lib/alicia-types"
 import {
   codexApprovalRespond,
+  codexRuntimeSessionStart,
+  codexRuntimeStatus,
   codexRuntimeSessionStop,
   codexUserInputRespond,
   isTauriRuntime,
@@ -25,19 +36,38 @@ import {
   pickMentionFile,
   gitCommitApprovedReview,
   codexWorkspaceChanges,
+  codexWorkspaceCreateDirectory,
+  codexWorkspaceListDirectory,
   codexWorkspaceReadFile,
+  codexWorkspaceRenameEntry,
   codexWorkspaceWriteFile,
+  neuroAdtExplorerStateGet,
+  neuroAdtExplorerStatePatch,
+  neuroAdtListPackageInventory,
+  neuroAdtListNamespaces,
+  neuroAdtListObjects,
   neuroGetSource,
+  neuroAdtServerList,
   neuroUpdateSource,
+  pickWorkspaceFolder,
   terminalResize,
   terminalWrite,
   type ApprovalDecision,
   type CodexModel,
+  type CodexWorkspaceDirectoryEntry,
+  type NeuroAdtExplorerState,
+  type NeuroAdtFavoritePackageItem,
+  type NeuroAdtListObjectsRequest,
+  type NeuroAdtPackageInventoryResponse,
+  type NeuroAdtNamespaceSummary,
+  type NeuroAdtObjectSummary,
   type NeuroRuntimeCommandError,
+  type RuntimeMethod,
   type RuntimeCodexConfig,
 } from "@/lib/tauri-bridge"
 import {
   INITIAL_ALICIA_STATE,
+  isRuntimeMethodSupported,
   mapDiffFilesToFileChanges,
   parseUnifiedDiffFiles,
   type ApprovalRequestState,
@@ -52,11 +82,6 @@ import {
   type TurnPlanState,
   type UserInputRequestState,
 } from "@/lib/alicia-runtime-helpers"
-import {
-  ResizableHandle,
-  ResizablePanel,
-  ResizablePanelGroup,
-} from "@/components/ui/resizable"
 import {
   createCodexEventHandler,
   createTerminalEventHandler,
@@ -80,11 +105,23 @@ import {
   AbapSourceResolverError,
   resolveAbapSourceRef,
 } from "@/lib/abap-source-resolver"
-import { routeSourceEditorRef, type SourceEditorRefKind } from "@/lib/source-editor-ref-routing"
+import {
+  selectBoundAdtServerId,
+} from "@/lib/adt-server-binding"
+import {
+  normalizeWorkspacePathForRoot,
+  routeSourceEditorRef,
+  type SourceEditorRefKind,
+} from "@/lib/source-editor-ref-routing"
+import {
+  resolveDesktopEscAction,
+  transitionDesktopShellMode,
+} from "@/lib/desktop-shell-state"
 
 interface SourceEditorState {
   visible: boolean
   refKind: SourceEditorRefKind | null
+  adtServerId: string | null
   objectUri: string | null
   workspaceRoot: string | null
   displayName: string | null
@@ -100,6 +137,7 @@ interface SourceEditorState {
 const INITIAL_SOURCE_EDITOR_STATE: SourceEditorState = {
   visible: false,
   refKind: null,
+  adtServerId: null,
   objectUri: null,
   workspaceRoot: null,
   displayName: null,
@@ -113,6 +151,149 @@ const INITIAL_SOURCE_EDITOR_STATE: SourceEditorState = {
 }
 
 type MainContentTab = "chat" | "editor" | "terminal"
+
+type ExplorerDirectoryPathMap = Record<string, CodexWorkspaceDirectoryEntry[]>
+type ExplorerDirectoryStatusMap = Record<string, boolean>
+type SapObjectMap = Record<string, NeuroAdtObjectSummary[]>
+type SapLoadingMap = Record<string, boolean>
+type SapObjectMapByServer = Record<string, SapObjectMap>
+type SapLoadingMapByServer = Record<string, SapLoadingMap>
+type SapPackageRootsByServer = Record<string, string[]>
+type SapPackageRootInputByServer = Record<string, string>
+
+const EXPLORER_ROOT_KEY = "__root__"
+const SAP_TMP_PACKAGE = "$TMP"
+const SAP_PACKAGE_SCOPE_PRESETS = ["/S4TAX/", "/1BEA/", "Z*", "Y*", SAP_TMP_PACKAGE]
+const INITIAL_SAP_LOADING_STATE = {
+  state: false,
+  localObjects: false,
+  favoriteObjects: false,
+  favoritePackages: false,
+  systemNamespaces: false,
+  packageInventory: false,
+}
+
+const INITIAL_SAP_EXPLORER_STATE: NeuroAdtExplorerState = {
+  workingPackage: null,
+  focusedObjectUri: null,
+  packageScopeRoots: [],
+  favoritePackages: [],
+  favoriteObjects: [],
+}
+
+function normalizeExplorerPath(path: string | null | undefined): string {
+  return String(path ?? "")
+    .replace(/\\/g, "/")
+    .replace(/^\.\/+/, "")
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "")
+}
+
+function pathBasename(path: string): string {
+  const normalized = normalizeExplorerPath(path)
+  const parts = normalized.split("/").filter(Boolean)
+  return parts.at(-1) ?? normalized
+}
+
+function pathDirname(path: string): string {
+  const normalized = normalizeExplorerPath(path)
+  const separator = normalized.lastIndexOf("/")
+  if (separator < 0) {
+    return ""
+  }
+  return normalized.slice(0, separator)
+}
+
+function normalizeSapPackageScopeRoot(raw: string): string | null {
+  const normalized = String(raw ?? "").trim()
+  return normalized.length > 0 ? normalized : null
+}
+
+function sapServerScopeKey(serverId: string | null | undefined): string {
+  const normalized = String(serverId ?? "").trim()
+  return normalized.length > 0 ? normalized : "__none__"
+}
+
+function deriveSapNamespacesFromPackageScopeRoots(
+  roots: string[] | null | undefined,
+): NeuroAdtNamespaceSummary[] {
+  if (!Array.isArray(roots) || roots.length === 0) {
+    return []
+  }
+
+  const seen = new Set<string>()
+  const derived: NeuroAdtNamespaceSummary[] = []
+  for (const root of roots) {
+    const normalized = String(root ?? "").trim()
+    if (!/^\/[^/\s]+\/$/.test(normalized)) {
+      continue
+    }
+    const dedupeKey = normalized.toUpperCase()
+    if (seen.has(dedupeKey)) {
+      continue
+    }
+    seen.add(dedupeKey)
+    derived.push({
+      name: normalized,
+      packageName: null,
+    })
+  }
+  return derived
+}
+
+function mergeSapNamespaces(
+  backendNamespaces: NeuroAdtNamespaceSummary[] | null | undefined,
+  derivedNamespaces: NeuroAdtNamespaceSummary[] | null | undefined,
+): NeuroAdtNamespaceSummary[] {
+  const mergedByKey = new Map<string, NeuroAdtNamespaceSummary>()
+  const pushNamespace = (
+    candidate: NeuroAdtNamespaceSummary | null | undefined,
+    preferPackageName: boolean,
+  ) => {
+    const rawName = String(candidate?.name ?? "").trim()
+    if (!rawName) {
+      return
+    }
+    const key = rawName.toUpperCase()
+    const packageName = candidate?.packageName ?? null
+    const existing = mergedByKey.get(key)
+    if (!existing) {
+      mergedByKey.set(key, {
+        name: rawName,
+        packageName,
+      })
+      return
+    }
+    if (preferPackageName && packageName && !existing.packageName) {
+      mergedByKey.set(key, {
+        ...existing,
+        packageName,
+      })
+    }
+  }
+
+  for (const namespace of backendNamespaces ?? []) {
+    pushNamespace(namespace, true)
+  }
+  for (const namespace of derivedNamespaces ?? []) {
+    pushNamespace(namespace, false)
+  }
+
+  return Array.from(mergedByKey.values()).sort((left, right) =>
+    left.name.localeCompare(right.name, "pt-BR", { sensitivity: "base" }),
+  )
+}
+
+function sortExplorerEntries(
+  entries: CodexWorkspaceDirectoryEntry[],
+): CodexWorkspaceDirectoryEntry[] {
+  return [...entries].sort((left, right) => {
+    if (left.kind !== right.kind) {
+      return left.kind === "directory" ? -1 : 1
+    }
+    return left.name.localeCompare(right.name, "pt-BR", { sensitivity: "base" })
+  })
+}
 
 export default function AliciaTerminal() {
   const isMobile = useIsMobile()
@@ -142,10 +323,56 @@ export default function AliciaTerminal() {
   const [modelsError, setModelsError] = useState<string | null>(null)
   const [modelsCachedAt, setModelsCachedAt] = useState<number | null>(null)
   const [modelsFromCache, setModelsFromCache] = useState(false)
+  const [activeAdtServerId, setActiveAdtServerId] = useState<string | null>(null)
+  const [sapExplorerState, setSapExplorerState] = useState<NeuroAdtExplorerState>(
+    INITIAL_SAP_EXPLORER_STATE,
+  )
+  const [sapLocalObjects, setSapLocalObjects] = useState<NeuroAdtObjectSummary[]>([])
+  const [sapFavoriteObjects, setSapFavoriteObjects] = useState<NeuroAdtObjectSummary[]>([])
+  const [sapSystemNamespaces, setSapSystemNamespaces] = useState<NeuroAdtNamespaceSummary[]>(
+    [],
+  )
+  const [sapFavoritePackageObjects, setSapFavoritePackageObjects] =
+    useState<SapObjectMap>({})
+  const [sapNamespaceObjects, setSapNamespaceObjects] = useState<SapObjectMap>({})
+  const [sapPackageScopeRootsByServer, setSapPackageScopeRootsByServer] =
+    useState<SapPackageRootsByServer>({})
+  const [sapPackageScopeRootInputByServer, setSapPackageScopeRootInputByServer] =
+    useState<SapPackageRootInputByServer>({})
+  const [sapPackageInventory, setSapPackageInventory] =
+    useState<NeuroAdtPackageInventoryResponse | null>(null)
+  const [sapPackageInventoryObjectsByServer, setSapPackageInventoryObjectsByServer] =
+    useState<SapObjectMapByServer>({})
+  const [sapLoading, setSapLoading] = useState(INITIAL_SAP_LOADING_STATE)
+  const [sapPackageObjectsLoading, setSapPackageObjectsLoading] =
+    useState<SapLoadingMap>({})
+  const [sapPackageInventoryObjectsLoadingByServer, setSapPackageInventoryObjectsLoadingByServer] =
+    useState<SapLoadingMapByServer>({})
+  const [sapNamespaceObjectsLoading, setSapNamespaceObjectsLoading] =
+    useState<SapLoadingMap>({})
   const [sourceEditor, setSourceEditor] = useState<SourceEditorState>(
     INITIAL_SOURCE_EDITOR_STATE,
   )
   const [activeMainTab, setActiveMainTab] = useState<MainContentTab>("chat")
+  const [desktopSidebarVisible, setDesktopSidebarVisible] = useState(true)
+  const [desktopSidebarView, setDesktopSidebarView] =
+    useState<IdeSidebarView>("agent")
+  const [desktopViewMode, setDesktopViewMode] = useState<IdeViewMode>("split")
+  const [desktopTerminalVisible, setDesktopTerminalVisible] = useState(true)
+  const [desktopShellMode, setDesktopShellMode] = useState<IdeShellMode>("normal")
+  const [explorerRootPath, setExplorerRootPath] = useState("")
+  const [explorerRootEntries, setExplorerRootEntries] = useState<
+    CodexWorkspaceDirectoryEntry[]
+  >([])
+  const [explorerChildrenByPath, setExplorerChildrenByPath] =
+    useState<ExplorerDirectoryPathMap>({})
+  const [explorerLoadedPaths, setExplorerLoadedPaths] =
+    useState<ExplorerDirectoryStatusMap>({})
+  const [explorerLoadingPaths, setExplorerLoadingPaths] =
+    useState<ExplorerDirectoryStatusMap>({})
+  const [explorerTreeVersion, setExplorerTreeVersion] = useState(0)
+  const [explorerRootLoading, setExplorerRootLoading] = useState(false)
+  const [switchingWorkspaceFolder, setSwitchingWorkspaceFolder] = useState(false)
   const [runtime, setRuntime] = useState<RuntimeState>({
     connected: isTauriRuntime(),
     state: "idle",
@@ -178,6 +405,14 @@ export default function AliciaTerminal() {
   const sourceOperationSeqRef = useRef(0)
   const sourceBaselineRef = useRef("")
   const sourceEditorRef = useRef<SourceEditorState>(INITIAL_SOURCE_EDITOR_STATE)
+  const activeAdtServerIdRef = useRef<string | null>(null)
+  const lastAutoRefreshedAdtServerIdRef = useRef<string | null>(null)
+  const sapPackageScopeRootsByServerRef = useRef<SapPackageRootsByServer>({})
+  const refreshSapExplorerRef = useRef<() => Promise<void>>(async () => {})
+  const desktopLayoutSnapshotRef = useRef({
+    sidebarVisible: true,
+    terminalVisible: true,
+  })
 
   const [isReviewComplete, setIsReviewComplete] = useState(false)
 
@@ -201,6 +436,110 @@ export default function AliciaTerminal() {
       setIsReviewComplete(true)
     }
   }, [isThinking])
+
+  useEffect(() => {
+    activeAdtServerIdRef.current = activeAdtServerId
+  }, [activeAdtServerId])
+
+  useEffect(() => {
+    sapPackageScopeRootsByServerRef.current = sapPackageScopeRootsByServer
+  }, [sapPackageScopeRootsByServer])
+
+  const activeSapServerKey = useMemo(
+    () => sapServerScopeKey(activeAdtServerId),
+    [activeAdtServerId],
+  )
+  const sapPackageScopeRoots = useMemo(() => {
+    const scopedRoots = sapPackageScopeRootsByServer[activeSapServerKey]
+    return Array.isArray(scopedRoots) ? scopedRoots : []
+  }, [activeSapServerKey, sapPackageScopeRootsByServer])
+  const sapPackageScopeRootInput = sapPackageScopeRootInputByServer[activeSapServerKey] ?? ""
+  const sapPackageInventoryObjects = sapPackageInventoryObjectsByServer[activeSapServerKey] ?? {}
+  const sapPackageInventoryObjectsLoading =
+    sapPackageInventoryObjectsLoadingByServer[activeSapServerKey] ?? {}
+
+  useEffect(() => {
+    if (isMobile || desktopShellMode !== "normal") {
+      return
+    }
+    desktopLayoutSnapshotRef.current = {
+      sidebarVisible: desktopSidebarVisible,
+      terminalVisible: desktopTerminalVisible,
+    }
+  }, [desktopShellMode, desktopSidebarVisible, desktopTerminalVisible, isMobile])
+
+  const applyDesktopShellModeTransition = useCallback(
+    (nextMode: IdeShellMode) => {
+      const transition = transitionDesktopShellMode({
+        isMobile,
+        currentMode: desktopShellMode,
+        nextMode,
+        layout: {
+          sidebarVisible: desktopSidebarVisible,
+          terminalVisible: desktopTerminalVisible,
+        },
+        snapshot: desktopLayoutSnapshotRef.current,
+      })
+
+      desktopLayoutSnapshotRef.current = transition.snapshot
+      if (!transition.changed) {
+        return
+      }
+
+      setDesktopShellMode(transition.mode)
+      setDesktopSidebarVisible(transition.layout.sidebarVisible)
+      setDesktopTerminalVisible(transition.layout.terminalVisible)
+    },
+    [desktopShellMode, desktopSidebarVisible, desktopTerminalVisible, isMobile],
+  )
+
+  const handleDesktopShellModeChange = useCallback(
+    (nextMode: IdeShellMode) => {
+      applyDesktopShellModeTransition(nextMode)
+    },
+    [applyDesktopShellModeTransition],
+  )
+
+  useEffect(() => {
+    if (isMobile) {
+      return
+    }
+
+    const handleEsc = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) {
+        return
+      }
+
+      const escAction = resolveDesktopEscAction({
+        isMobile,
+        hasActivePanel: Boolean(aliciaState.activePanel),
+        shellMode: desktopShellMode,
+      })
+
+      if (escAction === "close-panel") {
+        event.preventDefault()
+        setAliciaState((previous) =>
+          previous.activePanel ? { ...previous, activePanel: null } : previous,
+        )
+        return
+      }
+
+      if (escAction === "exit-zen" || escAction === "exit-focus") {
+        event.preventDefault()
+        applyDesktopShellModeTransition("normal")
+      }
+    }
+
+    window.addEventListener("keydown", handleEsc)
+    return () => {
+      window.removeEventListener("keydown", handleEsc)
+    }
+  }, [
+    aliciaState.activePanel,
+    applyDesktopShellModeTransition,
+    desktopShellMode,
+    isMobile,
+  ])
 
   const setSourceEditorWithRef = useCallback(
     (
@@ -340,6 +679,203 @@ export default function AliciaTerminal() {
     reviewMessagesBySessionRef.current.set(activeReviewSessionKey, reviewMessages)
   }, [activeReviewSessionKey, reviewMessages])
 
+  const normalizeWorkspaceDirectoryEntries = useCallback(
+    (entries: unknown): CodexWorkspaceDirectoryEntry[] => {
+      if (!Array.isArray(entries)) {
+        return []
+      }
+
+      const normalized: CodexWorkspaceDirectoryEntry[] = []
+      for (const entry of entries) {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+          continue
+        }
+        const record = entry as Record<string, unknown>
+        const kind = record.kind === "directory" ? "directory" : "file"
+        const rawPath =
+          typeof record.path === "string" && record.path.trim().length > 0
+            ? record.path
+            : typeof record.name === "string"
+              ? record.name
+              : ""
+        const path = normalizeExplorerPath(rawPath)
+        if (!path) {
+          continue
+        }
+        const name =
+          typeof record.name === "string" && record.name.trim().length > 0
+            ? record.name.trim()
+            : pathBasename(path)
+        if (typeof record.hasChildren === "boolean") {
+          normalized.push({
+            name,
+            path,
+            kind,
+            hasChildren: record.hasChildren,
+          })
+          continue
+        }
+        normalized.push({
+          name,
+          path,
+          kind,
+        })
+      }
+
+      return sortExplorerEntries(normalized)
+    },
+    [],
+  )
+
+  const upsertExplorerEntry = useCallback(
+    (parentPath: string, nextEntry: CodexWorkspaceDirectoryEntry) => {
+      const normalizedParentPath = normalizeExplorerPath(parentPath)
+      if (!normalizedParentPath) {
+        setExplorerRootEntries((previous) => {
+          const merged = [...previous.filter((entry) => entry.path !== nextEntry.path), nextEntry]
+          return sortExplorerEntries(merged)
+        })
+        return
+      }
+
+      setExplorerChildrenByPath((previous) => {
+        const currentEntries = previous[normalizedParentPath] ?? []
+        const merged = [
+          ...currentEntries.filter((entry) => entry.path !== nextEntry.path),
+          nextEntry,
+        ]
+        return {
+          ...previous,
+          [normalizedParentPath]: sortExplorerEntries(merged),
+        }
+      })
+    },
+    [],
+  )
+
+  const markExplorerDirectoryHasChildren = useCallback((directoryPath: string) => {
+    const normalizedPath = normalizeExplorerPath(directoryPath)
+    if (!normalizedPath) {
+      return
+    }
+
+    const updateEntry = (entry: CodexWorkspaceDirectoryEntry) =>
+      entry.path === normalizedPath ? { ...entry, hasChildren: true } : entry
+
+    setExplorerRootEntries((previous) => previous.map(updateEntry))
+    setExplorerChildrenByPath((previous) => {
+      const next: ExplorerDirectoryPathMap = {}
+      for (const [path, entries] of Object.entries(previous)) {
+        next[path] = entries.map(updateEntry)
+      }
+      return next
+    })
+  }, [])
+
+  const loadWorkspaceDirectory = useCallback(
+    async (
+      path?: string,
+      options: {
+        silent?: boolean
+        asRoot?: boolean
+      } = {},
+    ) => {
+      if (
+        !isRuntimeMethodSupported(
+          aliciaState.runtimeCapabilities,
+          "workspace.directory.list",
+        )
+      ) {
+        if (!options.silent) {
+          addMessage(
+            "system",
+            '[explorer] Listagem de diretorio indisponivel neste runtime. Metodo nao suportado: workspace.directory.list.',
+          )
+        }
+        return null
+      }
+
+      const requestPath = normalizeExplorerPath(path)
+      const asRoot = options.asRoot === true
+      const loadingKey = !requestPath || asRoot ? EXPLORER_ROOT_KEY : requestPath
+
+      setExplorerLoadingPaths((previous) => ({ ...previous, [loadingKey]: true }))
+      if (!requestPath || asRoot) {
+        setExplorerRootLoading(true)
+      }
+
+      try {
+        const response = await codexWorkspaceListDirectory(
+          requestPath ? { path: requestPath } : undefined,
+        )
+        const responsePath = normalizeExplorerPath(response.path)
+        const entries = normalizeWorkspaceDirectoryEntries(response.entries)
+
+        if (!requestPath || asRoot) {
+          const nextRootPath = asRoot ? requestPath || responsePath : responsePath
+          setExplorerRootPath(nextRootPath)
+          setExplorerRootEntries(entries)
+          setExplorerChildrenByPath({})
+          setExplorerLoadedPaths({
+            [EXPLORER_ROOT_KEY]: true,
+          })
+          setExplorerTreeVersion((previous) => previous + 1)
+        } else {
+          setExplorerChildrenByPath((previous) => ({
+            ...previous,
+            [requestPath]: entries,
+          }))
+          setExplorerLoadedPaths((previous) => ({
+            ...previous,
+            [loadingKey]: true,
+          }))
+        }
+
+        if (typeof response.cwd === "string" && response.cwd.trim().length > 0) {
+          const nextWorkspace = response.cwd.trim()
+          setRuntime((previous) =>
+            previous.workspace === nextWorkspace
+              ? previous
+              : {
+                  ...previous,
+                  workspace: nextWorkspace,
+                },
+          )
+        }
+
+        return response
+      } catch (error) {
+        if (!options.silent) {
+          addMessage(
+            "system",
+            `[explorer] Falha ao carregar diretorio: ${String(error)}`,
+          )
+        }
+        return null
+      } finally {
+        setExplorerLoadingPaths((previous) => ({ ...previous, [loadingKey]: false }))
+        if (!requestPath || asRoot) {
+          setExplorerRootLoading(false)
+        }
+      }
+    },
+    [addMessage, aliciaState.runtimeCapabilities, normalizeWorkspaceDirectoryEntries],
+  )
+
+  const refreshExplorerRoot = useCallback(
+    async (options: { silent?: boolean } = {}) => {
+      return loadWorkspaceDirectory(undefined, options)
+    },
+    [loadWorkspaceDirectory],
+  )
+
+  const handleLoadExplorerDirectory = useCallback(
+    async (path: string) => {
+      await loadWorkspaceDirectory(path)
+    },
+    [loadWorkspaceDirectory],
+  )
+
   const refreshWorkspaceChanges = useCallback(async () => {
     const normalizeStatus = (value: unknown): AliciaState["fileChanges"][number]["status"] => {
       const status = String(value ?? "").trim().toLowerCase()
@@ -416,6 +952,13 @@ export default function AliciaTerminal() {
     turnDiffFilesRef.current = turnDiffFiles
     void refreshWorkspaceChanges()
   }, [turnDiffFiles, refreshWorkspaceChanges])
+
+  useEffect(() => {
+    if (!runtime.connected) {
+      return
+    }
+    void refreshExplorerRoot({ silent: true })
+  }, [runtime.connected, runtime.workspace, refreshExplorerRoot])
 
   const statusSignals = useMemo(() => {
     let usage: UsageStats | null = null
@@ -608,6 +1151,39 @@ export default function AliciaTerminal() {
     onBootLog: appendBootLog,
   })
 
+  const sapContextSnapshot = useMemo(
+    () => ({
+      serverId: activeAdtServerId,
+      workPackage: sapExplorerState.workingPackage ?? null,
+      focusedObjectUri: sapExplorerState.focusedObjectUri ?? null,
+    }),
+    [
+      activeAdtServerId,
+      sapExplorerState.focusedObjectUri,
+      sapExplorerState.workingPackage,
+    ],
+  )
+
+  const handleAdtServerSelectionChange = useCallback(
+    (
+      nextServerId: string | null,
+      options?: { refreshExplorer?: boolean },
+    ) => {
+      setActiveAdtServerId((previous) => {
+        if (previous === nextServerId) {
+          if (nextServerId && options?.refreshExplorer) {
+            lastAutoRefreshedAdtServerIdRef.current = nextServerId
+            void refreshSapExplorerRef.current()
+          }
+          return previous
+        }
+        lastAutoRefreshedAdtServerIdRef.current = null
+        return nextServerId
+      })
+    },
+    [],
+  )
+
   const {
     handleSubmit,
     handleSlashCommand,
@@ -642,6 +1218,8 @@ export default function AliciaTerminal() {
     availableModels,
     reviewRoutingRef,
     refreshWorkspaceChanges,
+    onAdtServerSelectionChange: handleAdtServerSelectionChange,
+    sapContextSnapshot,
   })
 
   const handleTerminalResize = useCallback(
@@ -845,6 +1423,787 @@ export default function AliciaTerminal() {
     return parts.at(-1) ?? normalized
   }, [])
 
+  const supportsRuntimeMethod = useCallback(
+    (method: RuntimeMethod) =>
+      isRuntimeMethodSupported(aliciaState.runtimeCapabilities, method),
+    [aliciaState.runtimeCapabilities],
+  )
+
+  const buildUnsupportedEditorMessage = useCallback(
+    (operation: string, methods: RuntimeMethod[]) => {
+      const message = `Editor de codigo: operacao "${operation}" indisponivel neste runtime. Metodos nao suportados: ${methods.join(", ")}.`
+      addMessage("system", message)
+      return message
+    },
+    [addMessage],
+  )
+
+  const getUnsupportedRuntimeMethods = useCallback(
+    (methods: RuntimeMethod[]): RuntimeMethod[] =>
+      methods.filter((method) => !supportsRuntimeMethod(method)),
+    [supportsRuntimeMethod],
+  )
+
+  const supportsSapExplorer = useCallback(
+    () =>
+      supportsRuntimeMethod("neuro.adt.explorer.state.get") &&
+      supportsRuntimeMethod("neuro.adt.explorer.state.patch") &&
+      supportsRuntimeMethod("neuro.adt.list.objects"),
+    [supportsRuntimeMethod],
+  )
+
+  const supportsSapPackageInventory = useCallback(
+    () => supportsRuntimeMethod("neuro.adt.list.package_inventory"),
+    [supportsRuntimeMethod],
+  )
+
+  const listSapObjects = useCallback(
+    async (request: NeuroAdtListObjectsRequest) => {
+      const requestServerId =
+        request.serverId !== undefined ? request.serverId : activeAdtServerId
+      return neuroAdtListObjects({
+        ...request,
+        serverId: requestServerId ?? null,
+      })
+    },
+    [activeAdtServerId],
+  )
+
+  const loadSapExplorerState = useCallback(async (): Promise<NeuroAdtExplorerState | null> => {
+    if (!supportsSapExplorer()) {
+      return null
+    }
+    const requestServerId = activeAdtServerIdRef.current
+    setSapLoading((previous) => ({ ...previous, state: true }))
+    try {
+      const nextState = await neuroAdtExplorerStateGet(requestServerId)
+      if (activeAdtServerIdRef.current !== requestServerId) {
+        return null
+      }
+      setSapExplorerState(nextState)
+      const scopeKey = sapServerScopeKey(requestServerId)
+      setSapPackageScopeRootsByServer((previous) => ({
+        ...previous,
+        [scopeKey]: nextState.packageScopeRoots,
+      }))
+      setSapPackageScopeRootInputByServer((previous) => ({
+        ...previous,
+        [scopeKey]: "",
+      }))
+      return nextState
+    } catch {
+      if (activeAdtServerIdRef.current === requestServerId) {
+        const scopeKey = sapServerScopeKey(requestServerId)
+        setSapPackageScopeRootsByServer((previous) => ({
+          ...previous,
+          [scopeKey]: [],
+        }))
+        setSapPackageScopeRootInputByServer((previous) => ({
+          ...previous,
+          [scopeKey]: "",
+        }))
+      }
+      return null
+    } finally {
+      if (activeAdtServerIdRef.current === requestServerId) {
+        setSapLoading((previous) => ({ ...previous, state: false }))
+      }
+    }
+  }, [supportsSapExplorer])
+
+  const loadSapLocalObjects = useCallback(async () => {
+    if (!supportsSapExplorer()) {
+      setSapLocalObjects([])
+      return
+    }
+    const requestServerId = activeAdtServerIdRef.current
+    setSapLoading((previous) => ({ ...previous, localObjects: true }))
+    try {
+      const response = await listSapObjects({
+        scope: "local_objects",
+        packageName: SAP_TMP_PACKAGE,
+        maxResults: 120,
+        serverId: requestServerId,
+      })
+      if (activeAdtServerIdRef.current !== requestServerId) {
+        return
+      }
+      setSapLocalObjects(response.objects)
+    } catch {
+      if (activeAdtServerIdRef.current === requestServerId) {
+        setSapLocalObjects([])
+      }
+    } finally {
+      if (activeAdtServerIdRef.current === requestServerId) {
+        setSapLoading((previous) => ({ ...previous, localObjects: false }))
+      }
+    }
+  }, [listSapObjects, supportsSapExplorer])
+
+  const loadSapFavoriteObjects = useCallback(async () => {
+    if (!supportsSapExplorer()) {
+      setSapFavoriteObjects([])
+      return
+    }
+    const requestServerId = activeAdtServerIdRef.current
+    setSapLoading((previous) => ({ ...previous, favoriteObjects: true }))
+    try {
+      const response = await listSapObjects({
+        scope: "favorite_objects",
+        maxResults: 150,
+        serverId: requestServerId,
+      })
+      if (activeAdtServerIdRef.current !== requestServerId) {
+        return
+      }
+      setSapFavoriteObjects(response.objects)
+    } catch {
+      if (activeAdtServerIdRef.current === requestServerId) {
+        setSapFavoriteObjects([])
+      }
+    } finally {
+      if (activeAdtServerIdRef.current === requestServerId) {
+        setSapLoading((previous) => ({ ...previous, favoriteObjects: false }))
+      }
+    }
+  }, [listSapObjects, supportsSapExplorer])
+
+  const loadSapSystemNamespaces = useCallback(async (scopeRootsOverride?: string[] | null) => {
+    if (!supportsSapExplorer()) {
+      setSapSystemNamespaces([])
+      return
+    }
+    const requestServerId = activeAdtServerIdRef.current
+    const scopeKey = sapServerScopeKey(requestServerId)
+    const scopedRoots = sapPackageScopeRootsByServerRef.current[scopeKey] ?? []
+    const derivedNamespaces = deriveSapNamespacesFromPackageScopeRoots(
+      scopeRootsOverride ?? scopedRoots,
+    )
+    setSapLoading((previous) => ({ ...previous, systemNamespaces: true }))
+    try {
+      let backendNamespaces: NeuroAdtNamespaceSummary[] = []
+      const response = await listSapObjects({
+        scope: "system_library",
+        maxResults: 5000,
+        serverId: requestServerId,
+      })
+      if (activeAdtServerIdRef.current !== requestServerId) {
+        return
+      }
+      if (Array.isArray(response.namespaces) && response.namespaces.length > 0) {
+        backendNamespaces = response.namespaces
+      } else {
+        backendNamespaces = await neuroAdtListNamespaces(
+          null,
+          requestServerId,
+        )
+        if (activeAdtServerIdRef.current !== requestServerId) {
+          return
+        }
+      }
+
+      setSapSystemNamespaces(
+        mergeSapNamespaces(backendNamespaces, derivedNamespaces),
+      )
+    } catch {
+      try {
+        const backendNamespaces = await neuroAdtListNamespaces(
+          null,
+          requestServerId,
+        )
+        if (activeAdtServerIdRef.current !== requestServerId) {
+          return
+        }
+        setSapSystemNamespaces(
+          mergeSapNamespaces(backendNamespaces, derivedNamespaces),
+        )
+      } catch {
+        if (activeAdtServerIdRef.current === requestServerId) {
+          setSapSystemNamespaces(mergeSapNamespaces([], derivedNamespaces))
+        }
+      }
+    } finally {
+      if (activeAdtServerIdRef.current === requestServerId) {
+        setSapLoading((previous) => ({ ...previous, systemNamespaces: false }))
+      }
+    }
+  }, [listSapObjects, supportsSapExplorer])
+
+  const loadSapFavoritePackageObjects = useCallback(
+    async (item: NeuroAdtFavoritePackageItem) => {
+      if (!supportsSapExplorer()) {
+        return
+      }
+      const requestServerId = activeAdtServerIdRef.current
+      const itemKey = `${item.kind}:${item.name.toUpperCase()}`
+      setSapPackageObjectsLoading((previous) => ({ ...previous, [itemKey]: true }))
+      try {
+        const response = await listSapObjects({
+          scope: "favorite_packages",
+          packageKind: item.kind,
+          packageName: item.kind === "package" ? item.name : undefined,
+          namespace: item.kind === "namespace" ? item.name : undefined,
+          maxResults: 150,
+          serverId: requestServerId,
+        })
+        if (activeAdtServerIdRef.current !== requestServerId) {
+          return
+        }
+        setSapFavoritePackageObjects((previous) => ({
+          ...previous,
+          [itemKey]: response.objects,
+        }))
+      } catch {
+        if (activeAdtServerIdRef.current !== requestServerId) {
+          return
+        }
+        setSapFavoritePackageObjects((previous) => ({
+          ...previous,
+          [itemKey]: [],
+        }))
+      } finally {
+        if (activeAdtServerIdRef.current === requestServerId) {
+          setSapPackageObjectsLoading((previous) => ({ ...previous, [itemKey]: false }))
+        }
+      }
+    },
+    [listSapObjects, supportsSapExplorer],
+  )
+
+  const loadSapNamespaceObjects = useCallback(
+    async (namespace: string) => {
+      if (!supportsSapExplorer()) {
+        return
+      }
+      const normalized = namespace.trim()
+      if (!normalized) {
+        return
+      }
+      const requestServerId = activeAdtServerIdRef.current
+      setSapNamespaceObjectsLoading((previous) => ({ ...previous, [normalized]: true }))
+      try {
+        const response = await listSapObjects({
+          scope: "system_library",
+          namespace: normalized,
+          maxResults: 150,
+          serverId: requestServerId,
+        })
+        if (activeAdtServerIdRef.current !== requestServerId) {
+          return
+        }
+        setSapNamespaceObjects((previous) => ({
+          ...previous,
+          [normalized]: response.objects,
+        }))
+      } catch {
+        if (activeAdtServerIdRef.current !== requestServerId) {
+          return
+        }
+        setSapNamespaceObjects((previous) => ({
+          ...previous,
+          [normalized]: [],
+        }))
+      } finally {
+        if (activeAdtServerIdRef.current === requestServerId) {
+          setSapNamespaceObjectsLoading((previous) => ({ ...previous, [normalized]: false }))
+        }
+      }
+    },
+    [listSapObjects, supportsSapExplorer],
+  )
+
+  const loadSapPackageInventoryObjects = useCallback(
+    async (packageName: string) => {
+      if (!supportsSapExplorer()) {
+        return
+      }
+      const normalizedPackageName = packageName.trim()
+      if (!normalizedPackageName) {
+        return
+      }
+      const requestServerId = activeAdtServerIdRef.current
+      const scopeKey = sapServerScopeKey(requestServerId)
+      setSapPackageInventoryObjectsLoadingByServer((previous) => ({
+        ...previous,
+        [scopeKey]: {
+          ...(previous[scopeKey] ?? {}),
+          [normalizedPackageName]: true,
+        },
+      }))
+      try {
+        const response = await listSapObjects({
+          scope: "favorite_packages",
+          packageKind: "package",
+          packageName: normalizedPackageName,
+          maxResults: 180,
+          serverId: requestServerId,
+        })
+        if (activeAdtServerIdRef.current !== requestServerId) {
+          return
+        }
+        setSapPackageInventoryObjectsByServer((previous) => ({
+          ...previous,
+          [scopeKey]: {
+            ...(previous[scopeKey] ?? {}),
+            [normalizedPackageName]: response.objects,
+          },
+        }))
+      } catch {
+        if (activeAdtServerIdRef.current !== requestServerId) {
+          return
+        }
+        setSapPackageInventoryObjectsByServer((previous) => ({
+          ...previous,
+          [scopeKey]: {
+            ...(previous[scopeKey] ?? {}),
+            [normalizedPackageName]: [],
+          },
+        }))
+      } finally {
+        if (activeAdtServerIdRef.current === requestServerId) {
+          setSapPackageInventoryObjectsLoadingByServer((previous) => ({
+            ...previous,
+            [scopeKey]: {
+              ...(previous[scopeKey] ?? {}),
+              [normalizedPackageName]: false,
+            },
+          }))
+        }
+      }
+    },
+    [listSapObjects, supportsSapExplorer],
+  )
+
+  const loadSapPackageInventory = useCallback(
+    async (
+      scopeRootsOverride?: string[] | null,
+    ): Promise<NeuroAdtPackageInventoryResponse | null> => {
+    if (!supportsSapPackageInventory()) {
+      setSapPackageInventory(null)
+      return null
+    }
+
+    const requestServerId = activeAdtServerIdRef.current
+    const scopeKey = sapServerScopeKey(requestServerId)
+    const scopeRoots = Array.isArray(scopeRootsOverride)
+      ? scopeRootsOverride
+      : sapPackageScopeRootsByServerRef.current[scopeKey] ?? []
+    if (scopeRoots.length === 0) {
+      setSapPackageInventory(null)
+      setSapPackageInventoryObjectsByServer((previous) => ({
+        ...previous,
+        [scopeKey]: {},
+      }))
+      setSapPackageInventoryObjectsLoadingByServer((previous) => ({
+        ...previous,
+        [scopeKey]: {},
+      }))
+      return null
+    }
+
+    setSapLoading((previous) => ({ ...previous, packageInventory: true }))
+    try {
+      const response = await neuroAdtListPackageInventory({
+        roots: scopeRoots,
+        includeSubpackages: true,
+        includeObjects: false,
+        maxPackages: 800,
+        maxObjectsPerPackage: 80,
+        serverId: requestServerId,
+      })
+      if (activeAdtServerIdRef.current !== requestServerId) {
+        return null
+      }
+      setSapPackageInventory(response)
+      setSapPackageInventoryObjectsByServer((previous) => ({
+        ...previous,
+        [scopeKey]: {},
+      }))
+      setSapPackageInventoryObjectsLoadingByServer((previous) => ({
+        ...previous,
+        [scopeKey]: {},
+      }))
+      return response
+    } catch {
+      if (activeAdtServerIdRef.current === requestServerId) {
+        setSapPackageInventory(null)
+        setSapPackageInventoryObjectsByServer((previous) => ({
+          ...previous,
+          [scopeKey]: {},
+        }))
+        setSapPackageInventoryObjectsLoadingByServer((previous) => ({
+          ...previous,
+          [scopeKey]: {},
+        }))
+      }
+      return null
+    } finally {
+      if (activeAdtServerIdRef.current === requestServerId) {
+        setSapLoading((previous) => ({ ...previous, packageInventory: false }))
+      }
+    }
+  }, [supportsSapPackageInventory])
+
+  const refreshSapExplorer = useCallback(async () => {
+    if (!supportsSapExplorer()) {
+      setSapExplorerState(INITIAL_SAP_EXPLORER_STATE)
+      setSapLocalObjects([])
+      setSapFavoriteObjects([])
+      setSapSystemNamespaces([])
+      setSapFavoritePackageObjects({})
+      setSapNamespaceObjects({})
+      setSapPackageScopeRootsByServer({})
+      setSapPackageScopeRootInputByServer({})
+      setSapPackageInventory(null)
+      setSapPackageInventoryObjectsByServer({})
+      setSapLoading(INITIAL_SAP_LOADING_STATE)
+      setSapPackageObjectsLoading({})
+      setSapPackageInventoryObjectsLoadingByServer({})
+      setSapNamespaceObjectsLoading({})
+      return
+    }
+
+    const state = await loadSapExplorerState()
+    const inventoryRoots = state ? state.packageScopeRoots : undefined
+    await Promise.all([
+      loadSapLocalObjects(),
+      loadSapFavoriteObjects(),
+      loadSapSystemNamespaces(inventoryRoots),
+      loadSapPackageInventory(inventoryRoots),
+    ])
+    if (state) {
+      setSapFavoritePackageObjects({})
+      setSapNamespaceObjects({})
+    }
+  }, [
+    loadSapExplorerState,
+    loadSapFavoriteObjects,
+    loadSapLocalObjects,
+    loadSapPackageInventory,
+    loadSapSystemNamespaces,
+    supportsSapExplorer,
+  ])
+
+  useEffect(() => {
+    refreshSapExplorerRef.current = refreshSapExplorer
+  }, [refreshSapExplorer])
+
+  const patchSapExplorerState = useCallback(
+    async (patch: {
+      workingPackage?: string | null
+      focusedObjectUri?: string | null
+      setPackageScopeRoots?: string[] | null
+      toggleFavoritePackage?: NeuroAdtFavoritePackageItem
+      toggleFavoriteObject?: NeuroAdtObjectSummary
+    }) => {
+      if (!supportsSapExplorer()) {
+        return
+      }
+      const requestServerId = activeAdtServerIdRef.current
+
+      setSapLoading((previous) => ({ ...previous, state: true }))
+      try {
+        const nextState = await neuroAdtExplorerStatePatch(
+          {
+            workingPackage: patch.workingPackage,
+            focusedObjectUri: patch.focusedObjectUri,
+            setPackageScopeRoots: patch.setPackageScopeRoots,
+            toggleFavoritePackage: patch.toggleFavoritePackage,
+            toggleFavoriteObject: patch.toggleFavoriteObject
+              ? {
+                  uri: patch.toggleFavoriteObject.uri,
+                  name: patch.toggleFavoriteObject.name,
+                  objectType: patch.toggleFavoriteObject.objectType ?? null,
+                  package: patch.toggleFavoriteObject.package ?? null,
+                }
+              : undefined,
+          },
+          requestServerId,
+        )
+        if (activeAdtServerIdRef.current !== requestServerId) {
+          return
+        }
+        setSapExplorerState(nextState)
+        if (patch.setPackageScopeRoots !== undefined) {
+          const scopeKey = sapServerScopeKey(requestServerId)
+          setSapPackageScopeRootsByServer((previous) => ({
+            ...previous,
+            [scopeKey]: nextState.packageScopeRoots,
+          }))
+          setSapPackageScopeRootInputByServer((previous) => ({
+            ...previous,
+            [scopeKey]: "",
+          }))
+          void loadSapSystemNamespaces(nextState.packageScopeRoots)
+        }
+        if (patch.toggleFavoriteObject) {
+          void loadSapFavoriteObjects()
+        }
+        if (patch.toggleFavoritePackage) {
+          const itemKey = `${patch.toggleFavoritePackage.kind}:${patch.toggleFavoritePackage.name.toUpperCase()}`
+          setSapFavoritePackageObjects((previous) => {
+            const next = { ...previous }
+            delete next[itemKey]
+            return next
+          })
+        }
+      } catch {
+        // optional capability / eventual consistency with backend
+      } finally {
+        if (activeAdtServerIdRef.current === requestServerId) {
+          setSapLoading((previous) => ({ ...previous, state: false }))
+        }
+      }
+    },
+    [loadSapFavoriteObjects, loadSapSystemNamespaces, supportsSapExplorer],
+  )
+
+  const setSapPackageScopeRootInput = useCallback((value: string) => {
+    const requestServerId = activeAdtServerIdRef.current
+    const scopeKey = sapServerScopeKey(requestServerId)
+    setSapPackageScopeRootInputByServer((previous) => ({
+      ...previous,
+      [scopeKey]: value,
+    }))
+  }, [])
+
+  const addSapPackageScopeRoot = useCallback(() => {
+    setSapPackageScopeRootInputByServer((previous) => {
+      const next = { ...previous }
+      const rawValue = next[activeSapServerKey] ?? ""
+      const normalizedRoot = normalizeSapPackageScopeRoot(rawValue)
+      if (!normalizedRoot) {
+        return previous
+      }
+      setSapPackageScopeRootsByServer((rootsByServer) => {
+        const currentRoots = rootsByServer[activeSapServerKey] ?? []
+        const rootKey = normalizedRoot.toUpperCase()
+        if (currentRoots.some((entry) => entry.toUpperCase() === rootKey)) {
+          return rootsByServer
+        }
+        return {
+          ...rootsByServer,
+          [activeSapServerKey]: [...currentRoots, normalizedRoot],
+        }
+      })
+      next[activeSapServerKey] = ""
+      return next
+    })
+  }, [activeSapServerKey])
+
+  const removeSapPackageScopeRoot = useCallback(
+    (root: string) => {
+      const normalizedRoot = normalizeSapPackageScopeRoot(root)
+      if (!normalizedRoot) {
+        return
+      }
+      const rootKey = normalizedRoot.toUpperCase()
+      setSapPackageScopeRootsByServer((previous) => {
+        const currentRoots = previous[activeSapServerKey] ?? []
+        const nextRoots = currentRoots.filter((entry) => entry.toUpperCase() !== rootKey)
+        return {
+          ...previous,
+          [activeSapServerKey]: nextRoots,
+        }
+      })
+    },
+    [activeSapServerKey],
+  )
+
+  const applySapPackageScopeRoots = useCallback(async () => {
+    const requestServerId = activeAdtServerIdRef.current
+    const scopeKey = sapServerScopeKey(requestServerId)
+    const scopeRoots = sapPackageScopeRootsByServerRef.current[scopeKey] ?? []
+    const response = await loadSapPackageInventory(scopeRoots)
+    const canonicalRoots = response?.roots ?? scopeRoots
+    setSapPackageScopeRootsByServer((previous) => ({
+      ...previous,
+      [scopeKey]: canonicalRoots,
+    }))
+    await patchSapExplorerState({
+      setPackageScopeRoots: canonicalRoots,
+    })
+  }, [loadSapPackageInventory, patchSapExplorerState])
+
+  const toggleSapPackageScopePreset = useCallback(
+    (presetRoot: string) => {
+      const normalizedPreset = normalizeSapPackageScopeRoot(presetRoot)
+      if (!normalizedPreset) {
+        return
+      }
+      const presetKey = normalizedPreset.toUpperCase()
+      setSapPackageScopeRootsByServer((previous) => {
+        const currentRoots = previous[activeSapServerKey] ?? []
+        const existingIndex = currentRoots.findIndex(
+          (entry) => entry.toUpperCase() === presetKey,
+        )
+        const nextRoots = [...currentRoots]
+        if (existingIndex >= 0) {
+          nextRoots.splice(existingIndex, 1)
+        } else {
+          nextRoots.push(normalizedPreset)
+        }
+        return {
+          ...previous,
+          [activeSapServerKey]: nextRoots,
+        }
+      })
+    },
+    [activeSapServerKey],
+  )
+
+  const refreshActiveAdtServerSelection = useCallback(async () => {
+    try {
+      const response = await neuroAdtServerList()
+      const nextServerId = response.selectedServerId ?? null
+      handleAdtServerSelectionChange(nextServerId, { refreshExplorer: false })
+    } catch {
+      // optional backend capability
+    }
+  }, [handleAdtServerSelectionChange])
+
+  const resolveBoundAdtServerIdForOpen = useCallback(
+    async (preferredServerId: string | null): Promise<string | null> => {
+      try {
+        const response = await neuroAdtServerList()
+        const resolved = selectBoundAdtServerId(preferredServerId, {
+          availableServerIds: response.servers.map((server) => server.id),
+          selectedServerId: response.selectedServerId ?? null,
+        })
+        if (resolved && resolved !== activeAdtServerId) {
+          setActiveAdtServerId(resolved)
+        }
+        return resolved
+      } catch {
+        return preferredServerId
+      }
+    },
+    [activeAdtServerId],
+  )
+
+  useEffect(() => {
+    void refreshActiveAdtServerSelection()
+  }, [refreshActiveAdtServerSelection])
+
+  useEffect(() => {
+    if (!activeAdtServerId) {
+      lastAutoRefreshedAdtServerIdRef.current = null
+      setSapExplorerState(INITIAL_SAP_EXPLORER_STATE)
+      setSapLocalObjects([])
+      setSapFavoriteObjects([])
+      setSapSystemNamespaces([])
+      setSapFavoritePackageObjects({})
+      setSapNamespaceObjects({})
+      setSapPackageInventory(null)
+      setSapPackageInventoryObjectsByServer({})
+      setSapLoading(INITIAL_SAP_LOADING_STATE)
+      setSapPackageObjectsLoading({})
+      setSapPackageInventoryObjectsLoadingByServer({})
+      setSapNamespaceObjectsLoading({})
+      return
+    }
+    if (lastAutoRefreshedAdtServerIdRef.current === activeAdtServerId) {
+      return
+    }
+    lastAutoRefreshedAdtServerIdRef.current = activeAdtServerId
+    void refreshSapExplorerRef.current()
+  }, [activeAdtServerId])
+
+  const syncRuntimeStatus = useCallback(async () => {
+    try {
+      const status = await codexRuntimeStatus()
+      setRuntime((prev) => ({
+        ...prev,
+        connected: true,
+        state: status.sessionId != null ? "running" : "idle",
+        sessionId: status.sessionId ?? null,
+        pid: status.pid ?? null,
+        workspace: status.workspace,
+      }))
+      return status
+    } catch {
+      return null
+    }
+  }, [])
+
+  const ensureWorkspaceWriteReady = useCallback(
+    (operation: string, requiredMethods: RuntimeMethod[]): boolean => {
+      if (runtime.state !== "running") {
+        addMessage(
+          "system",
+          `[explorer] Sessao inativa. Inicie uma sessao antes de ${operation}.`,
+        )
+        return false
+      }
+
+      const unsupported = getUnsupportedRuntimeMethods(requiredMethods)
+      if (unsupported.length > 0) {
+        addMessage(
+          "system",
+          `[explorer] Operacao "${operation}" indisponivel neste runtime. Metodos nao suportados: ${unsupported.join(", ")}.`,
+        )
+        return false
+      }
+
+      return true
+    },
+    [addMessage, getUnsupportedRuntimeMethods, runtime.state],
+  )
+
+  const normalizeRelativeWorkspacePath = useCallback(
+    (rawPath: string): string => {
+      const trimmed = rawPath.trim()
+      if (!trimmed) {
+        throw new Error("Informe um caminho relativo valido.")
+      }
+
+      const slashNormalized = trimmed.replace(/\\/g, "/")
+      const looksAbsolute =
+        slashNormalized.startsWith("/") ||
+        slashNormalized.startsWith("//") ||
+        /^[a-z]:\//i.test(slashNormalized)
+
+      const rootRelative = normalizeWorkspacePathForRoot(
+        slashNormalized,
+        runtime.workspace,
+      )
+      const sanitized = rootRelative
+        .replace(/^\.\/+/, "")
+        .replace(/^\/+/, "")
+        .replace(/\/+/g, "/")
+        .replace(/\/+$/, "")
+
+      if (!sanitized) {
+        throw new Error("Informe um caminho relativo valido.")
+      }
+      if (sanitized.split("/").some((segment) => segment === "..")) {
+        throw new Error(
+          "Caminhos com '..' nao sao permitidos para criacao no workspace.",
+        )
+      }
+      if (
+        /^[a-z]:/i.test(sanitized) ||
+        sanitized.startsWith("/") ||
+        sanitized.startsWith("//")
+      ) {
+        throw new Error(
+          "O caminho precisa estar dentro do workspace ativo.",
+        )
+      }
+      if (
+        looksAbsolute &&
+        sanitized.toLowerCase() === slashNormalized.toLowerCase()
+      ) {
+        throw new Error(
+          "Use um caminho relativo ao workspace ativo.",
+        )
+      }
+
+      return sanitized
+    },
+    [runtime.workspace],
+  )
+
   const handleOpenSourceFromRef = useCallback(
     (ref: string): boolean => {
       const currentEditor = sourceEditorRef.current
@@ -860,13 +2219,76 @@ export default function AliciaTerminal() {
 
       const refRoute = routeSourceEditorRef(ref)
       const activeWorkspace = runtime.workspace
+      const workspaceObjectUri =
+        refRoute.kind === "workspace"
+          ? normalizeWorkspacePathForRoot(refRoute.normalizedRef, activeWorkspace)
+          : null
+      const normalizedWorkspaceObjectUri =
+        workspaceObjectUri && workspaceObjectUri.trim().length > 0
+          ? workspaceObjectUri
+          : refRoute.kind === "workspace"
+            ? refRoute.normalizedRef
+            : null
+      const requestedAdtServerId =
+        refRoute.kind === "abap" ? activeAdtServerId : null
+      if (refRoute.kind === "abap") {
+        const requiredAbapMethods: RuntimeMethod[] = refRoute.normalizedRef.startsWith(
+          "/sap/bc/adt/",
+        )
+          ? ["neuro.get.source"]
+          : ["neuro.search.objects", "neuro.get.source"]
+        const unsupported = getUnsupportedRuntimeMethods(requiredAbapMethods)
+        if (unsupported.length > 0) {
+          setSourceEditorWithRef({
+            visible: true,
+            refKind: "abap",
+            adtServerId: requestedAdtServerId,
+            objectUri: null,
+            workspaceRoot: activeWorkspace,
+            displayName: null,
+            language: "abap",
+            source: "",
+            etag: null,
+            dirty: false,
+            loading: false,
+            saving: false,
+            error: buildUnsupportedEditorMessage("abrir referencia ABAP", unsupported),
+          })
+          return true
+        }
+      }
+      if (refRoute.kind === "workspace") {
+        const unsupported = getUnsupportedRuntimeMethods(["workspace.file.read"])
+        if (unsupported.length > 0) {
+          setSourceEditorWithRef({
+            visible: true,
+            refKind: "workspace",
+            adtServerId: null,
+            objectUri: normalizedWorkspaceObjectUri,
+            workspaceRoot: activeWorkspace,
+            displayName: inferDisplayNameFromPath(normalizedWorkspaceObjectUri ?? ""),
+            language: refRoute.monacoLanguage,
+            source: "",
+            etag: null,
+            dirty: false,
+            loading: false,
+            saving: false,
+            error: buildUnsupportedEditorMessage(
+              "abrir arquivo do workspace",
+              unsupported,
+            ),
+          })
+          return true
+        }
+      }
       if (refRoute.kind === "workspace" && runtime.state !== "running") {
         setSourceEditorWithRef({
           visible: true,
           refKind: "workspace",
-          objectUri: refRoute.normalizedRef,
+          adtServerId: null,
+          objectUri: normalizedWorkspaceObjectUri,
           workspaceRoot: activeWorkspace,
-          displayName: inferDisplayNameFromPath(refRoute.normalizedRef),
+          displayName: inferDisplayNameFromPath(normalizedWorkspaceObjectUri ?? ""),
           language: refRoute.monacoLanguage,
           source: "",
           etag: null,
@@ -885,11 +2307,12 @@ export default function AliciaTerminal() {
         ...previous,
         visible: true,
         refKind: refRoute.kind,
-        objectUri: refRoute.kind === "workspace" ? refRoute.normalizedRef : null,
+        adtServerId: requestedAdtServerId,
+        objectUri: normalizedWorkspaceObjectUri,
         workspaceRoot: activeWorkspace,
         displayName:
           refRoute.kind === "workspace"
-            ? inferDisplayNameFromPath(refRoute.normalizedRef)
+            ? inferDisplayNameFromPath(normalizedWorkspaceObjectUri ?? "")
             : null,
         language: refRoute.monacoLanguage,
         source: "",
@@ -903,8 +2326,16 @@ export default function AliciaTerminal() {
       void (async () => {
         try {
           if (refRoute.kind === "abap") {
-            const resolved = await resolveAbapSourceRef(refRoute.normalizedRef)
-            const loaded = await neuroGetSource(resolved.objectUri)
+            const boundAdtServerId = await resolveBoundAdtServerIdForOpen(
+              requestedAdtServerId,
+            )
+            const resolved = await resolveAbapSourceRef(refRoute.normalizedRef, {
+              serverId: boundAdtServerId,
+            })
+            const loaded = await neuroGetSource(
+              resolved.objectUri,
+              boundAdtServerId,
+            )
 
             if (sourceOperationSeqRef.current !== nextRequestId) {
               return
@@ -913,6 +2344,7 @@ export default function AliciaTerminal() {
             setSourceEditorWithRef({
               visible: true,
               refKind: "abap",
+              adtServerId: boundAdtServerId ?? null,
               objectUri: loaded.objectUri,
               workspaceRoot: activeWorkspace,
               displayName: resolved.displayName,
@@ -924,13 +2356,22 @@ export default function AliciaTerminal() {
               saving: false,
               error: null,
             })
+            void patchSapExplorerState({
+              focusedObjectUri: loaded.objectUri,
+            })
             sourceBaselineRef.current = loaded.source
             return
           }
 
           const loaded = await codexWorkspaceReadFile({
-            path: refRoute.normalizedRef,
+            path: normalizedWorkspaceObjectUri ?? refRoute.normalizedRef,
           })
+          const normalizedLoadedPath = normalizeWorkspacePathForRoot(
+            loaded.path,
+            activeWorkspace,
+          )
+          const loadedObjectUri =
+            normalizedLoadedPath.trim().length > 0 ? normalizedLoadedPath : loaded.path
 
           if (sourceOperationSeqRef.current !== nextRequestId) {
             return
@@ -939,18 +2380,19 @@ export default function AliciaTerminal() {
           setSourceEditorWithRef({
             visible: true,
             refKind: "workspace",
-            objectUri: loaded.path,
+            adtServerId: null,
+            objectUri: loadedObjectUri,
             workspaceRoot: activeWorkspace,
-            displayName: inferDisplayNameFromPath(loaded.path),
+            displayName: inferDisplayNameFromPath(loadedObjectUri),
             language: refRoute.monacoLanguage,
-            source: loaded.source,
+            source: loaded.content,
             etag: null,
             dirty: false,
             loading: false,
             saving: false,
             error: null,
           })
-          sourceBaselineRef.current = loaded.source
+          sourceBaselineRef.current = loaded.content
         } catch (error) {
           if (sourceOperationSeqRef.current !== nextRequestId) {
             return
@@ -959,11 +2401,12 @@ export default function AliciaTerminal() {
           setSourceEditorWithRef({
             visible: true,
             refKind: refRoute.kind,
-            objectUri: refRoute.kind === "workspace" ? refRoute.normalizedRef : null,
+            adtServerId: requestedAdtServerId,
+            objectUri: normalizedWorkspaceObjectUri,
             workspaceRoot: activeWorkspace,
             displayName:
               refRoute.kind === "workspace"
-                ? inferDisplayNameFromPath(refRoute.normalizedRef)
+                ? inferDisplayNameFromPath(normalizedWorkspaceObjectUri ?? "")
                 : null,
             language: refRoute.monacoLanguage,
             source: "",
@@ -981,9 +2424,14 @@ export default function AliciaTerminal() {
     },
     [
       beginSourceOperation,
+      buildUnsupportedEditorMessage,
+      getUnsupportedRuntimeMethods,
       inferDisplayNameFromPath,
       runtime.state,
       runtime.workspace,
+      activeAdtServerId,
+      patchSapExplorerState,
+      resolveBoundAdtServerIdForOpen,
       setSourceEditorWithRef,
       toEditorErrorMessage,
     ],
@@ -1000,9 +2448,191 @@ export default function AliciaTerminal() {
       const opened = handleOpenSourceFromRef(ref)
       if (opened && isMobile) {
         setActiveMainTab("editor")
+      } else if (opened) {
+        setDesktopViewMode((previous) => (previous === "chat" ? "split" : previous))
       }
     },
     [handleOpenSourceFromRef, isMobile],
+  )
+
+  const handleCreateWorkspaceFile = useCallback(
+    async (relativePath: string) => {
+      if (!ensureWorkspaceWriteReady("criar arquivos no workspace", ["workspace.file.write"])) {
+        return false
+      }
+
+      let normalizedPath = ""
+      try {
+        normalizedPath = normalizeRelativeWorkspacePath(relativePath)
+      } catch (error) {
+        addMessage(
+          "system",
+          `[explorer] Caminho invalido para novo arquivo: ${toEditorErrorMessage(error)}`,
+        )
+        return false
+      }
+
+      try {
+        await codexWorkspaceWriteFile({
+          path: normalizedPath,
+          content: "",
+        })
+        const parentPath = pathDirname(normalizedPath)
+        upsertExplorerEntry(parentPath, {
+          name: pathBasename(normalizedPath),
+          path: normalizedPath,
+          kind: "file",
+          hasChildren: false,
+        })
+        markExplorerDirectoryHasChildren(parentPath)
+        await refreshWorkspaceChanges()
+        addMessage("system", `[explorer] Arquivo criado: ${normalizedPath}`)
+        onOpenInEditor(normalizedPath)
+        return true
+      } catch (error) {
+        addMessage(
+          "system",
+          `[explorer] Falha ao criar arquivo "${normalizedPath}": ${toEditorErrorMessage(error)}`,
+        )
+        return false
+      }
+    },
+    [
+      addMessage,
+      ensureWorkspaceWriteReady,
+      markExplorerDirectoryHasChildren,
+      normalizeRelativeWorkspacePath,
+      onOpenInEditor,
+      refreshWorkspaceChanges,
+      upsertExplorerEntry,
+      toEditorErrorMessage,
+    ],
+  )
+
+  const handleCreateWorkspaceFolder = useCallback(
+    async (relativePath: string) => {
+      if (
+        !ensureWorkspaceWriteReady("criar pastas no workspace", [
+          "workspace.directory.create",
+        ])
+      ) {
+        return false
+      }
+
+      let normalizedPath = ""
+      try {
+        normalizedPath = normalizeRelativeWorkspacePath(relativePath)
+      } catch (error) {
+        addMessage(
+          "system",
+          `[explorer] Caminho invalido para nova pasta: ${toEditorErrorMessage(error)}`,
+        )
+        return false
+      }
+
+      try {
+        await codexWorkspaceCreateDirectory({
+          path: normalizedPath,
+        })
+        const parentPath = pathDirname(normalizedPath)
+        upsertExplorerEntry(parentPath, {
+          name: pathBasename(normalizedPath),
+          path: normalizedPath,
+          kind: "directory",
+          hasChildren: false,
+        })
+        markExplorerDirectoryHasChildren(parentPath)
+        await refreshWorkspaceChanges()
+        addMessage("system", `[explorer] Pasta criada: ${normalizedPath}`)
+        return true
+      } catch (error) {
+        addMessage(
+          "system",
+          `[explorer] Falha ao criar pasta "${normalizedPath}": ${toEditorErrorMessage(error)}`,
+        )
+        return false
+      }
+    },
+    [
+      addMessage,
+      ensureWorkspaceWriteReady,
+      markExplorerDirectoryHasChildren,
+      normalizeRelativeWorkspacePath,
+      refreshWorkspaceChanges,
+      upsertExplorerEntry,
+      toEditorErrorMessage,
+    ],
+  )
+
+  const handleRenameWorkspaceEntry = useCallback(
+    async (path: string, newName: string) => {
+      if (
+        !ensureWorkspaceWriteReady("renomear itens no workspace", [
+          "workspace.entry.rename",
+        ])
+      ) {
+        return false
+      }
+
+      let normalizedPath = ""
+      try {
+        normalizedPath = normalizeRelativeWorkspacePath(path)
+      } catch (error) {
+        addMessage(
+          "system",
+          `[explorer] Caminho invalido para renomear item: ${toEditorErrorMessage(error)}`,
+        )
+        return false
+      }
+
+      const trimmedName = newName.trim()
+      if (!trimmedName) {
+        addMessage("system", "[explorer] Informe um novo nome para renomear.")
+        return false
+      }
+      if (trimmedName === "." || trimmedName === "..") {
+        addMessage("system", "[explorer] Nome invalido para renomeacao.")
+        return false
+      }
+      if (trimmedName.includes("/") || trimmedName.includes("\\")) {
+        addMessage(
+          "system",
+          "[explorer] Renomeacao so permite alterar o nome dentro do mesmo diretorio.",
+        )
+        return false
+      }
+
+      const currentName = pathBasename(normalizedPath)
+      if (trimmedName === currentName) {
+        return normalizedPath
+      }
+
+      try {
+        const response = await codexWorkspaceRenameEntry({
+          path: normalizedPath,
+          newName: trimmedName,
+        })
+        const nextPath = normalizeRelativeWorkspacePath(response.newPath)
+        await refreshExplorerRoot({ silent: true })
+        await refreshWorkspaceChanges()
+        addMessage("system", `[explorer] Item renomeado: ${normalizedPath} -> ${nextPath}`)
+        return nextPath
+      } catch (error) {
+        addMessage(
+          "system",
+          `[explorer] Falha ao renomear "${normalizedPath}": ${toEditorErrorMessage(error)}`,
+        )
+        return false
+      }
+    },
+    [
+      addMessage,
+      ensureWorkspaceWriteReady,
+      normalizeRelativeWorkspacePath,
+      refreshExplorerRoot,
+      refreshWorkspaceChanges,
+      toEditorErrorMessage,
+    ],
   )
 
   const handleReloadSource = useCallback(async () => {
@@ -1018,6 +2648,31 @@ export default function AliciaTerminal() {
           "Sessao inativa. Inicie uma sessao antes de recarregar arquivos do workspace.",
       }))
       return
+    }
+    if (currentEditor.refKind === "workspace") {
+      const unsupported = getUnsupportedRuntimeMethods(["workspace.file.read"])
+      if (unsupported.length > 0) {
+        setSourceEditorWithRef((previous) => ({
+          ...previous,
+          loading: false,
+          error: buildUnsupportedEditorMessage(
+            "recarregar arquivo do workspace",
+            unsupported,
+          ),
+        }))
+        return
+      }
+    }
+    if (currentEditor.refKind === "abap") {
+      const unsupported = getUnsupportedRuntimeMethods(["neuro.get.source"])
+      if (unsupported.length > 0) {
+        setSourceEditorWithRef((previous) => ({
+          ...previous,
+          loading: false,
+          error: buildUnsupportedEditorMessage("recarregar fonte ABAP", unsupported),
+        }))
+        return
+      }
     }
     if (
       currentEditor.refKind === "workspace" &&
@@ -1041,6 +2696,10 @@ export default function AliciaTerminal() {
     }
     const objectUri = currentEditor.objectUri
     const refKind = currentEditor.refKind
+    let boundAdtServerId: string | null = null
+    if (refKind === "abap") {
+      boundAdtServerId = currentEditor.adtServerId ?? null
+    }
     const requestId = beginSourceOperation()
 
     setSourceEditorWithRef((previous) => ({
@@ -1051,7 +2710,7 @@ export default function AliciaTerminal() {
 
     try {
       if (refKind === "abap") {
-        const loaded = await neuroGetSource(objectUri)
+        const loaded = await neuroGetSource(objectUri, boundAdtServerId)
 
         if (
           sourceOperationSeqRef.current !== requestId ||
@@ -1063,6 +2722,7 @@ export default function AliciaTerminal() {
         sourceBaselineRef.current = loaded.source
         setSourceEditorWithRef((previous) => ({
           ...previous,
+          adtServerId: boundAdtServerId,
           source: loaded.source,
           etag: loaded.etag ?? null,
           dirty: false,
@@ -1081,10 +2741,10 @@ export default function AliciaTerminal() {
         return
       }
 
-      sourceBaselineRef.current = loaded.source
+      sourceBaselineRef.current = loaded.content
       setSourceEditorWithRef((previous) => ({
         ...previous,
-        source: loaded.source,
+        source: loaded.content,
         etag: null,
         dirty: false,
         loading: false,
@@ -1105,6 +2765,8 @@ export default function AliciaTerminal() {
     }
   }, [
     beginSourceOperation,
+    buildUnsupportedEditorMessage,
+    getUnsupportedRuntimeMethods,
     runtime.state,
     runtime.workspace,
     setSourceEditorWithRef,
@@ -1130,6 +2792,31 @@ export default function AliciaTerminal() {
       }))
       return
     }
+    if (currentEditor.refKind === "workspace") {
+      const unsupported = getUnsupportedRuntimeMethods(["workspace.file.write"])
+      if (unsupported.length > 0) {
+        setSourceEditorWithRef((previous) => ({
+          ...previous,
+          saving: false,
+          error: buildUnsupportedEditorMessage(
+            "salvar arquivo do workspace",
+            unsupported,
+          ),
+        }))
+        return
+      }
+    }
+    if (currentEditor.refKind === "abap") {
+      const unsupported = getUnsupportedRuntimeMethods(["neuro.update.source"])
+      if (unsupported.length > 0) {
+        setSourceEditorWithRef((previous) => ({
+          ...previous,
+          saving: false,
+          error: buildUnsupportedEditorMessage("salvar fonte ABAP", unsupported),
+        }))
+        return
+      }
+    }
     if (
       currentEditor.refKind === "workspace" &&
       currentEditor.workspaceRoot !== runtime.workspace
@@ -1146,6 +2833,10 @@ export default function AliciaTerminal() {
     const refKind = currentEditor.refKind
     const sourceToSave = currentEditor.source
     const etag = currentEditor.etag ?? undefined
+    let boundAdtServerId: string | null = null
+    if (refKind === "abap") {
+      boundAdtServerId = currentEditor.adtServerId ?? null
+    }
     const requestId = beginSourceOperation()
 
     setSourceEditorWithRef((previous) => ({
@@ -1160,6 +2851,7 @@ export default function AliciaTerminal() {
           objectUri,
           source: sourceToSave,
           etag,
+          serverId: boundAdtServerId,
         })
 
         if (
@@ -1176,6 +2868,7 @@ export default function AliciaTerminal() {
 
         setSourceEditorWithRef((previous) => ({
           ...previous,
+          adtServerId: boundAdtServerId,
           etag: result.etag ?? previous.etag,
           dirty: sourceStillMatches ? false : previous.dirty,
           saving: false,
@@ -1223,6 +2916,8 @@ export default function AliciaTerminal() {
     }
   }, [
     beginSourceOperation,
+    buildUnsupportedEditorMessage,
+    getUnsupportedRuntimeMethods,
     runtime.state,
     runtime.workspace,
     setSourceEditorWithRef,
@@ -1245,11 +2940,336 @@ export default function AliciaTerminal() {
     setSourceEditorWithRef(INITIAL_SOURCE_EDITOR_STATE)
   }, [setSourceEditorWithRef])
 
+  const handleOpenPanel = useCallback(
+    (panel: AliciaState["activePanel"]) => {
+      if (!panel) {
+        setAliciaState((prev) => ({ ...prev, activePanel: null }))
+        return
+      }
+      if (panel === "model") {
+        void openModelPanel(true)
+        return
+      }
+      if (panel === "sessions") {
+        void openSessionPanel("list")
+        return
+      }
+      if (panel === "apps") {
+        setAliciaState((prev) => ({ ...prev, activePanel: "apps" }))
+        void refreshAppsAndAuth({ throwOnError: false })
+        return
+      }
+      if (panel === "adt") {
+        setAliciaState((prev) => ({ ...prev, activePanel: "adt" }))
+        void refreshActiveAdtServerSelection()
+        return
+      }
+      setAliciaState((prev) => ({ ...prev, activePanel: panel }))
+    },
+    [
+      openModelPanel,
+      openSessionPanel,
+      refreshActiveAdtServerSelection,
+      refreshAppsAndAuth,
+    ],
+  )
+
+  const resetSessionUiState = useCallback(() => {
+    threadIdRef.current = null
+    reviewRoutingRef.current = false
+    setMessages([])
+    setPendingApprovals([])
+    setPendingUserInput(null)
+    setTurnDiff(null)
+    setTurnPlan(null)
+  }, [])
+
+  const handleStartSession = useCallback(() => {
+    void (async () => {
+      resetSessionUiState()
+      const started = await ensureRuntimeSession(true)
+      await syncRuntimeStatus()
+      if (started) {
+        await refreshWorkspaceChanges()
+      }
+    })()
+  }, [ensureRuntimeSession, refreshWorkspaceChanges, resetSessionUiState, syncRuntimeStatus])
+
+  const handleStopSession = useCallback(() => {
+    void (async () => {
+      try {
+        await codexRuntimeSessionStop()
+        reviewRoutingRef.current = false
+        setPendingApprovals([])
+        setPendingUserInput(null)
+        setTurnDiff(null)
+        setTurnPlan(null)
+        setRuntime((prev) => ({
+          ...prev,
+          state: "idle",
+          sessionId: null,
+          pid: null,
+        }))
+        await syncRuntimeStatus()
+      } catch (error) {
+        addMessage("system", `[session] failed to stop: ${String(error)}`)
+      }
+    })()
+  }, [addMessage, syncRuntimeStatus])
+
+  const handleStartReview = useCallback(() => {
+    setAliciaState((prev) => ({ ...prev, activePanel: "review" }))
+    void refreshWorkspaceChanges()
+  }, [refreshWorkspaceChanges])
+
+  const handleOpenWorkspaceFolder = useCallback(async () => {
+    if (switchingWorkspaceFolder) {
+      return
+    }
+
+    setSwitchingWorkspaceFolder(true)
+    try {
+      const selectedPath = await pickWorkspaceFolder()
+      if (!selectedPath) {
+        return
+      }
+
+      const nextWorkspace = selectedPath.trim()
+      if (!nextWorkspace) {
+        return
+      }
+
+      if (runtime.sessionId != null) {
+        await codexRuntimeSessionStop()
+        setRuntime((previous) => ({
+          ...previous,
+          state: "idle",
+          sessionId: null,
+          pid: null,
+        }))
+      }
+
+      resetSessionUiState()
+      sourceOperationSeqRef.current += 1
+      sourceBaselineRef.current = ""
+      setSourceEditorWithRef(INITIAL_SOURCE_EDITOR_STATE)
+      setExplorerRootPath("")
+      setExplorerRootEntries([])
+      setExplorerChildrenByPath({})
+      setExplorerLoadedPaths({})
+
+      const started = await codexRuntimeSessionStart({
+        cwd: nextWorkspace,
+      })
+      setActiveSessionEntry(started.sessionId, aliciaState.model)
+      setRuntime((previous) => ({
+        ...previous,
+        connected: true,
+        state: "running",
+        sessionId: started.sessionId,
+        pid: started.pid,
+        workspace: nextWorkspace,
+      }))
+
+      const loaded = await loadWorkspaceDirectory(undefined, { asRoot: true })
+      if (!loaded) {
+        return
+      }
+
+      await syncRuntimeStatus()
+      await refreshWorkspaceChanges()
+      addMessage("system", `[workspace] Pasta ativa alterada para: ${nextWorkspace}`)
+    } catch (error) {
+      await syncRuntimeStatus()
+      await refreshThreadList({ notifyOnError: false })
+      addMessage(
+        "system",
+        `[workspace] Falha ao abrir pasta: ${String(error)}`,
+      )
+    } finally {
+      setSwitchingWorkspaceFolder(false)
+    }
+  }, [
+    addMessage,
+    aliciaState.model,
+    loadWorkspaceDirectory,
+    refreshThreadList,
+    resetSessionUiState,
+    refreshWorkspaceChanges,
+    runtime.sessionId,
+    setActiveSessionEntry,
+    setSourceEditorWithRef,
+    switchingWorkspaceFolder,
+    syncRuntimeStatus,
+  ])
+
+  const handleCreateTerminalTab = useCallback(() => {
+    void createTerminalTab(runtime.workspace)
+  }, [createTerminalTab, runtime.workspace])
+
+  const handleEditorSourceChange = useCallback(
+    (value: string) => {
+      setSourceEditorWithRef((previous) => ({
+        ...previous,
+        source: value,
+        dirty: Boolean(previous.objectUri) && value !== sourceBaselineRef.current,
+        error: null,
+      }))
+    },
+    [setSourceEditorWithRef],
+  )
+
+  const conversationPaneNode = (
+    <ConversationPane
+      currentModelLabel={currentModelLabel}
+      reasoningEffort={aliciaState.reasoningEffort}
+      messages={messages}
+      isThinking={isThinking}
+      pendingImages={pendingImages}
+      pendingMentions={pendingMentions}
+      runtimeCapabilities={aliciaState.runtimeCapabilities}
+      pendingApprovals={pendingApprovals}
+      pendingUserInput={pendingUserInput}
+      turnDiff={turnDiff}
+      turnDiffFiles={turnDiffFiles}
+      turnPlan={turnPlan}
+      runtimeState={runtime.state}
+      scrollRef={scrollRef}
+      onSubmit={handleSubmit}
+      onSlashCommand={handleSlashCommand}
+      onAttachImage={async () => {
+        const picked = await pickImageFile()
+        if (picked) setPendingImages((prev) => [...prev, picked])
+      }}
+      onAttachMention={async () => {
+        const picked = await pickMentionFile()
+        if (picked) setPendingMentions((prev) => [...prev, picked])
+      }}
+      onRemoveImage={(index) => {
+        setPendingImages((prev) => prev.filter((_, i) => i !== index))
+      }}
+      onRemoveMention={(index) => {
+        setPendingMentions((prev) => prev.filter((_, i) => i !== index))
+      }}
+      onApprovalDecision={handleApprovalDecision}
+      onUserInputDecision={handleUserInputDecision}
+      onOpenInEditor={onOpenInEditor}
+    />
+  )
+
+  const editorPaneNode = sourceEditor.visible ? (
+    <SourceEditorPanel
+      objectUri={sourceEditor.objectUri}
+      displayName={sourceEditor.displayName}
+      language={sourceEditor.language}
+      source={sourceEditor.source}
+      etag={sourceEditor.etag}
+      dirty={sourceEditor.dirty}
+      loading={sourceEditor.loading}
+      saving={sourceEditor.saving}
+      error={sourceEditor.error}
+      onChangeSource={handleEditorSourceChange}
+      onReload={() => {
+        void handleReloadSource()
+      }}
+      onSave={() => {
+        void handleSaveSource()
+      }}
+      onClose={handleCloseEditor}
+    />
+  ) : (
+    <div className="h-full w-full flex items-center justify-center px-4 text-center text-sm text-muted-foreground">
+      Abra uma referencia de codigo na sidebar, no diff da conversa ou no review para carregar o editor.
+    </div>
+  )
+
+  const sapSidebarNode = (
+    <IdeSapExplorer
+      serverId={activeAdtServerId}
+      state={sapExplorerState}
+      localObjects={sapLocalObjects}
+      favoriteObjects={sapFavoriteObjects}
+      systemNamespaces={sapSystemNamespaces}
+      favoritePackageObjects={sapFavoritePackageObjects}
+      namespaceObjects={sapNamespaceObjects}
+      packageInventoryObjects={sapPackageInventoryObjects}
+      packageInventory={sapPackageInventory}
+      packageScopeRoots={sapPackageScopeRoots}
+      packageScopeRootInput={sapPackageScopeRootInput}
+      packageScopePresets={SAP_PACKAGE_SCOPE_PRESETS}
+      loadingState={sapLoading.state}
+      loadingLocalObjects={sapLoading.localObjects}
+      loadingFavoriteObjects={sapLoading.favoriteObjects}
+      loadingFavoritePackages={sapLoading.favoritePackages}
+      loadingSystemNamespaces={sapLoading.systemNamespaces}
+      loadingPackageInventory={sapLoading.packageInventory}
+      loadingPackageObjects={sapPackageObjectsLoading}
+      loadingPackageInventoryObjects={sapPackageInventoryObjectsLoading}
+      loadingNamespaceObjects={sapNamespaceObjectsLoading}
+      onRefresh={() => {
+        void refreshSapExplorer()
+      }}
+      onToggleFavoritePackage={(item) => {
+        void patchSapExplorerState({
+          toggleFavoritePackage: item,
+        })
+      }}
+      onToggleFavoriteObject={(object) => {
+        void patchSapExplorerState({
+          toggleFavoriteObject: object,
+        })
+      }}
+      onSelectWorkingPackage={(packageName) => {
+        void patchSapExplorerState({
+          workingPackage: packageName,
+        })
+      }}
+      onOpenFile={(uri) => {
+        onOpenInEditor(uri)
+      }}
+      onLoadFavoritePackageObjects={(item) => {
+        void loadSapFavoritePackageObjects(item)
+      }}
+      onLoadNamespaceObjects={(namespace) => {
+        void loadSapNamespaceObjects(namespace)
+      }}
+      onLoadPackageInventoryObjects={(packageName) => {
+        void loadSapPackageInventoryObjects(packageName)
+      }}
+      onChangePackageScopeRootInput={(value) => {
+        setSapPackageScopeRootInput(value)
+      }}
+      onAddPackageScopeRoot={() => {
+        addSapPackageScopeRoot()
+      }}
+      onRemovePackageScopeRoot={(root) => {
+        removeSapPackageScopeRoot(root)
+      }}
+      onApplyPackageScopeRoots={() => {
+        void applySapPackageScopeRoots()
+      }}
+      onTogglePackageScopePreset={toggleSapPackageScopePreset}
+    />
+  )
+
+  const terminalPaneNode = (
+    <TerminalPane
+      tabs={terminalTabs}
+      activeTerminalId={activeTerminalId}
+      terminalContainerRef={terminalContainerRef}
+      onSelectTab={setActiveTerminalId}
+      onCloseTab={(id) => {
+        void closeTerminalTab(id)
+      }}
+      onCreateTab={handleCreateTerminalTab}
+    />
+  )
+
   if (initializing) {
     return (
-      <div className="h-screen w-screen flex items-center justify-center bg-background p-4">
-        <div className="w-full max-w-3xl border border-panel-border bg-panel-bg rounded-md shadow-md">
-          <div className="flex items-center gap-2 px-4 py-3 border-b border-panel-border text-terminal-fg/90 text-sm">
+      <div className="alicia-shell-root flex items-center justify-center bg-[var(--ide-app-bg)] p-4">
+        <div className="w-full max-w-3xl rounded-md border border-[var(--ide-border-strong)] bg-[var(--ide-surface-1)] shadow-lg shadow-black/30">
+          <div className="flex items-center gap-2 border-b border-[var(--ide-border-subtle)] px-4 py-3 text-sm text-terminal-fg/90">
             <Bot className="w-4 h-4 text-terminal-green spin-slow" />
             {initializingStatus}
           </div>
@@ -1272,63 +3292,45 @@ export default function AliciaTerminal() {
   }
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-background overflow-hidden">
-      <TitleBar connected={runtime.connected} workspace={runtime.workspace} />
+    <div className="alicia-shell-root flex flex-col bg-[var(--ide-surface-0)]">
+      {!isMobile && desktopShellMode === "zen" ? null : (
+        <TitleBar
+          connected={runtime.connected}
+          workspace={runtime.workspace}
+          onOpenWorkspaceFolder={handleOpenWorkspaceFolder}
+          openWorkspaceFolderBusy={switchingWorkspaceFolder}
+          onOpenAdtConnections={() => {
+            setAliciaState((previous) => ({ ...previous, activePanel: "adt" }))
+            void refreshActiveAdtServerSelection()
+          }}
+        />
+      )}
       {isMobile ? (
         <div className="flex-1 min-h-0 flex flex-col">
-          <div className="h-[40%] min-h-[260px] border-b border-panel-border">
+          <div className="flex items-center gap-2 border-b border-[var(--ide-border-subtle)] px-3 py-2">
+            <button
+              type="button"
+              onClick={() => {
+                void handleOpenWorkspaceFolder()
+              }}
+              disabled={switchingWorkspaceFolder}
+              className="rounded border border-[var(--ide-border-subtle)] bg-[var(--ide-surface-2)] px-2 py-1 text-xs text-terminal-fg transition-colors hover:bg-[var(--ide-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {switchingWorkspaceFolder ? "Abrindo..." : "Abrir pasta..."}
+            </button>
+            <span className="min-w-0 truncate text-xs text-muted-foreground" title={runtime.workspace}>
+              {runtime.workspace}
+            </span>
+          </div>
+          <div className="h-[40%] min-h-[260px] border-b border-[var(--ide-border-subtle)]">
             <Sidebar
               state={aliciaState}
               modelLabel={currentModelLabel}
               sessionPid={runtime.pid}
               runtimeState={runtime.state}
-              onOpenPanel={(panel) => {
-                if (panel === "model") {
-                  void openModelPanel(true)
-                  return
-                }
-                if (panel === "sessions") {
-                  void openSessionPanel("list")
-                  return
-                }
-                if (panel === "apps") {
-                  setAliciaState((prev) => ({ ...prev, activePanel: "apps" }))
-                  void refreshAppsAndAuth({ throwOnError: false })
-                  return
-                }
-                setAliciaState((prev) => ({ ...prev, activePanel: panel }))
-              }}
-              onStartSession={() => {
-                threadIdRef.current = null
-                reviewRoutingRef.current = false
-                setMessages([])
-                setPendingApprovals([])
-                setPendingUserInput(null)
-                setTurnDiff(null)
-                setTurnPlan(null)
-                void ensureRuntimeSession(true)
-                void refreshWorkspaceChanges()
-              }}
-              onStopSession={() => {
-                void (async () => {
-                  try {
-                    await codexRuntimeSessionStop()
-                    reviewRoutingRef.current = false
-                    setPendingApprovals([])
-                    setPendingUserInput(null)
-                    setTurnDiff(null)
-                    setTurnPlan(null)
-                    setRuntime((prev) => ({
-                      ...prev,
-                      state: "idle",
-                      sessionId: null,
-                      pid: null,
-                    }))
-                  } catch (error) {
-                    addMessage("system", `[session] failed to stop: ${String(error)}`)
-                  }
-                })()
-              }}
+              onOpenPanel={handleOpenPanel}
+              onStartSession={handleStartSession}
+              onStopSession={handleStopSession}
               onResumeSession={() => {
                 void openSessionPanel("resume")
               }}
@@ -1338,10 +3340,7 @@ export default function AliciaTerminal() {
               onSelectSession={(sessionId) => {
                 void handleSessionSelect(sessionId, "switch")
               }}
-              onStartReview={() => {
-                setAliciaState((prev) => ({ ...prev, activePanel: "review" }))
-                void refreshWorkspaceChanges()
-              }}
+              onStartReview={handleStartReview}
               onOpenFileChangeInEditor={onOpenInEditor}
             />
           </div>
@@ -1351,7 +3350,7 @@ export default function AliciaTerminal() {
             onValueChange={handleMainTabChange}
             className="flex-1 min-h-0 gap-0"
           >
-            <div className="px-3 py-2 border-b border-panel-border">
+            <div className="border-b border-[var(--ide-border-subtle)] px-3 py-2">
               <TabsList className="grid h-8 w-full grid-cols-3">
                 <TabsTrigger value="chat" className="text-xs">
                   Chat
@@ -1366,149 +3365,77 @@ export default function AliciaTerminal() {
             </div>
 
             <TabsContent value="chat" forceMount className="flex-1 min-h-0 data-[state=inactive]:hidden">
-              <ConversationPane
-                currentModelLabel={currentModelLabel}
-                reasoningEffort={aliciaState.reasoningEffort}
-                messages={messages}
-                isThinking={isThinking}
-                pendingImages={pendingImages}
-                pendingMentions={pendingMentions}
-                runtimeCapabilities={aliciaState.runtimeCapabilities}
-                pendingApprovals={pendingApprovals}
-                pendingUserInput={pendingUserInput}
-                turnDiff={turnDiff}
-                turnDiffFiles={turnDiffFiles}
-                turnPlan={turnPlan}
-                runtimeState={runtime.state}
-                scrollRef={scrollRef}
-                onSubmit={handleSubmit}
-                onSlashCommand={handleSlashCommand}
-                onAttachImage={async () => {
-                  const picked = await pickImageFile()
-                  if (picked) setPendingImages((prev) => [...prev, picked])
-                }}
-                onAttachMention={async () => {
-                  const picked = await pickMentionFile()
-                  if (picked) setPendingMentions((prev) => [...prev, picked])
-                }}
-                onRemoveImage={(index) => {
-                  setPendingImages((prev) => prev.filter((_, i) => i !== index))
-                }}
-                onRemoveMention={(index) => {
-                  setPendingMentions((prev) => prev.filter((_, i) => i !== index))
-                }}
-                onApprovalDecision={handleApprovalDecision}
-                onUserInputDecision={handleUserInputDecision}
-                onOpenInEditor={onOpenInEditor}
-              />
+              {conversationPaneNode}
             </TabsContent>
 
             <TabsContent value="editor" forceMount className="flex-1 min-h-0 data-[state=inactive]:hidden">
-              {sourceEditor.visible ? (
-                <SourceEditorPanel
-                  objectUri={sourceEditor.objectUri}
-                  displayName={sourceEditor.displayName}
-                  language={sourceEditor.language}
-                  source={sourceEditor.source}
-                  etag={sourceEditor.etag}
-                  dirty={sourceEditor.dirty}
-                  loading={sourceEditor.loading}
-                  saving={sourceEditor.saving}
-                  error={sourceEditor.error}
-                  onChangeSource={(value) => {
-                    setSourceEditorWithRef((previous) => ({
-                      ...previous,
-                      source: value,
-                      dirty: Boolean(previous.objectUri) && value !== sourceBaselineRef.current,
-                      error: null,
-                    }))
-                  }}
-                  onReload={() => {
-                    void handleReloadSource()
-                  }}
-                  onSave={() => {
-                    void handleSaveSource()
-                  }}
-                  onClose={handleCloseEditor}
-                />
-              ) : (
-                <div className="h-full w-full flex items-center justify-center px-4 text-center text-sm text-muted-foreground">
-                  Abra uma referencia de codigo na sidebar, no diff da conversa ou no review para carregar o editor.
-                </div>
-              )}
+              {editorPaneNode}
             </TabsContent>
 
             <TabsContent value="terminal" forceMount className="flex-1 min-h-0 data-[state=inactive]:hidden">
-              <TerminalPane
-                tabs={terminalTabs}
-                activeTerminalId={activeTerminalId}
-                terminalContainerRef={terminalContainerRef}
-                onSelectTab={setActiveTerminalId}
-                onCloseTab={(id) => {
-                  void closeTerminalTab(id)
-                }}
-                onCreateTab={() => {
-                  void createTerminalTab(runtime.workspace)
-                }}
-              />
+              {terminalPaneNode}
             </TabsContent>
           </Tabs>
         </div>
       ) : (
-        <ResizablePanelGroup direction="horizontal" className="flex-1 min-h-0">
-          <ResizablePanel defaultSize={20} minSize={14} maxSize={28}>
+        <AliciaDesktopShell
+          shellMode={desktopShellMode}
+          sidebarView={desktopSidebarView}
+          sidebarVisible={desktopSidebarVisible}
+          viewMode={desktopViewMode}
+          terminalVisible={desktopTerminalVisible}
+          fileChanges={aliciaState.fileChanges}
+          workspaceLabel={pathBasename(explorerRootPath || runtime.workspace) || "workspace"}
+          treeEntries={explorerRootEntries}
+          treeChildrenByPath={explorerChildrenByPath}
+          loadedDirectoryPaths={explorerLoadedPaths}
+          loadingDirectoryPaths={explorerLoadingPaths}
+          treeVersion={explorerTreeVersion}
+          loadingExplorerRoot={explorerRootLoading}
+          onSelectSidebarView={(view) => {
+            setDesktopSidebarView(view)
+            setDesktopSidebarVisible(true)
+            if (view === "sap") {
+              void refreshSapExplorer()
+            }
+          }}
+          onToggleSidebar={() => {
+            if (desktopShellMode !== "normal") {
+              return
+            }
+            setDesktopSidebarVisible((previous) => !previous)
+          }}
+          onTerminalVisibilityChange={(visible) => {
+            if (desktopShellMode !== "normal") {
+              return
+            }
+            setDesktopTerminalVisible(visible)
+          }}
+          onOpenFileInEditor={onOpenInEditor}
+          onLoadExplorerDirectory={handleLoadExplorerDirectory}
+          onRefreshFileChanges={() => {
+            void refreshExplorerRoot({ silent: true })
+            void refreshWorkspaceChanges()
+          }}
+          onCreateFile={(relativePath) => {
+            return handleCreateWorkspaceFile(relativePath)
+          }}
+          onCreateFolder={(relativePath) => {
+            return handleCreateWorkspaceFolder(relativePath)
+          }}
+          onRenameEntry={(path, newName) => {
+            return handleRenameWorkspaceEntry(path, newName)
+          }}
+          sapSidebar={sapSidebarNode}
+          agentSidebar={
             <Sidebar
               state={aliciaState}
               modelLabel={currentModelLabel}
               sessionPid={runtime.pid}
               runtimeState={runtime.state}
-              onOpenPanel={(panel) => {
-                if (panel === "model") {
-                  void openModelPanel(true)
-                  return
-                }
-                if (panel === "sessions") {
-                  void openSessionPanel("list")
-                  return
-                }
-                if (panel === "apps") {
-                  setAliciaState((prev) => ({ ...prev, activePanel: "apps" }))
-                  void refreshAppsAndAuth({ throwOnError: false })
-                  return
-                }
-                setAliciaState((prev) => ({ ...prev, activePanel: panel }))
-              }}
-              onStartSession={() => {
-                threadIdRef.current = null
-                reviewRoutingRef.current = false
-                setMessages([])
-                setPendingApprovals([])
-                setPendingUserInput(null)
-                setTurnDiff(null)
-                setTurnPlan(null)
-                void ensureRuntimeSession(true)
-                void refreshWorkspaceChanges()
-              }}
-              onStopSession={() => {
-                void (async () => {
-                  try {
-                    await codexRuntimeSessionStop()
-                    reviewRoutingRef.current = false
-                    setPendingApprovals([])
-                    setPendingUserInput(null)
-                    setTurnDiff(null)
-                    setTurnPlan(null)
-                    setRuntime((prev) => ({
-                      ...prev,
-                      state: "idle",
-                      sessionId: null,
-                      pid: null,
-                    }))
-                  } catch (error) {
-                    addMessage("system", `[session] failed to stop: ${String(error)}`)
-                  }
-                })()
-              }}
+              onOpenPanel={handleOpenPanel}
+              onStartSession={handleStartSession}
+              onStopSession={handleStopSession}
               onResumeSession={() => {
                 void openSessionPanel("resume")
               }}
@@ -1518,131 +3445,72 @@ export default function AliciaTerminal() {
               onSelectSession={(sessionId) => {
                 void handleSessionSelect(sessionId, "switch")
               }}
-              onStartReview={() => {
-                setAliciaState((prev) => ({ ...prev, activePanel: "review" }))
-                void refreshWorkspaceChanges()
-              }}
+              onStartReview={handleStartReview}
               onOpenFileChangeInEditor={onOpenInEditor}
             />
-          </ResizablePanel>
-          <ResizableHandle withHandle />
-          <>
-            <ResizablePanel defaultSize={28} minSize={18}>
-              <SourceEditorPanel
-                objectUri={sourceEditor.objectUri}
-                displayName={sourceEditor.displayName}
-                language={sourceEditor.language}
-                source={sourceEditor.source}
-                etag={sourceEditor.etag}
-                dirty={sourceEditor.dirty}
-                loading={sourceEditor.loading}
-                saving={sourceEditor.saving}
-                error={sourceEditor.error}
-                onChangeSource={(value) => {
-                  setSourceEditorWithRef((previous) => ({
-                    ...previous,
-                    source: value,
-                    dirty: Boolean(previous.objectUri) && value !== sourceBaselineRef.current,
-                    error: null,
-                  }))
-                }}
-                onReload={() => {
-                  void handleReloadSource()
-                }}
-                onSave={() => {
-                  void handleSaveSource()
-                }}
-                onClose={handleCloseEditor}
-              />
-            </ResizablePanel>
-            <ResizableHandle withHandle />
-          </>
-          <ResizablePanel defaultSize={52} minSize={40}>
-            <ResizablePanelGroup direction="vertical">
-              <ResizablePanel defaultSize={62} minSize={40}>
-                <ConversationPane
-                  currentModelLabel={currentModelLabel}
-                  reasoningEffort={aliciaState.reasoningEffort}
-                  messages={messages}
-                  isThinking={isThinking}
-                  pendingImages={pendingImages}
-                  pendingMentions={pendingMentions}
-                  runtimeCapabilities={aliciaState.runtimeCapabilities}
-                  pendingApprovals={pendingApprovals}
-                  pendingUserInput={pendingUserInput}
-                  turnDiff={turnDiff}
-                  turnDiffFiles={turnDiffFiles}
-                  turnPlan={turnPlan}
-                  runtimeState={runtime.state}
-                  scrollRef={scrollRef}
-                  onSubmit={handleSubmit}
-                  onSlashCommand={handleSlashCommand}
-                  onAttachImage={async () => {
-                    const picked = await pickImageFile()
-                    if (picked) setPendingImages((prev) => [...prev, picked])
-                  }}
-                  onAttachMention={async () => {
-                    const picked = await pickMentionFile()
-                    if (picked) setPendingMentions((prev) => [...prev, picked])
-                  }}
-                  onRemoveImage={(index) => {
-                    setPendingImages((prev) => prev.filter((_, i) => i !== index))
-                  }}
-                  onRemoveMention={(index) => {
-                    setPendingMentions((prev) => prev.filter((_, i) => i !== index))
-                  }}
-                  onApprovalDecision={handleApprovalDecision}
-                  onUserInputDecision={handleUserInputDecision}
-                  onOpenInEditor={onOpenInEditor}
-                />
-              </ResizablePanel>
-              <ResizableHandle withHandle />
-              <ResizablePanel defaultSize={38} minSize={20}>
-                <TerminalPane
-                  tabs={terminalTabs}
-                  activeTerminalId={activeTerminalId}
-                  terminalContainerRef={terminalContainerRef}
-                  onSelectTab={setActiveTerminalId}
-                  onCloseTab={(id) => {
-                    void closeTerminalTab(id)
-                  }}
-                  onCreateTab={() => {
-                    void createTerminalTab(runtime.workspace)
-                  }}
-                />
-              </ResizablePanel>
-            </ResizablePanelGroup>
-          </ResizablePanel>
-        </ResizablePanelGroup>
+          }
+          conversationPane={conversationPaneNode}
+          editorPane={editorPaneNode}
+          terminalPane={terminalPaneNode}
+        />
       )}
-      <StatusBar
-        state={aliciaState}
-        modelLabel={currentModelLabel}
-        runtime={{
-          connected: runtime.connected,
-          state: runtime.state,
-          sessionId: runtime.sessionId,
-        }}
-        usage={statusSignals.usage}
-        reasoning={statusSignals.reasoning}
-        isThinking={isThinking}
-        onOpenPanel={(panel) => {
-          if (panel === "model") {
-            void openModelPanel(true)
-            return
+      {!isMobile && desktopShellMode === "zen" ? null : (
+        <StatusBar
+          state={aliciaState}
+          modelLabel={currentModelLabel}
+          adtActiveServerId={activeAdtServerId}
+          runtime={{
+            connected: runtime.connected,
+            state: runtime.state,
+            sessionId: runtime.sessionId,
+          }}
+          usage={statusSignals.usage}
+          reasoning={statusSignals.reasoning}
+          isThinking={isThinking}
+          panelToolbar={
+            <IdePanelToolbar
+              compact
+              shellMode={desktopShellMode}
+              viewMode={desktopViewMode}
+              sidebarVisible={desktopSidebarVisible}
+              terminalVisible={desktopTerminalVisible}
+              onToggleSidebar={() => {
+                if (desktopShellMode !== "normal") {
+                  return
+                }
+                setDesktopSidebarVisible((previous) => !previous)
+              }}
+              onToggleTerminal={() => {
+                if (desktopShellMode !== "normal") {
+                  return
+                }
+                setDesktopTerminalVisible((previous) => !previous)
+              }}
+              onChangeViewMode={setDesktopViewMode}
+              onChangeShellMode={handleDesktopShellModeChange}
+            />
           }
-          if (panel === "sessions") {
-            void openSessionPanel("list")
-            return
-          }
-          if (panel === "apps") {
-            setAliciaState((prev) => ({ ...prev, activePanel: "apps" }))
-            void refreshAppsAndAuth({ throwOnError: false })
-            return
-          }
-          setAliciaState((prev) => ({ ...prev, activePanel: panel }))
-        }}
-      />
+          onOpenPanel={handleOpenPanel}
+        />
+      )}
+      {!isMobile && desktopShellMode === "zen" ? (
+        <div className="zen-exit-overlay">
+          <button
+            type="button"
+            className="zen-exit-button"
+            onClick={() => {
+              handleDesktopShellModeChange("normal")
+            }}
+            aria-label="Sair do modo zen"
+          >
+            <Minimize2 className="h-3.5 w-3.5" />
+            Sair do zen
+            <kbd className="ml-2 rounded border border-[var(--ide-border-subtle)] bg-[var(--ide-surface-2)] px-1 py-0.5 text-[10px] text-muted-foreground">
+              Esc
+            </kbd>
+          </button>
+        </div>
+      ) : null}
       {aliciaState.activePanel === "model" && (
         <ModelPicker
           currentModel={aliciaState.model}
@@ -1671,6 +3539,18 @@ export default function AliciaTerminal() {
         <McpPanel
           servers={aliciaState.mcpServers}
           onRefresh={refreshMcpServers}
+          onClose={() => setAliciaState((prev) => ({ ...prev, activePanel: null }))}
+        />
+      )}
+      {aliciaState.activePanel === "adt" && (
+        <AdtPanel
+          activeServerId={activeAdtServerId}
+          onActiveServerIdChange={(nextServerId) => {
+            handleAdtServerSelectionChange(nextServerId, {
+              refreshExplorer: true,
+            })
+          }}
+          onOpenInEditor={onOpenInEditor}
           onClose={() => setAliciaState((prev) => ({ ...prev, activePanel: null }))}
         />
       )}
@@ -1713,17 +3593,7 @@ export default function AliciaTerminal() {
           loading={sessionsPanelLoading}
           busyAction={sessionActionPending}
           onSelect={handleSessionSelect}
-          onNewSession={() => {
-            threadIdRef.current = null
-            reviewRoutingRef.current = false
-            setMessages([])
-            setPendingApprovals([])
-            setPendingUserInput(null)
-            setTurnDiff(null)
-            setTurnPlan(null)
-            void ensureRuntimeSession(true)
-            void refreshWorkspaceChanges()
-          }}
+          onNewSession={handleStartSession}
           onClose={() => setAliciaState((prev) => ({ ...prev, activePanel: null }))}
         />
       )}
