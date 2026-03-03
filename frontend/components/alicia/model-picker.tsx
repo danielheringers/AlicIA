@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react"
 
 import { type ReasoningEffort } from "@/lib/alicia-types"
-import { type CodexModel } from "@/lib/tauri-bridge"
+import { type CodexModel } from "@/lib/application/runtime-types"
 
 import {
   formatCacheStatusLabel,

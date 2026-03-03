@@ -62,9 +62,9 @@ import {
   type NeuroAdtNamespaceSummary,
   type NeuroAdtObjectSummary,
   type NeuroRuntimeCommandError,
-  type RuntimeMethod,
   type RuntimeCodexConfig,
 } from "@/lib/tauri-bridge"
+import type { RuntimeMethod } from "@/lib/application/runtime-types"
 import {
   INITIAL_ALICIA_STATE,
   isRuntimeMethodSupported,
@@ -3600,6 +3600,7 @@ export default function AliciaTerminal() {
     </div>
   )
 }
+
 
 
 

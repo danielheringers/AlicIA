@@ -25,7 +25,12 @@ import {
   type AccountState,
   type ConnectedApp,
 } from "@/lib/alicia-types"
-import { codexAccountLoginStart, codexAccountLogout } from "@/lib/tauri-bridge"
+import {
+  loginWithApiKey,
+  logoutAccount,
+  startChatgptAccountLogin,
+} from "@/lib/application/account/account-auth.use-cases"
+import { tauriRuntimeClientAdapter } from "@/lib/infrastructure/tauri/tauri-runtime-client.adapter"
 
 interface AppsPanelProps {
   apps: ConnectedApp[]
@@ -164,7 +169,7 @@ export function AppsPanel({
 
   const handleChatgptLogin = () => {
     void runBusy("login-chatgpt", async () => {
-      const result = await codexAccountLoginStart({ type: "chatgpt" })
+      const result = await startChatgptAccountLogin(tauriRuntimeClientAdapter)
       await onRefresh({ throwOnError: false, refreshToken: true })
       if (result.authUrl) {
         return `ChatGPT login started: ${result.authUrl}`
@@ -180,7 +185,7 @@ export function AppsPanel({
         throw new Error("API key is required")
       }
 
-      await codexAccountLoginStart({ type: "apiKey", apiKey: trimmed })
+      await loginWithApiKey(trimmed, tauriRuntimeClientAdapter)
       setApiKey("")
       await onRefresh({ throwOnError: false, refreshToken: false })
       return "API key login applied"
@@ -189,7 +194,7 @@ export function AppsPanel({
 
   const handleLogout = () => {
     void runBusy("logout", async () => {
-      await codexAccountLogout()
+      await logoutAccount(tauriRuntimeClientAdapter)
       await onRefresh({ throwOnError: false, refreshToken: false })
       return "Logged out"
     })
@@ -454,3 +459,5 @@ export function AppsPanel({
     </div>
   )
 }
+
+

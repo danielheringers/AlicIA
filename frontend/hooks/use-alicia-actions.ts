@@ -60,8 +60,8 @@ import {
   type ReviewDelivery,
   type ReviewTarget,
   type RuntimeCodexConfig,
-  type RuntimeMethod,
 } from "@/lib/tauri-bridge"
+import type { RuntimeMethod } from "@/lib/application/runtime-types"
 
 interface UseAliciaActionsParams {
   addMessage: (
@@ -1243,3 +1243,4 @@ export function useAliciaActions({
     sessionActionPending,
   }
 }
+

@@ -9,7 +9,7 @@ import { TerminalMessage } from "@/components/alicia/terminal-message"
 import {
   type ApprovalDecision,
   type RuntimeMethodCapabilities,
-} from "@/lib/tauri-bridge"
+} from "@/lib/application/runtime-types"
 import {
   encodeAgentSpawnerPayload,
   mergeAgentSpawnerPayloads,

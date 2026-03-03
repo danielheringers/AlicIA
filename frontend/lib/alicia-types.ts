@@ -1,7 +1,4 @@
-import type {
-  RuntimeMethod,
-  RuntimeMethodCapabilities,
-} from "@/lib/tauri-bridge/types"
+import type { RuntimeMethod, RuntimeMethodCapabilities } from "@/lib/application/runtime-types"
 
 // ========================
 // Alicia shared types
@@ -259,4 +256,5 @@ export interface AliciaState {
     | "review"
     | null
 }
+
 

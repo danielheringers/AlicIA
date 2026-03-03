@@ -11,9 +11,8 @@ import {
   type CodexThreadRecord,
   type CodexThreadTurn,
   type RuntimeCodexConfig,
-  type RuntimeMethod,
-  type RuntimeMethodCapabilities,
 } from "@/lib/tauri-bridge"
+import type { RuntimeMethod, RuntimeMethodCapabilities } from "@/lib/application/runtime-types"
 import {
   createAgentSpawnerPayloadFromCollabItem,
   encodeAgentSpawnerPayload,
@@ -1275,4 +1274,5 @@ export function mergeTerminalBuffer(previous: string, chunk: string): string {
   const max = 400_000
   return next.length <= max ? next : next.slice(next.length - max)
 }
+
 

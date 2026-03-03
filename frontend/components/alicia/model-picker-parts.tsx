@@ -1,7 +1,7 @@
 import { Check, ChevronRight, Cpu, Loader2, RefreshCw, Sparkles, X } from "lucide-react"
 
 import { type ReasoningEffort } from "@/lib/alicia-types"
-import { type CodexModel } from "@/lib/tauri-bridge"
+import { type CodexModel } from "@/lib/application/runtime-types"
 
 const effortLabels: Record<ReasoningEffort, { label: string; color: string; description: string }> = {
   none: { label: "None", color: "text-muted-foreground", description: "No reasoning chain" },

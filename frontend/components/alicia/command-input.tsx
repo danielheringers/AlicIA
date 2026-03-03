@@ -3,7 +3,7 @@
 import { ArrowUp, Paperclip, ImagePlus, AtSign, X } from "lucide-react"
 import { useState, useRef, useEffect, useCallback } from "react"
 import { CommandPalette } from "./command-palette"
-import type { RuntimeMethodCapabilities } from "@/lib/tauri-bridge"
+import type { RuntimeMethodCapabilities } from "@/lib/application/runtime-types"
 
 interface CommandInputProps {
   onSubmit: (value: string) => Promise<void> | void

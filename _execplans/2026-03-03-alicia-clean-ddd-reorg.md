@@ -31,7 +31,7 @@ Excluido:
 - [x] (2026-03-03) Estrategia incremental em fases aprovada.
 - [x] (2026-03-03) Fase 0: baseline de contrato e smoke atual.
 - [x] (2026-03-03) Fase 1: centralizacao do contrato em `alicia/codex-bridge`.
-- [ ] (2026-03-03) Fase 2: extracao de portas/casos de uso no frontend.
+- [x] (2026-03-03) Fase 2: extracao de portas/casos de uso no frontend.
 - [ ] (2026-03-03) Fase 3: extracao de interface Tauri no backend.
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
@@ -97,10 +97,40 @@ Validacao executada:
 Resultado:
 1. Fase 1 concluida sem blocker de merge.
 
+## Fase 2 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-03.
+2. Objetivo: mover acesso de runtime para `application + ports + infrastructure/tauri` e remover import direto de `tauri-bridge` em `components/alicia/*`.
+3. Artefatos centrais:
+   - `frontend/lib/application/**`
+   - `frontend/lib/infrastructure/tauri/tauri-runtime-client.adapter.ts`
+   - `frontend/components/alicia/{apps-panel,mcp-panel,adt-panel,command-input,command-palette,model-picker,model-picker-parts,conversation-pane}.tsx`
+
+Entregas:
+1. Porta de runtime em `lib/application/ports/runtime-client.port.ts`.
+2. Casos de uso por contexto (`account`, `mcp`, `adt`) em `lib/application/*`.
+3. Adapter Tauri dedicado em `lib/infrastructure/tauri/tauri-runtime-client.adapter.ts`.
+4. Contrato tipado da camada application:
+   - `lib/application/runtime-types.ts`
+   - `lib/application/contracts/runtime-methods.contract.ts`
+5. Componentes alvo sem import direto de `@/lib/tauri-bridge*`.
+
+Validacao executada:
+1. `cd alicia/frontend && pnpm run lint` -> OK.
+2. `cd alicia/frontend && pnpm exec tsc --noEmit` -> OK.
+3. `cd alicia/frontend && pnpm run build` -> OK.
+4. `rg -n "@/lib/tauri-bridge|@/lib/tauri-bridge/types" alicia/frontend/components/alicia` -> sem ocorrencias.
+5. `rg -n "tauri-runtime-client.adapter|tauri-bridge/types|tauri-bridge/generated" alicia/frontend/lib/application` -> sem ocorrencias.
+
+Resultado:
+1. Fase 2 concluida sem blocker de merge.
+2. Fronteira arquitetural reforcada para o frontend priorizado nesta fase.
+
 ## Current Architecture Snapshot (Key Risks)
 
 1. Frontend com `god component` em `app/page.tsx` concentrando UI + fluxo + regras.
-2. Componentes de UI chamando infraestrutura Tauri diretamente (`apps-panel`, `mcp-panel`, `adt-panel`).
+2. Componentes de UI sem import direto de `tauri-bridge` nos painéis priorizados da Fase 2; ainda existe acoplamento residual via adapter concreto em alguns fluxos.
 3. `main.rs` concentrando DTOs, comandos, wiring e parte da coordenacao.
 4. Modulos backend monoliticos (`command_runtime.rs`, `session_turn_runtime.rs`, `neuro_runtime.rs`).
 5. Contrato runtime duplicado entre frontend e backend.
@@ -295,3 +325,15 @@ Fase 1:
    - `check-runtime-contract` ainda nao compara conteudo gerado vs arquivos externos para drift automatizado.
 4. Ajuste para Fase 2:
    - iniciar extracao de portas/casos de uso no frontend usando o contrato gerado como unica fonte de comandos/canais.
+
+Fase 2:
+1. Resultado entregue: frontend reorganizado com `application + ports + infrastructure/tauri` e componentes alvo desacoplados de `tauri-bridge`.
+2. Incidentes/regressoes: ajustes de tipagem e concorrencia (timer MCP por servidor) corrigidos durante validacao.
+3. Riscos residuais:
+   - `runtime-methods.contract.ts` ainda e copia local da lista de metodos e pode sofrer drift sem guarda automatica;
+   - faltam testes unitarios de use-cases/adapters e teste de concorrencia para login MCP.
+4. Ajuste para Fase 3:
+   - extrair interface Tauri no backend, reduzindo `main.rs` para bootstrap/registro e alinhando portas por contexto.
+
+
+

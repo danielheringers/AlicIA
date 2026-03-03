@@ -35,8 +35,8 @@ import {
   terminalResize,
   type CodexModel,
   type CodexThreadRecord,
-  type RuntimeMethod,
 } from "@/lib/tauri-bridge"
+import type { RuntimeMethod } from "@/lib/application/runtime-types"
 
 interface UseAliciaRuntimeCoreParams {
   addMessage: (type: Message["type"], content: string) => void
@@ -639,6 +639,7 @@ export function useAliciaRuntimeCore({
     currentModelLabel,
   }
 }
+
 
 
 

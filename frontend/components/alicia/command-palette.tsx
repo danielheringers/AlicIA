@@ -12,7 +12,7 @@ import {
   resolveSlashCommandSupport,
   type SlashCommand,
 } from "@/lib/alicia-types"
-import type { RuntimeMethodCapabilities } from "@/lib/tauri-bridge"
+import type { RuntimeMethodCapabilities } from "@/lib/application/runtime-types"
 
 interface CommandPaletteProps {
   filter: string

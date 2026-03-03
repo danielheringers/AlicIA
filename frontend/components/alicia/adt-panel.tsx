@@ -13,21 +13,22 @@ import {
   X,
 } from "lucide-react"
 import {
-  neuroAdtListNamespaces,
-  neuroAdtListPackages,
-  neuroAdtServerConnect,
-  neuroAdtServerList,
-  neuroAdtServerRemove,
-  neuroAdtServerSelect,
-  neuroAdtServerUpsert,
-  neuroSearchObjects,
-} from "@/lib/tauri-bridge"
+  listAdtNamespaces,
+  listAdtPackages,
+  connectAdtServer,
+  listAdtServers,
+  removeAdtServer,
+  selectAdtServer,
+  upsertAdtServer,
+  searchAdtObjects,
+} from "@/lib/application/adt/adt.use-cases"
+import { tauriRuntimeClientAdapter } from "@/lib/infrastructure/tauri/tauri-runtime-client.adapter"
 import {
   type NeuroAdtNamespaceSummary,
   type NeuroAdtObjectSummary,
   type NeuroAdtPackageSummary,
   type NeuroAdtServerRecord,
-} from "@/lib/tauri-bridge/types"
+} from "@/lib/application/runtime-types"
 
 interface AdtPanelProps {
   activeServerId: string | null
@@ -123,7 +124,7 @@ export function AdtPanel({
   const reloadServers = async () => {
     setLoadingServers(true)
     try {
-      const response = await neuroAdtServerList()
+      const response = await listAdtServers(tauriRuntimeClientAdapter)
       setServers(response.servers)
       const selected = response.selectedServerId ?? null
       if (selected !== activeServerId) {
@@ -199,7 +200,7 @@ export function AdtPanel({
       setGlobalNamespaceCapability("unknown")
       setGlobalNamespaceError(null)
       setLoadingGlobalNamespaces(true)
-      const nextPackages = await neuroAdtListPackages(serverId)
+      const nextPackages = await listAdtPackages(serverId, tauriRuntimeClientAdapter)
       if (navigationRequestId !== navigationRequestIdRef.current) {
         return
       }
@@ -210,7 +211,7 @@ export function AdtPanel({
       setPackageCapability("available")
 
       try {
-        const response = await neuroAdtListNamespaces(null, serverId)
+        const response = await listAdtNamespaces(null, serverId, tauriRuntimeClientAdapter)
         if (navigationRequestId !== navigationRequestIdRef.current) {
           return
         }
@@ -298,7 +299,7 @@ export function AdtPanel({
         throw new Error("Preencha id, nome e base URL do servidor ADT.")
       }
 
-      await neuroAdtServerUpsert({
+      await upsertAdtServer({
         id,
         name,
         baseUrl,
@@ -306,7 +307,7 @@ export function AdtPanel({
         language: draft.language.trim() || null,
         username: draft.username.trim() || null,
         password: draft.password.trim() || null,
-      })
+      }, tauriRuntimeClientAdapter)
 
       setDraft(INITIAL_DRAFT)
       setEditingServerId(null)
@@ -326,7 +327,7 @@ export function AdtPanel({
     }
 
     void runBusy(`remove:${server.id}`, async () => {
-      await neuroAdtServerRemove(server.id)
+      await removeAdtServer(server.id, tauriRuntimeClientAdapter)
       if (activeServerId === server.id) {
         onActiveServerIdChange(null)
       }
@@ -337,7 +338,7 @@ export function AdtPanel({
 
   const handleSelectServer = (serverId: string) => {
     void runBusy(`select:${serverId}`, async () => {
-      const selectedServerId = await neuroAdtServerSelect(serverId)
+      const selectedServerId = await selectAdtServer(serverId, tauriRuntimeClientAdapter)
       onActiveServerIdChange(selectedServerId)
       setPanelInfo(`Servidor ADT ativo: ${selectedServerId}.`)
     })
@@ -345,10 +346,10 @@ export function AdtPanel({
 
   const handleConnectServer = (serverId: string) => {
     void runBusy(`connect:${serverId}`, async () => {
-      const selectedServerId = await neuroAdtServerSelect(serverId)
+      const selectedServerId = await selectAdtServer(serverId, tauriRuntimeClientAdapter)
       onActiveServerIdChange(selectedServerId)
 
-      const response = await neuroAdtServerConnect(selectedServerId)
+      const response = await connectAdtServer(selectedServerId, tauriRuntimeClientAdapter)
       setPanelInfo(
         response.message ??
           (response.connected
@@ -366,7 +367,7 @@ export function AdtPanel({
       }
       setSearchingObjects(true)
       try {
-        const results = await neuroSearchObjects(query, 60, activeServerId)
+        const results = await searchAdtObjects(query, 60, activeServerId, tauriRuntimeClientAdapter)
         setObjectResults(results)
       } finally {
         setSearchingObjects(false)
@@ -386,7 +387,7 @@ export function AdtPanel({
       setSelectedNamespace(null)
       setLoadingPackageNamespaces(true)
       try {
-        const response = await neuroAdtListNamespaces(packageName, activeServerId)
+        const response = await listAdtNamespaces(packageName, activeServerId, tauriRuntimeClientAdapter)
         if (namespaceRequestId !== namespaceRequestIdRef.current) {
           return
         }
@@ -795,3 +796,7 @@ export function AdtPanel({
     </div>
   )
 }
+
+
+
+

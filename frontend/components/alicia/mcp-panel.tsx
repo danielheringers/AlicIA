@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
   X,
   Server,
@@ -26,7 +26,12 @@ import {
 } from "lucide-react"
 
 import { type McpServer } from "@/lib/alicia-types"
-import { codexMcpLogin, codexMcpReload, runCodexCommand } from "@/lib/tauri-bridge"
+import {
+  executeCodexCommand,
+  loginMcpServer,
+  reloadMcpConfig,
+} from "@/lib/application/mcp/mcp.use-cases"
+import { tauriRuntimeClientAdapter } from "@/lib/infrastructure/tauri/tauri-runtime-client.adapter"
 
 interface McpPanelProps {
   servers: McpServer[]
@@ -298,6 +303,7 @@ export function McpPanel({ servers, onClose, onRefresh }: McpPanelProps) {
   const [reconnectingNames, setReconnectingNames] = useState<string[]>([])
   const [addExpanded, setAddExpanded] = useState(false)
   const [addDraft, setAddDraft] = useState<AddServerDraft>(initialAddDraft)
+  const loginRefreshTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
 
   const connectedCount = useMemo(
     () => servers.filter((server) => server.status === "connected").length,
@@ -308,6 +314,16 @@ export function McpPanel({ servers, onClose, onRefresh }: McpPanelProps) {
     [servers],
   )
 
+  useEffect(() => {
+    const loginTimers = loginRefreshTimersRef.current
+
+    return () => {
+      for (const timer of loginTimers.values()) {
+        clearTimeout(timer)
+      }
+      loginTimers.clear()
+    }
+  }, [])
   const setReconnectFlag = (name: string, active: boolean) => {
     setReconnectingNames((previous) => {
       const exists = previous.includes(name)
@@ -341,13 +357,13 @@ export function McpPanel({ servers, onClose, onRefresh }: McpPanelProps) {
   }
 
   const refreshAfterConfigMutation = async () => {
-    await codexMcpReload()
+    await reloadMcpConfig(tauriRuntimeClientAdapter)
     await onRefresh({ throwOnError: true })
   }
 
   const handleReloadAll = () => {
     void runWithBusy("reload", async () => {
-      const result = await codexMcpReload()
+      const result = await reloadMcpConfig(tauriRuntimeClientAdapter)
       await onRefresh({ throwOnError: true })
       return `MCP config reloaded in ${result.elapsedMs}ms`
     })
@@ -355,7 +371,7 @@ export function McpPanel({ servers, onClose, onRefresh }: McpPanelProps) {
 
   const handleGetServer = (server: McpServer) => {
     void runWithBusy(`get:${server.name}`, async () => {
-      const result = await runCodexCommand(["mcp", "get", server.name, "--json"])
+      const result = await executeCodexCommand(["mcp", "get", server.name, "--json"], tauriRuntimeClientAdapter)
       const failure = commandFailureMessage(result)
       if (failure) {
         throw new Error(`[mcp:get] ${failure}`)
@@ -372,7 +388,7 @@ export function McpPanel({ servers, onClose, onRefresh }: McpPanelProps) {
 
   const handleRemoveServer = (server: McpServer) => {
     void runWithBusy(`remove:${server.name}`, async () => {
-      const result = await runCodexCommand(["mcp", "remove", server.name])
+      const result = await executeCodexCommand(["mcp", "remove", server.name], tauriRuntimeClientAdapter)
       const failure = commandFailureMessage(result)
       if (failure) {
         throw new Error(`[mcp:remove] ${failure}`)
@@ -395,7 +411,7 @@ export function McpPanel({ servers, onClose, onRefresh }: McpPanelProps) {
     void runWithBusy(`reconnect:${server.name}`, async () => {
       setReconnectFlag(server.name, true)
       try {
-        await codexMcpReload()
+        await reloadMcpConfig(tauriRuntimeClientAdapter)
         await onRefresh({ throwOnError: true })
       } finally {
         setReconnectFlag(server.name, false)
@@ -408,13 +424,20 @@ export function McpPanel({ servers, onClose, onRefresh }: McpPanelProps) {
     void runWithBusy(`login:${server.name}`, async () => {
       setReconnectFlag(server.name, true)
       try {
-        const login = await codexMcpLogin({ name: server.name })
+        const login = await loginMcpServer(server.name, tauriRuntimeClientAdapter)
         await onRefresh({ throwOnError: false })
 
-        window.setTimeout(() => {
+        const existingLoginTimer = loginRefreshTimersRef.current.get(server.name)
+        if (existingLoginTimer) {
+          clearTimeout(existingLoginTimer)
+        }
+
+        const loginTimer = setTimeout(() => {
           void onRefresh({ throwOnError: false })
           setReconnectFlag(server.name, false)
+          loginRefreshTimersRef.current.delete(server.name)
         }, 3500)
+        loginRefreshTimersRef.current.set(server.name, loginTimer)
 
         if (login.authorizationUrl) {
           return `OAuth login started for ${server.name}: ${login.authorizationUrl}`
@@ -430,7 +453,7 @@ export function McpPanel({ servers, onClose, onRefresh }: McpPanelProps) {
 
   const handleLogoutServer = (server: McpServer) => {
     void runWithBusy(`logout:${server.name}`, async () => {
-      const result = await runCodexCommand(["mcp", "logout", server.name])
+      const result = await executeCodexCommand(["mcp", "logout", server.name], tauriRuntimeClientAdapter)
       const failure = commandFailureMessage(result)
       if (failure) {
         throw new Error(`[mcp:logout] ${failure}`)
@@ -478,7 +501,7 @@ export function McpPanel({ servers, onClose, onRefresh }: McpPanelProps) {
         args.push("--", ...commandParts)
       }
 
-      const result = await runCodexCommand(args)
+      const result = await executeCodexCommand(args, tauriRuntimeClientAdapter)
       const failure = commandFailureMessage(result)
       if (failure) {
         throw new Error(`[mcp:add] ${failure}`)
@@ -668,3 +691,11 @@ export function McpPanel({ servers, onClose, onRefresh }: McpPanelProps) {
     </div>
   )
 }
+
+
+
+
+
+
+
+
