@@ -148,6 +148,9 @@ Fonte: `alicia/frontend/lib/alicia-event-handlers.ts`.
 | `item.started` / `item.updated` / `item.completed` | streaming/mensagens estruturadas e transicao de review mode | `alicia-event-handlers.ts:468-527` |
 | `terminal data/exit` | atualiza buffers, escrita no xterm e estado `alive` da aba | `alicia-event-handlers.ts:547-563` |
 
+Nota de compatibilidade:
+- `mcp.oauth_login.completed` e tratado defensivamente no frontend; no baseline backend atual nao ha emissao explicita desse tipo no barramento Tauri.
+
 ## 3) Runtime methods (contrato de capabilities)
 
 Fonte de verdade de contrato de capabilities:

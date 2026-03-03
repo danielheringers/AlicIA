@@ -4,6 +4,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 
+use crate::generated::runtime_contract::{
+    EVENT_CHANNEL_CODEX_EVENT, EVENT_CHANNEL_CODEX_LIFECYCLE, EVENT_CHANNEL_CODEX_STDERR,
+    EVENT_CHANNEL_CODEX_STDOUT, EVENT_CHANNEL_TERMINAL_DATA, EVENT_CHANNEL_TERMINAL_EXIT,
+};
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StreamEventPayload {
@@ -60,7 +65,7 @@ pub(crate) fn emit_lifecycle(
         exit_code,
         message,
     };
-    let _ = app.emit("codex://lifecycle", payload);
+    let _ = app.emit(EVENT_CHANNEL_CODEX_LIFECYCLE, payload);
 }
 
 fn emit_stream(app: &AppHandle, channel: &str, session_id: u64, chunk: String) {
@@ -69,11 +74,11 @@ fn emit_stream(app: &AppHandle, channel: &str, session_id: u64, chunk: String) {
 }
 
 pub(crate) fn emit_stdout(app: &AppHandle, session_id: u64, chunk: String) {
-    emit_stream(app, "codex://stdout", session_id, chunk);
+    emit_stream(app, EVENT_CHANNEL_CODEX_STDOUT, session_id, chunk);
 }
 
 pub(crate) fn emit_stderr(app: &AppHandle, session_id: u64, chunk: String) {
-    emit_stream(app, "codex://stderr", session_id, chunk);
+    emit_stream(app, EVENT_CHANNEL_CODEX_STDERR, session_id, chunk);
 }
 
 pub(crate) fn emit_codex_event(
@@ -88,7 +93,7 @@ pub(crate) fn emit_codex_event(
         seq,
         event,
     };
-    let _ = app.emit("codex://event", payload);
+    let _ = app.emit(EVENT_CHANNEL_CODEX_EVENT, payload);
 }
 
 pub(crate) fn emit_terminal_data(
@@ -103,7 +108,7 @@ pub(crate) fn emit_terminal_data(
         seq,
         chunk,
     };
-    let _ = app.emit("terminal://data", payload);
+    let _ = app.emit(EVENT_CHANNEL_TERMINAL_DATA, payload);
 }
 
 pub(crate) fn emit_terminal_exit(
@@ -118,5 +123,5 @@ pub(crate) fn emit_terminal_exit(
         seq,
         exit_code,
     };
-    let _ = app.emit("terminal://exit", payload);
+    let _ = app.emit(EVENT_CHANNEL_TERMINAL_EXIT, payload);
 }

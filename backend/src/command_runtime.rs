@@ -32,6 +32,7 @@ use crate::account_runtime::{
 };
 #[cfg(feature = "native-codex-runtime")]
 use crate::app_server_runtime::request_app_server_method;
+use crate::generated::runtime_contract::{RUNTIME_CONTRACT_VERSION, RUNTIME_METHOD_KEYS};
 use crate::mcp_runtime::{
     parse_mcp_server_list_runtime_result, McpLoginRequest, McpLoginResponse, McpReloadResponse,
     McpServerListResponse, McpStartupWarmupResponse,
@@ -283,62 +284,6 @@ fn disable_methods_for_native_transport(methods: &mut HashMap<String, bool>) {
         methods.insert((*method).to_string(), false);
     }
 }
-
-const RUNTIME_CONTRACT_VERSION: &str = "alicia.runtime.capabilities.v2";
-
-const RUNTIME_METHOD_KEYS: &[&str] = &[
-    "thread.open",
-    "thread.close",
-    "thread.list",
-    "thread.read",
-    "thread.archive",
-    "thread.unarchive",
-    "thread.compact.start",
-    "thread.rollback",
-    "thread.fork",
-    "turn.run",
-    "review.start",
-    "turn.steer",
-    "turn.interrupt",
-    "approval.respond",
-    "user_input.respond",
-    "tool.call.dynamic",
-    "mcp.warmup",
-    "mcp.list",
-    "mcp.login",
-    "mcp.reload",
-    "app.list",
-    "account.read",
-    "account.login.start",
-    "account.logout",
-    "account.rate_limits.read",
-    "account.rateLimits.read",
-    "config.get",
-    "config.set",
-    "workspace.file.read",
-    "workspace.file.write",
-    "workspace.directory.create",
-    "workspace.directory.list",
-    "workspace.entry.rename",
-    "neuro.runtime.diagnose",
-    "neuro.search.objects",
-    "neuro.get.source",
-    "neuro.update.source",
-    "neuro.adt.server.list",
-    "neuro.adt.server.upsert",
-    "neuro.adt.server.remove",
-    "neuro.adt.server.select",
-    "neuro.adt.server.connect",
-    "neuro.adt.list.packages",
-    "neuro.adt.list.namespaces",
-    "neuro.adt.explorer.state.get",
-    "neuro.adt.explorer.state.patch",
-    "neuro.adt.list.objects",
-    "neuro.adt.list.package_inventory",
-    "neuro.ws.request",
-    "neuro.mcp.list_tools",
-    "neuro.mcp.invoke",
-];
 
 fn default_runtime_capabilities() -> HashMap<String, bool> {
     let mut methods: HashMap<String, bool> = RUNTIME_METHOD_KEYS

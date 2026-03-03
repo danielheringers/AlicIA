@@ -2,7 +2,7 @@
 
 This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` updated as work proceeds.
 
-This plan follows `.agent/PLANS.md` from repository root.
+This plan follows monorepo guidelines in `../AGENTS.md` (relative to `alicia/`).
 
 ## Purpose / Big Picture
 
@@ -29,12 +29,73 @@ Excluido:
 
 - [x] (2026-03-03) Diagnostico arquitetural read-only concluido com evidencias de acoplamento.
 - [x] (2026-03-03) Estrategia incremental em fases aprovada.
-- [ ] (2026-03-03) Fase 0: baseline de contrato e smoke atual.
-- [ ] (2026-03-03) Fase 1: centralizacao do contrato em `alicia/codex-bridge`.
+- [x] (2026-03-03) Fase 0: baseline de contrato e smoke atual.
+- [x] (2026-03-03) Fase 1: centralizacao do contrato em `alicia/codex-bridge`.
 - [ ] (2026-03-03) Fase 2: extracao de portas/casos de uso no frontend.
 - [ ] (2026-03-03) Fase 3: extracao de interface Tauri no backend.
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
+
+## Fase 0 Baseline Snapshot (Read-Only)
+
+Metadata:
+1. Data: 2026-03-03.
+2. Escopo: doc-only em `frontend/docs/**`, `backend/docs/**`, `alicia/_execplans/**`.
+3. Artefatos:
+   - `frontend/docs/clean-ddd-baseline-frontend.md`
+   - `backend/docs/clean-ddd-baseline-backend.md`
+
+Reconciliacao de contrato:
+1. Commands Tauri registrados no backend: 70 (`src/main.rs` + `generate_handler!`).
+2. Commands mapeados no bridge frontend: 69.
+3. Gap identificado: `codex_native_runtime_diagnose` (backend-only, sem wrapper frontend).
+4. Runtime methods reconciliados: conjunto de methods alinhado entre `types.ts` e `RUNTIME_METHOD_KEYS`.
+5. Events reconciliados: canais `codex://stdout|stderr|lifecycle|event` e `terminal://data|exit` documentados em ambos os baselines.
+
+Evidencia objetiva de baseline reproduzivel:
+1. Inventario backend commands via parse de `generate_handler!` (`count=70`).
+2. Inventario frontend command strings do bridge (`count=69`).
+3. Diff de comandos front/back (`only_backend=codex_native_runtime_diagnose`).
+
+Checklist de pronto da Fase 0:
+1. [x] commands front/back reconciliados
+2. [x] runtime methods reconciliados
+3. [x] events + payloads reconciliados
+4. [x] smoke matrix publicada com evidencia
+5. [x] riscos e pendencias registrados
+
+## Fase 1 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-03.
+2. Objetivo: contrato unico em `alicia/codex-bridge` consumido por `frontend` e `backend`.
+3. Artefatos centrais:
+   - `codex-bridge/schema/runtime-contract.json`
+   - `codex-bridge/generators/generate-runtime-contract.mjs`
+   - `codex-bridge/generators/check-runtime-contract.mjs`
+   - `frontend/lib/tauri-bridge/generated/runtime-contract.ts`
+   - `backend/src/generated/runtime_contract.rs`
+
+Correcoes de blocker aplicadas:
+1. Saida do gerador corrigida para raiz `alicia` (evita escrita em `Neuromancer/frontend|backend`).
+2. Template gerado alinhado ao consumo real:
+   - frontend: `RUNTIME_COMMANDS` e `RUNTIME_CHANNELS`
+   - backend: `RUNTIME_METHOD_KEYS` e `EVENT_CHANNEL_*`
+3. `codex_native_runtime_diagnose` incluido no contrato TS gerado (`codexNativeRuntimeDiagnose`).
+4. Fluxo oficial documentado para materializar artefatos externos:
+   - `node alicia/codex-bridge/generators/generate-runtime-contract.mjs --write-external`
+
+Validacao executada:
+1. `node alicia/codex-bridge/generators/check-runtime-contract.mjs` -> OK.
+2. `node alicia/codex-bridge/generators/generate-runtime-contract.mjs --write-external` -> OK.
+3. `cd alicia/frontend && pnpm run lint` -> OK.
+4. `cd alicia/frontend && pnpm exec tsc --noEmit` -> OK.
+5. `cd alicia/frontend && pnpm run build` -> OK.
+6. `cd alicia/backend && cargo check` -> OK.
+7. `cd alicia/backend && cargo test` -> OK (`121 passed; 0 failed`).
+
+Resultado:
+1. Fase 1 concluida sem blocker de merge.
 
 ## Current Architecture Snapshot (Key Risks)
 
@@ -217,8 +278,20 @@ Smoke funcional minimo:
 
 ## Outcomes & Retrospective
 
-Preencher ao final de cada fase:
-1. Resultado entregue e impacto tecnico.
-2. Incidentes/regressoes encontradas.
-3. Ajustes de estrategia para a fase seguinte.
+Fase 0:
+1. Resultado entregue: baseline contratual e smoke checklist consolidados para frontend e backend.
+2. Incidentes/regressoes: nenhuma regressao funcional (escopo doc-only).
+3. Riscos residuais:
+   - worktree com mudancas nao relacionadas pode contaminar validacao se entrar no mesmo merge;
+   - referencias `arquivo:linha` podem sofrer drift conforme edicoes futuras.
+4. Ajuste para Fase 1:
+   - tratar `codex_native_runtime_diagnose` explicitamente no contrato central (`alicia/codex-bridge`) como endpoint backend-only ou expor wrapper frontend.
 
+Fase 1:
+1. Resultado entregue: contrato centralizado em `alicia/codex-bridge` com geracao confiavel para frontend/backend.
+2. Incidentes/regressoes: blockers iniciais de path/template foram corrigidos e validados.
+3. Riscos residuais:
+   - existem artefatos legados homonimos em `Neuromancer/frontend` e `Neuromancer/backend` (fora de `alicia/`) que podem gerar confusao operacional;
+   - `check-runtime-contract` ainda nao compara conteudo gerado vs arquivos externos para drift automatizado.
+4. Ajuste para Fase 2:
+   - iniciar extracao de portas/casos de uso no frontend usando o contrato gerado como unica fonte de comandos/canais.

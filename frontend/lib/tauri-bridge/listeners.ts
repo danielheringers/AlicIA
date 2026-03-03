@@ -1,5 +1,6 @@
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
+import { RUNTIME_CHANNELS } from '@/lib/tauri-bridge/generated/runtime-contract'
 import type {
   CodexRuntimeEvent,
   CodexRuntimeTimelineEvent,
@@ -112,16 +113,16 @@ export async function listenToCodexEvents(
   }
 
   const unlistenFns: UnlistenFn[] = await Promise.all([
-    listen('codex://stdout', (event) => {
+    listen(RUNTIME_CHANNELS.codexStdout, (event) => {
       onEvent({ type: 'stdout', payload: normalizeStreamPayload(event.payload) })
     }),
-    listen('codex://stderr', (event) => {
+    listen(RUNTIME_CHANNELS.codexStderr, (event) => {
       onEvent({ type: 'stderr', payload: normalizeStreamPayload(event.payload) })
     }),
-    listen('codex://lifecycle', (event) => {
+    listen(RUNTIME_CHANNELS.codexLifecycle, (event) => {
       onEvent({ type: 'lifecycle', payload: normalizeLifecyclePayload(event.payload) })
     }),
-    listen('codex://event', (event) => {
+    listen(RUNTIME_CHANNELS.codexEvent, (event) => {
       onEvent({ type: 'event', payload: normalizeStructuredEventPayload(event.payload) })
     }),
   ])
@@ -141,10 +142,10 @@ export async function listenToTerminalEvents(
   }
 
   const unlistenFns: UnlistenFn[] = await Promise.all([
-    listen('terminal://data', (event) => {
+    listen(RUNTIME_CHANNELS.terminalData, (event) => {
       onEvent({ type: 'data', payload: normalizeTerminalDataPayload(event.payload) })
     }),
-    listen('terminal://exit', (event) => {
+    listen(RUNTIME_CHANNELS.terminalExit, (event) => {
       onEvent({ type: 'exit', payload: normalizeTerminalExitPayload(event.payload) })
     }),
   ])

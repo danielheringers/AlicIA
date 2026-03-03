@@ -1,3 +1,8 @@
+import {
+  RUNTIME_CONTRACT_VERSION as GENERATED_RUNTIME_CONTRACT_VERSION,
+  RUNTIME_METHODS as GENERATED_RUNTIME_METHODS,
+} from '@/lib/tauri-bridge/generated/runtime-contract'
+
 export type ReasoningEffort =
   | 'none'
   | 'minimal'
@@ -40,59 +45,9 @@ export interface RuntimeStatusResponse {
   runtimeConfig: RuntimeCodexConfig
 }
 
-export const RUNTIME_METHODS = [
-  'thread.open',
-  'thread.close',
-  'thread.list',
-  'thread.read',
-  'thread.archive',
-  'thread.unarchive',
-  'thread.compact.start',
-  'thread.rollback',
-  'thread.fork',
-  'turn.run',
-  'review.start',
-  'turn.steer',
-  'turn.interrupt',
-  'approval.respond',
-  'user_input.respond',
-  'tool.call.dynamic',
-  'mcp.warmup',
-  'mcp.list',
-  'mcp.login',
-  'mcp.reload',
-  'app.list',
-  'account.read',
-  'account.login.start',
-  'account.logout',
-  'account.rate_limits.read',
-  'account.rateLimits.read',
-  'config.get',
-  'config.set',
-  'workspace.file.read',
-  'workspace.file.write',
-  'workspace.directory.list',
-  'workspace.directory.create',
-  'workspace.entry.rename',
-  'neuro.runtime.diagnose',
-  'neuro.search.objects',
-  'neuro.get.source',
-  'neuro.update.source',
-  'neuro.adt.server.list',
-  'neuro.adt.server.upsert',
-  'neuro.adt.server.remove',
-  'neuro.adt.server.select',
-  'neuro.adt.server.connect',
-  'neuro.adt.list.packages',
-  'neuro.adt.list.namespaces',
-  'neuro.adt.explorer.state.get',
-  'neuro.adt.explorer.state.patch',
-  'neuro.adt.list.objects',
-  'neuro.adt.list.package_inventory',
-  'neuro.ws.request',
-  'neuro.mcp.list_tools',
-  'neuro.mcp.invoke',
-] as const
+export const RUNTIME_CONTRACT_VERSION = GENERATED_RUNTIME_CONTRACT_VERSION
+
+export const RUNTIME_METHODS = GENERATED_RUNTIME_METHODS
 
 export type RuntimeMethod = (typeof RUNTIME_METHODS)[number]
 

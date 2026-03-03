@@ -124,6 +124,7 @@ Tipos produzidos pelo tradutor nativo (`src/codex_event_translator.rs`):
 - Subtipos de mudanca de arquivo: `add` (`src/codex_event_translator.rs:1273`), `delete` (`src/codex_event_translator.rs:1274`), `update` (`src/codex_event_translator.rs:1276`)
 
 Nota: `neuro_runtime` tambem escreve telemetria em stderr (`[neuro-telemetry]`), fora do barramento Tauri (`src/neuro_runtime.rs:620`, `src/neuro_runtime.rs:624`).
+Nota: no baseline atual nao existe emissao explicita do tipo `mcp.oauth_login.completed` no backend; o frontend trata esse tipo de forma defensiva.
 
 ## 3) Runtime method keys/capabilities
 

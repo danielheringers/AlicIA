@@ -16,6 +16,7 @@ mod codex_native_runtime;
 mod command_runtime;
 mod config_runtime;
 mod events_runtime;
+mod generated;
 mod launch_runtime;
 mod mcp_runtime;
 mod models_runtime;

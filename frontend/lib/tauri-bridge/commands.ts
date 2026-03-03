@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 
+import { RUNTIME_COMMANDS } from '@/lib/tauri-bridge/generated/runtime-contract'
 import type {
   CodexApprovalRespondRequest,
   CodexUserInputRespondRequest,
@@ -879,17 +880,17 @@ function unwrapNeuroResponse<T>(
 }
 
 export async function codexRuntimeStatus(): Promise<RuntimeStatusResponse> {
-  return invoke<RuntimeStatusResponse>('codex_runtime_status')
+  return invoke<RuntimeStatusResponse>(RUNTIME_COMMANDS.codexRuntimeStatus)
 }
 
 export async function codexRuntimeCapabilities(): Promise<RuntimeCapabilitiesResponse> {
-  return invoke<RuntimeCapabilitiesResponse>('codex_runtime_capabilities')
+  return invoke<RuntimeCapabilitiesResponse>(RUNTIME_COMMANDS.codexRuntimeCapabilities)
 }
 
 export async function neuroRuntimeDiagnose(): Promise<NeuroRuntimeDiagnoseResponse> {
   try {
     const response = await invoke<RawNeuroCommandResponse<RawNeuroRuntimeDiagnoseResponse>>(
-      'neuro_runtime_diagnose',
+      RUNTIME_COMMANDS.neuroRuntimeDiagnose,
     )
     return mapNeuroDiagnoseResponse(unwrapNeuroResponse(response))
   } catch (error) {
@@ -904,7 +905,7 @@ export async function neuroSearchObjects(
 ): Promise<NeuroAdtObjectSummary[]> {
   try {
     const response = await invoke<RawNeuroCommandResponse<RawNeuroAdtObjectSummary[]>>(
-      'neuro_search_objects',
+      RUNTIME_COMMANDS.neuroSearchObjects,
       {
         query,
         maxResults,
@@ -924,7 +925,7 @@ export async function neuroGetSource(
 ): Promise<NeuroAdtSourceResponse> {
   try {
     const response = await invoke<RawNeuroCommandResponse<RawNeuroAdtSourceResponse>>(
-      'neuro_get_source',
+      RUNTIME_COMMANDS.neuroGetSource,
       { objectUri, serverId },
     )
     const raw = unwrapNeuroResponse(response)
@@ -945,7 +946,7 @@ export async function neuroUpdateSource(
       server_id: request.serverId ?? null,
     }
     const response = await invoke<RawNeuroCommandResponse<RawNeuroAdtUpdateSourceResponse>>(
-      'neuro_update_source',
+      RUNTIME_COMMANDS.neuroUpdateSource,
       {
         request: payload,
       },
@@ -960,7 +961,7 @@ export async function neuroUpdateSource(
 export async function neuroAdtServerList(): Promise<NeuroAdtServerListResponse> {
   try {
     const response = await invoke<RawNeuroCommandResponse<unknown>>(
-      'neuro_adt_server_list',
+      RUNTIME_COMMANDS.neuroAdtServerList,
     )
     return mapNeuroServerListResponse(unwrapNeuroResponse(response))
   } catch (error) {
@@ -983,7 +984,7 @@ export async function neuroAdtServerUpsert(
     }
 
     const response = await invoke<RawNeuroCommandResponse<RawNeuroAdtServerRecord>>(
-      'neuro_adt_server_upsert',
+      RUNTIME_COMMANDS.neuroAdtServerUpsert,
       { request: payload },
     )
     const mapped = mapNeuroServerRecord(unwrapNeuroResponse(response))
@@ -999,7 +1000,7 @@ export async function neuroAdtServerUpsert(
 export async function neuroAdtServerRemove(serverId: string): Promise<void> {
   try {
     const response = await invoke<RawNeuroCommandResponse<Record<string, unknown>>>(
-      'neuro_adt_server_remove',
+      RUNTIME_COMMANDS.neuroAdtServerRemove,
       { serverId },
     )
     unwrapNeuroResponse(response)
@@ -1011,7 +1012,7 @@ export async function neuroAdtServerRemove(serverId: string): Promise<void> {
 export async function neuroAdtServerSelect(serverId: string): Promise<string> {
   try {
     const response = await invoke<RawNeuroCommandResponse<Record<string, unknown>>>(
-      'neuro_adt_server_select',
+      RUNTIME_COMMANDS.neuroAdtServerSelect,
       { serverId },
     )
     const payload = unwrapNeuroResponse(response)
@@ -1026,7 +1027,7 @@ export async function neuroAdtServerConnect(
 ): Promise<NeuroAdtServerConnectResponse> {
   try {
     const response = await invoke<RawNeuroCommandResponse<unknown>>(
-      'neuro_adt_server_connect',
+      RUNTIME_COMMANDS.neuroAdtServerConnect,
       { serverId },
     )
     return mapNeuroConnectResponse(serverId, unwrapNeuroResponse(response))
@@ -1040,7 +1041,7 @@ export async function neuroAdtListPackages(
 ): Promise<NeuroAdtPackageSummary[]> {
   try {
     const response = await invoke<RawNeuroCommandResponse<RawNeuroAdtPackageSummary[]>>(
-      'neuro_adt_list_packages',
+      RUNTIME_COMMANDS.neuroAdtListPackages,
       { serverId },
     )
     const raw = unwrapNeuroResponse(response)
@@ -1058,7 +1059,7 @@ export async function neuroAdtListNamespaces(
 ): Promise<NeuroAdtNamespaceSummary[]> {
   try {
     const response = await invoke<RawNeuroCommandResponse<RawNeuroAdtNamespaceSummary[]>>(
-      'neuro_adt_list_namespaces',
+      RUNTIME_COMMANDS.neuroAdtListNamespaces,
       { packageName, serverId },
     )
     const raw = unwrapNeuroResponse(response)
@@ -1075,7 +1076,7 @@ export async function neuroAdtExplorerStateGet(
 ): Promise<NeuroAdtExplorerState> {
   try {
     const response = await invoke<RawNeuroCommandResponse<RawNeuroAdtExplorerState>>(
-      'neuro_adt_explorer_state_get',
+      RUNTIME_COMMANDS.neuroAdtExplorerStateGet,
       { serverId },
     )
     return mapNeuroExplorerState(unwrapNeuroResponse(response))
@@ -1114,7 +1115,7 @@ export async function neuroAdtExplorerStatePatch(
       }
     }
     const response = await invoke<RawNeuroCommandResponse<RawNeuroAdtExplorerState>>(
-      'neuro_adt_explorer_state_patch',
+      RUNTIME_COMMANDS.neuroAdtExplorerStatePatch,
       {
         request: payload,
         serverId,
@@ -1142,7 +1143,7 @@ export async function neuroAdtListObjects(
     const response = await invoke<
       RawNeuroCommandResponse<RawNeuroAdtListObjectsWireResponse>
     >(
-      'neuro_adt_list_objects',
+      RUNTIME_COMMANDS.neuroAdtListObjects,
       { request: payload },
     )
     return mapNeuroListObjectsResponse(request, unwrapNeuroResponse(response))
@@ -1188,7 +1189,7 @@ export async function neuroAdtListObjects(
     try {
       const legacyResponse = await invoke<
         RawNeuroCommandResponse<RawNeuroAdtListObjectsWireResponse>
-      >('neuro_adt_list_objects', {
+      >(RUNTIME_COMMANDS.neuroAdtListObjects, {
         request: legacyPayload,
       })
       return mapNeuroListObjectsResponse(request, unwrapNeuroResponse(legacyResponse))
@@ -1211,7 +1212,7 @@ export async function neuroAdtListPackageInventory(
       server_id: request.serverId ?? null,
     }
     const response = await invoke<RawNeuroCommandResponse<RawNeuroAdtPackageInventoryResponse>>(
-      'neuro_adt_list_package_inventory',
+      RUNTIME_COMMANDS.neuroAdtListPackageInventory,
       { request: payload },
     )
     return mapNeuroPackageInventoryResponse(unwrapNeuroResponse(response))
@@ -1225,7 +1226,7 @@ export async function neuroWsRequest(
 ): Promise<NeuroWsMessageEnvelope> {
   try {
     const response = await invoke<RawNeuroCommandResponse<RawNeuroWsMessageEnvelope>>(
-      'neuro_ws_request',
+      RUNTIME_COMMANDS.neuroWsRequest,
       { request },
     )
     const raw = unwrapNeuroResponse(response)
@@ -1238,7 +1239,7 @@ export async function neuroWsRequest(
 export async function neuroListTools(): Promise<NeuroToolSpec[]> {
   try {
     const response = await invoke<RawNeuroCommandResponse<NeuroToolSpec[]>>(
-      'neuro_list_tools',
+      RUNTIME_COMMANDS.neuroListTools,
     )
     return unwrapNeuroResponse(response)
   } catch (error) {
@@ -1252,7 +1253,7 @@ export async function neuroInvokeTool(
 ): Promise<Record<string, unknown>> {
   try {
     const response = await invoke<RawNeuroCommandResponse<Record<string, unknown>>>(
-      'neuro_invoke_tool',
+      RUNTIME_COMMANDS.neuroInvokeTool,
       {
         toolName,
         arguments: argumentsPayload,
@@ -1265,11 +1266,11 @@ export async function neuroInvokeTool(
 }
 
 export async function loadCodexDefaultConfig(): Promise<RuntimeCodexConfig> {
-  return invoke<RuntimeCodexConfig>('load_codex_default_config')
+  return invoke<RuntimeCodexConfig>(RUNTIME_COMMANDS.loadCodexDefaultConfig)
 }
 
-const RUNTIME_SESSION_START_COMMAND = 'start_codex_session'
-const RUNTIME_SESSION_STOP_COMMAND = 'stop_codex_session'
+const RUNTIME_SESSION_START_COMMAND = RUNTIME_COMMANDS.startCodexSession
+const RUNTIME_SESSION_STOP_COMMAND = RUNTIME_COMMANDS.stopCodexSession
 
 export async function codexRuntimeSessionStart(
   config?: StartCodexSessionConfig,
@@ -1286,70 +1287,70 @@ export async function codexRuntimeSessionStop(): Promise<void> {
 export async function startCodexSession(
   config?: StartCodexSessionConfig,
 ): Promise<StartCodexSessionResponse> {
-  return invoke<StartCodexSessionResponse>('start_codex_session', { config })
+  return invoke<StartCodexSessionResponse>(RUNTIME_COMMANDS.startCodexSession, { config })
 }
 
 export async function stopCodexSession(): Promise<void> {
-  await invoke('stop_codex_session')
+  await invoke(RUNTIME_COMMANDS.stopCodexSession)
 }
 
 export async function codexTurnRun(
   request: CodexTurnRunRequest,
 ): Promise<CodexTurnRunResponse> {
-  return invoke<CodexTurnRunResponse>('codex_turn_run', { request })
+  return invoke<CodexTurnRunResponse>(RUNTIME_COMMANDS.codexTurnRun, { request })
 }
 
 export async function codexTurnSteer(
   request: CodexTurnSteerRequest,
 ): Promise<CodexTurnSteerResponse> {
-  return invoke<CodexTurnSteerResponse>('codex_turn_steer', { request })
+  return invoke<CodexTurnSteerResponse>(RUNTIME_COMMANDS.codexTurnSteer, { request })
 }
 
 export async function codexTurnInterrupt(
   request: CodexTurnInterruptRequest,
 ): Promise<CodexTurnInterruptResponse> {
-  return invoke<CodexTurnInterruptResponse>('codex_turn_interrupt', { request })
+  return invoke<CodexTurnInterruptResponse>(RUNTIME_COMMANDS.codexTurnInterrupt, { request })
 }
 export async function codexReviewStart(
   request: CodexReviewStartRequest,
 ): Promise<CodexReviewStartResponse> {
-  return invoke<CodexReviewStartResponse>('codex_review_start', { request })
+  return invoke<CodexReviewStartResponse>(RUNTIME_COMMANDS.codexReviewStart, { request })
 }
 
 export async function codexThreadOpen(
   threadId?: string,
 ): Promise<CodexThreadOpenResponse> {
-  return invoke<CodexThreadOpenResponse>('codex_thread_open', { threadId })
+  return invoke<CodexThreadOpenResponse>(RUNTIME_COMMANDS.codexThreadOpen, { threadId })
 }
 
 export async function codexThreadClose(
   request: CodexThreadCloseRequest,
 ): Promise<CodexThreadCloseResponse> {
-  return invoke<CodexThreadCloseResponse>('codex_thread_close', { request })
+  return invoke<CodexThreadCloseResponse>(RUNTIME_COMMANDS.codexThreadClose, { request })
 }
 
 export async function codexThreadList(
   request?: CodexThreadListRequest,
 ): Promise<CodexThreadListResponse> {
-  return invoke<CodexThreadListResponse>('codex_thread_list', { request })
+  return invoke<CodexThreadListResponse>(RUNTIME_COMMANDS.codexThreadList, { request })
 }
 
 export async function codexThreadRead(
   request: CodexThreadReadRequest,
 ): Promise<CodexThreadReadResponse> {
-  return invoke<CodexThreadReadResponse>('codex_thread_read', { request })
+  return invoke<CodexThreadReadResponse>(RUNTIME_COMMANDS.codexThreadRead, { request })
 }
 
 export async function codexThreadArchive(
   request: CodexThreadArchiveRequest,
 ): Promise<CodexThreadArchiveResponse> {
-  return invoke<CodexThreadArchiveResponse>('codex_thread_archive', { request })
+  return invoke<CodexThreadArchiveResponse>(RUNTIME_COMMANDS.codexThreadArchive, { request })
 }
 
 export async function codexThreadUnarchive(
   request: CodexThreadUnarchiveRequest,
 ): Promise<CodexThreadUnarchiveResponse> {
-  return invoke<CodexThreadUnarchiveResponse>('codex_thread_unarchive', {
+  return invoke<CodexThreadUnarchiveResponse>(RUNTIME_COMMANDS.codexThreadUnarchive, {
     request,
   })
 }
@@ -1357,7 +1358,7 @@ export async function codexThreadUnarchive(
 export async function codexThreadCompactStart(
   request: CodexThreadCompactStartRequest,
 ): Promise<CodexThreadCompactStartResponse> {
-  return invoke<CodexThreadCompactStartResponse>('codex_thread_compact_start', {
+  return invoke<CodexThreadCompactStartResponse>(RUNTIME_COMMANDS.codexThreadCompactStart, {
     request,
   })
 }
@@ -1365,63 +1366,63 @@ export async function codexThreadCompactStart(
 export async function codexThreadRollback(
   request: CodexThreadRollbackRequest,
 ): Promise<CodexThreadRollbackResponse> {
-  return invoke<CodexThreadRollbackResponse>('codex_thread_rollback', { request })
+  return invoke<CodexThreadRollbackResponse>(RUNTIME_COMMANDS.codexThreadRollback, { request })
 }
 
 export async function codexThreadFork(
   request: CodexThreadForkRequest,
 ): Promise<CodexThreadForkResponse> {
-  return invoke<CodexThreadForkResponse>('codex_thread_fork', { request })
+  return invoke<CodexThreadForkResponse>(RUNTIME_COMMANDS.codexThreadFork, { request })
 }
 
 export async function codexApprovalRespond(
   request: CodexApprovalRespondRequest,
 ): Promise<void> {
-  await invoke('codex_approval_respond', { request })
+  await invoke(RUNTIME_COMMANDS.codexApprovalRespond, { request })
 }
 
 export async function codexUserInputRespond(
   request: CodexUserInputRespondRequest,
 ): Promise<CodexUserInputRespondResponse> {
-  return invoke<CodexUserInputRespondResponse>('codex_user_input_respond', { request })
+  return invoke<CodexUserInputRespondResponse>(RUNTIME_COMMANDS.codexUserInputRespond, { request })
 }
 
 export async function sendCodexInput(text: string): Promise<void> {
-  await invoke('send_codex_input', { text })
+  await invoke(RUNTIME_COMMANDS.sendCodexInput, { text })
 }
 
 export async function updateCodexRuntimeConfig(
   config: RuntimeCodexConfig,
 ): Promise<RuntimeCodexConfig> {
-  return invoke<RuntimeCodexConfig>('update_codex_config', { config })
+  return invoke<RuntimeCodexConfig>(RUNTIME_COMMANDS.updateCodexConfig, { config })
 }
 
 export async function codexConfigGet(): Promise<RuntimeCodexConfig> {
-  return invoke<RuntimeCodexConfig>('codex_config_get')
+  return invoke<RuntimeCodexConfig>(RUNTIME_COMMANDS.codexConfigGet)
 }
 
 export async function codexConfigSet(
   patch: RuntimeCodexConfig,
 ): Promise<RuntimeCodexConfig> {
-  return invoke<RuntimeCodexConfig>('codex_config_set', { patch })
+  return invoke<RuntimeCodexConfig>(RUNTIME_COMMANDS.codexConfigSet, { patch })
 }
 
 export async function runCodexCommand(
   args: string[],
   cwd?: string,
 ): Promise<RunCodexCommandResponse> {
-  return invoke<RunCodexCommandResponse>('run_codex_command', { args, cwd })
+  return invoke<RunCodexCommandResponse>(RUNTIME_COMMANDS.runCodexCommand, { args, cwd })
 }
 
 
 export async function codexWorkspaceChanges(): Promise<WorkspaceChangesResponse> {
-  return invoke<WorkspaceChangesResponse>("git_workspace_changes")
+  return invoke<WorkspaceChangesResponse>(RUNTIME_COMMANDS.gitWorkspaceChanges)
 }
 
 export async function codexWorkspaceReadFile(
   request: CodexWorkspaceReadFileRequest,
 ): Promise<CodexWorkspaceReadFileResponse> {
-  return invoke<CodexWorkspaceReadFileResponse>('codex_workspace_read_file', {
+  return invoke<CodexWorkspaceReadFileResponse>(RUNTIME_COMMANDS.codexWorkspaceReadFile, {
     request,
   })
 }
@@ -1429,7 +1430,7 @@ export async function codexWorkspaceReadFile(
 export async function codexWorkspaceWriteFile(
   request: CodexWorkspaceWriteFileRequest,
 ): Promise<CodexWorkspaceWriteFileResponse> {
-  return invoke<CodexWorkspaceWriteFileResponse>('codex_workspace_write_file', {
+  return invoke<CodexWorkspaceWriteFileResponse>(RUNTIME_COMMANDS.codexWorkspaceWriteFile, {
     request,
   })
 }
@@ -1438,7 +1439,7 @@ export async function codexWorkspaceCreateDirectory(
   request: CodexWorkspaceCreateDirectoryRequest,
 ): Promise<CodexWorkspaceCreateDirectoryResponse> {
   return invoke<CodexWorkspaceCreateDirectoryResponse>(
-    'codex_workspace_create_directory',
+    RUNTIME_COMMANDS.codexWorkspaceCreateDirectory,
     {
       request,
     },
@@ -1448,7 +1449,7 @@ export async function codexWorkspaceCreateDirectory(
 export async function codexWorkspaceRenameEntry(
   request: CodexWorkspaceRenameEntryRequest,
 ): Promise<CodexWorkspaceRenameEntryResponse> {
-  return invoke<CodexWorkspaceRenameEntryResponse>('codex_workspace_rename_entry', {
+  return invoke<CodexWorkspaceRenameEntryResponse>(RUNTIME_COMMANDS.codexWorkspaceRenameEntry, {
     request,
   })
 }
@@ -1456,7 +1457,7 @@ export async function codexWorkspaceRenameEntry(
 export async function codexWorkspaceListDirectory(
   request?: CodexWorkspaceListDirectoryRequest,
 ): Promise<CodexWorkspaceListDirectoryResponse> {
-  return invoke<CodexWorkspaceListDirectoryResponse>('codex_workspace_list_directory', {
+  return invoke<CodexWorkspaceListDirectoryResponse>(RUNTIME_COMMANDS.codexWorkspaceListDirectory, {
     request,
   })
 }
@@ -1464,69 +1465,69 @@ export async function codexWorkspaceListDirectory(
 export async function gitCommitApprovedReview(
   request: GitCommitApprovedReviewRequest,
 ): Promise<GitCommitApprovedReviewResponse> {
-  return invoke<GitCommitApprovedReviewResponse>('git_commit_approved_review', {
+  return invoke<GitCommitApprovedReviewResponse>(RUNTIME_COMMANDS.gitCommitApprovedReview, {
     request,
   })
 }
 
 export async function codexModelsList(): Promise<CodexModelListResponse> {
-  return invoke<CodexModelListResponse>('codex_models_list')
+  return invoke<CodexModelListResponse>(RUNTIME_COMMANDS.codexModelsList)
 }
 
 export async function codexWaitForMcpStartup(): Promise<McpStartupWarmupResponse> {
-  return invoke<McpStartupWarmupResponse>('codex_wait_for_mcp_startup')
+  return invoke<McpStartupWarmupResponse>(RUNTIME_COMMANDS.codexWaitForMcpStartup)
 }
 
 export async function codexMcpList(): Promise<McpServerListResponse> {
-  return invoke<McpServerListResponse>('codex_mcp_list')
+  return invoke<McpServerListResponse>(RUNTIME_COMMANDS.codexMcpList)
 }
 
 export async function codexAppList(
   request?: AppListRequest,
 ): Promise<AppListResponse> {
-  return invoke<AppListResponse>('codex_app_list', { request })
+  return invoke<AppListResponse>(RUNTIME_COMMANDS.codexAppList, { request })
 }
 
 export async function codexAccountRead(
   request?: AccountReadRequest,
 ): Promise<AccountReadResponse> {
-  return invoke<AccountReadResponse>('codex_account_read', { request })
+  return invoke<AccountReadResponse>(RUNTIME_COMMANDS.codexAccountRead, { request })
 }
 
 export async function codexAccountLoginStart(
   request: AccountLoginStartRequest,
 ): Promise<AccountLoginStartResponse> {
-  return invoke<AccountLoginStartResponse>('codex_account_login_start', { request })
+  return invoke<AccountLoginStartResponse>(RUNTIME_COMMANDS.codexAccountLoginStart, { request })
 }
 
 export async function codexAccountLogout(): Promise<AccountLogoutResponse> {
-  return invoke<AccountLogoutResponse>('codex_account_logout')
+  return invoke<AccountLogoutResponse>(RUNTIME_COMMANDS.codexAccountLogout)
 }
 
 export async function codexAccountRateLimitsRead(): Promise<AccountRateLimitsReadResponse> {
-  return invoke<AccountRateLimitsReadResponse>('codex_account_rate_limits_read')
+  return invoke<AccountRateLimitsReadResponse>(RUNTIME_COMMANDS.codexAccountRateLimitsRead)
 }
 export async function codexMcpLogin(
   request: McpLoginRequest,
 ): Promise<McpLoginResponse> {
-  return invoke<McpLoginResponse>('codex_mcp_login', { request })
+  return invoke<McpLoginResponse>(RUNTIME_COMMANDS.codexMcpLogin, { request })
 }
 
 export async function codexMcpReload(): Promise<McpReloadResponse> {
-  return invoke<McpReloadResponse>('codex_mcp_reload')
+  return invoke<McpReloadResponse>(RUNTIME_COMMANDS.codexMcpReload)
 }
 
 export async function terminalCreate(
   request?: TerminalCreateRequest,
 ): Promise<TerminalCreateResponse> {
-  return invoke<TerminalCreateResponse>('terminal_create', { request })
+  return invoke<TerminalCreateResponse>(RUNTIME_COMMANDS.terminalCreate, { request })
 }
 
 export async function terminalWrite(
   terminalId: number,
   data: string,
 ): Promise<void> {
-  await invoke('terminal_write', {
+  await invoke(RUNTIME_COMMANDS.terminalWrite, {
     request: { terminalId, data },
   })
 }
@@ -1536,34 +1537,34 @@ export async function terminalResize(
   cols: number,
   rows: number,
 ): Promise<void> {
-  await invoke('terminal_resize', {
+  await invoke(RUNTIME_COMMANDS.terminalResize, {
     request: { terminalId, cols, rows },
   })
 }
 
 export async function terminalKill(terminalId: number): Promise<void> {
-  await invoke('terminal_kill', {
+  await invoke(RUNTIME_COMMANDS.terminalKill, {
     request: { terminalId },
   })
 }
 
 export async function pickImageFile(): Promise<string | null> {
-  return invoke<string | null>('pick_image_file')
+  return invoke<string | null>(RUNTIME_COMMANDS.pickImageFile)
 }
 
 export async function pickMentionFile(): Promise<string | null> {
-  return invoke<string | null>('pick_mention_file')
+  return invoke<string | null>(RUNTIME_COMMANDS.pickMentionFile)
 }
 
 export async function pickWorkspaceFolder(): Promise<string | null> {
-  return invoke<string | null>('pick_workspace_folder')
+  return invoke<string | null>(RUNTIME_COMMANDS.pickWorkspaceFolder)
 }
 
 export async function codexHelpSnapshot(): Promise<CodexHelpSnapshot> {
-  return invoke<CodexHelpSnapshot>('codex_help_snapshot')
+  return invoke<CodexHelpSnapshot>(RUNTIME_COMMANDS.codexHelpSnapshot)
 }
 
 export async function resizeCodexPty(rows: number, cols: number): Promise<void> {
-  await invoke('resize_codex_pty', { rows, cols })
+  await invoke(RUNTIME_COMMANDS.resizeCodexPty, { rows, cols })
 }
 

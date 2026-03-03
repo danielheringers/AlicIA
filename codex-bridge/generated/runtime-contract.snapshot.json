@@ -1,0 +1,292 @@
+{
+  "contractVersion": "alicia.runtime.capabilities.v2",
+  "runtimeMethods": [
+    {
+      "name": "thread.open",
+      "aliases": []
+    },
+    {
+      "name": "thread.close",
+      "aliases": []
+    },
+    {
+      "name": "thread.list",
+      "aliases": []
+    },
+    {
+      "name": "thread.read",
+      "aliases": []
+    },
+    {
+      "name": "thread.archive",
+      "aliases": []
+    },
+    {
+      "name": "thread.unarchive",
+      "aliases": []
+    },
+    {
+      "name": "thread.compact.start",
+      "aliases": []
+    },
+    {
+      "name": "thread.rollback",
+      "aliases": []
+    },
+    {
+      "name": "thread.fork",
+      "aliases": []
+    },
+    {
+      "name": "turn.run",
+      "aliases": []
+    },
+    {
+      "name": "review.start",
+      "aliases": []
+    },
+    {
+      "name": "turn.steer",
+      "aliases": []
+    },
+    {
+      "name": "turn.interrupt",
+      "aliases": []
+    },
+    {
+      "name": "approval.respond",
+      "aliases": []
+    },
+    {
+      "name": "user_input.respond",
+      "aliases": []
+    },
+    {
+      "name": "tool.call.dynamic",
+      "aliases": []
+    },
+    {
+      "name": "mcp.warmup",
+      "aliases": []
+    },
+    {
+      "name": "mcp.list",
+      "aliases": []
+    },
+    {
+      "name": "mcp.login",
+      "aliases": []
+    },
+    {
+      "name": "mcp.reload",
+      "aliases": []
+    },
+    {
+      "name": "app.list",
+      "aliases": []
+    },
+    {
+      "name": "account.read",
+      "aliases": []
+    },
+    {
+      "name": "account.login.start",
+      "aliases": []
+    },
+    {
+      "name": "account.logout",
+      "aliases": []
+    },
+    {
+      "name": "account.rate_limits.read",
+      "aliases": [
+        "account.rateLimits.read"
+      ]
+    },
+    {
+      "name": "account.rateLimits.read",
+      "aliases": [],
+      "aliasOf": "account.rate_limits.read"
+    },
+    {
+      "name": "config.get",
+      "aliases": []
+    },
+    {
+      "name": "config.set",
+      "aliases": []
+    },
+    {
+      "name": "workspace.file.read",
+      "aliases": []
+    },
+    {
+      "name": "workspace.file.write",
+      "aliases": []
+    },
+    {
+      "name": "workspace.directory.create",
+      "aliases": []
+    },
+    {
+      "name": "workspace.directory.list",
+      "aliases": []
+    },
+    {
+      "name": "workspace.entry.rename",
+      "aliases": []
+    },
+    {
+      "name": "neuro.runtime.diagnose",
+      "aliases": []
+    },
+    {
+      "name": "neuro.search.objects",
+      "aliases": []
+    },
+    {
+      "name": "neuro.get.source",
+      "aliases": []
+    },
+    {
+      "name": "neuro.update.source",
+      "aliases": []
+    },
+    {
+      "name": "neuro.adt.server.list",
+      "aliases": []
+    },
+    {
+      "name": "neuro.adt.server.upsert",
+      "aliases": []
+    },
+    {
+      "name": "neuro.adt.server.remove",
+      "aliases": []
+    },
+    {
+      "name": "neuro.adt.server.select",
+      "aliases": []
+    },
+    {
+      "name": "neuro.adt.server.connect",
+      "aliases": []
+    },
+    {
+      "name": "neuro.adt.list.packages",
+      "aliases": []
+    },
+    {
+      "name": "neuro.adt.list.namespaces",
+      "aliases": []
+    },
+    {
+      "name": "neuro.adt.explorer.state.get",
+      "aliases": []
+    },
+    {
+      "name": "neuro.adt.explorer.state.patch",
+      "aliases": []
+    },
+    {
+      "name": "neuro.adt.list.objects",
+      "aliases": []
+    },
+    {
+      "name": "neuro.adt.list.package_inventory",
+      "aliases": []
+    },
+    {
+      "name": "neuro.ws.request",
+      "aliases": []
+    },
+    {
+      "name": "neuro.mcp.list_tools",
+      "aliases": []
+    },
+    {
+      "name": "neuro.mcp.invoke",
+      "aliases": []
+    }
+  ],
+  "tauriCommands": [
+    "start_codex_session",
+    "codex_turn_run",
+    "codex_thread_open",
+    "codex_thread_close",
+    "codex_thread_list",
+    "codex_thread_read",
+    "codex_thread_archive",
+    "codex_thread_unarchive",
+    "codex_thread_compact_start",
+    "codex_thread_rollback",
+    "codex_thread_fork",
+    "codex_review_start",
+    "codex_turn_steer",
+    "codex_turn_interrupt",
+    "codex_approval_respond",
+    "codex_user_input_respond",
+    "update_codex_config",
+    "codex_config_get",
+    "codex_config_set",
+    "codex_runtime_status",
+    "codex_runtime_capabilities",
+    "codex_native_runtime_diagnose",
+    "neuro_runtime_diagnose",
+    "neuro_search_objects",
+    "neuro_get_source",
+    "neuro_update_source",
+    "neuro_adt_server_list",
+    "neuro_adt_server_upsert",
+    "neuro_adt_server_remove",
+    "neuro_adt_server_select",
+    "neuro_adt_server_connect",
+    "neuro_adt_list_packages",
+    "neuro_adt_list_namespaces",
+    "neuro_adt_explorer_state_get",
+    "neuro_adt_explorer_state_patch",
+    "neuro_adt_list_objects",
+    "neuro_adt_list_package_inventory",
+    "neuro_ws_request",
+    "neuro_list_tools",
+    "neuro_invoke_tool",
+    "load_codex_default_config",
+    "send_codex_input",
+    "stop_codex_session",
+    "resize_codex_pty",
+    "terminal_create",
+    "terminal_write",
+    "terminal_resize",
+    "terminal_kill",
+    "run_codex_command",
+    "git_commit_approved_review",
+    "git_workspace_changes",
+    "codex_workspace_read_file",
+    "codex_workspace_write_file",
+    "codex_workspace_create_directory",
+    "codex_workspace_list_directory",
+    "codex_workspace_rename_entry",
+    "codex_models_list",
+    "codex_app_list",
+    "codex_account_read",
+    "codex_account_login_start",
+    "codex_account_logout",
+    "codex_account_rate_limits_read",
+    "codex_mcp_list",
+    "codex_mcp_login",
+    "codex_mcp_reload",
+    "codex_wait_for_mcp_startup",
+    "pick_workspace_folder",
+    "pick_image_file",
+    "pick_mention_file",
+    "codex_help_snapshot"
+  ],
+  "tauriEventChannels": [
+    "codex://stdout",
+    "codex://stderr",
+    "codex://lifecycle",
+    "codex://event",
+    "terminal://data",
+    "terminal://exit"
+  ]
+}
