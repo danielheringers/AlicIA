@@ -50,6 +50,7 @@ Excluido:
 - [x] (2026-03-04) Fase 4 (slice 11): extracao do parsing/normalizacao de review-start para application.
 - [x] (2026-03-04) Fase 4 (slice 12): extracao do roteamento slash-status para domain-application-infra.
 - [x] (2026-03-04) Fase 4 (slice 13): consolidacao de testes golden do contrato textual /status (backend+frontend).
+- [x] (2026-03-04) Fase 4 (slice 14): planificacao send_codex_input extraida para application (runtime executor).
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
 
@@ -827,6 +828,50 @@ Revisao tecnica final:
 Resultado:
 1. Slice 13 da Fase 4 concluido sem blocker de merge.
 2. Contrato textual `/status` ficou protegido por testes determinísticos nos dois lados (backend e frontend).
+## Fase 4 Slice 14 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-04.
+2. Objetivo: explicitar a politica de decisao de `send_codex_input` em `application`, mantendo `session_turn_runtime` como executor dos side-effects.
+3. Escopo do slice:
+   - criar `SendCodexInputPlan` na camada application
+   - mover validacao/normalizacao de prompt e decisao de ramos para use-case
+   - preservar canais/comportamentos externos (`stderr`, `stdout`, fallback `turn.run`)
+
+Entregas:
+1. Use-cases expandidos:
+   - `backend/src/application/session_turn/use_cases.rs`
+2. Runtime simplificado:
+   - `backend/src/session_turn_runtime.rs`
+3. Testes unitarios adicionados para matriz de decisao:
+   - prompt vazio
+   - slash nao suportado
+   - `/status` case-insensitive
+   - prompt normal
+
+Validacao executada:
+1. `cd alicia/backend && cargo fmt --all -- --check` -> OK.
+2. `cd alicia/backend && cargo check` -> OK.
+3. `cd alicia/backend && cargo test` -> OK (`203 passed; 0 failed`).
+4. `cd alicia/backend && cargo clippy --all-targets --all-features -- -D warnings` -> OK.
+5. `node alicia/codex-bridge/generators/check-runtime-contract.mjs` -> OK (`runtimeMethods=51`, `tauriCommands=70`, `tauriEventChannels=6`).
+6. Verificacao de contrato/assinaturas:
+   - sem drift em `backend/src/interface/tauri/commands/session_turn.rs`
+   - sem drift em `backend/src/interface/tauri/dto/session_turn.rs`
+   - sem alteracao em `alicia/codex-bridge/schema/runtime-contract.json`
+
+Revisao tecnica final:
+1. Sem findings de severidade alta/media/baixa.
+2. Side-effects/canais preservados:
+   - slash nao suportado -> `stderr + Ok`
+   - `/status` -> `stdout + Ok`
+   - prompt normal -> `schedule_turn_run`
+3. Riscos residuais baixos:
+   - faltam testes de integracao de `send_codex_input_impl` assertando side-effects no runtime (hoje foco maior em testes do planner/use-case).
+
+Resultado:
+1. Slice 14 da Fase 4 concluido sem blocker de merge.
+2. `send_codex_input` passou a seguir padrao plan-first com runtime executor e lock de config adiado para ramo `/status`.
 ## Current Architecture Snapshot (Key Risks)
 
 1. Frontend com `god component` em `app/page.tsx` concentrando UI + fluxo + regras.
@@ -1179,4 +1224,14 @@ Fase 4 (slice 13):
    - ruido de warnings de rustfmt (config nightly) permanece como divida de tooling.
 4. Ajuste para continuidade da Fase 4:
    - retomar recorte funcional de padronizacao de erros/side-effects em `send_codex_input` com seguranca de contrato ja reforcada.
+Fase 4 (slice 14):
+1. Resultado entregue: `send_codex_input` migrado para padrao plan-first em application, mantendo runtime como executor dos side-effects.
+2. Incidentes/regressoes:
+   - sem findings de severidade alta/media/baixa na revisao final;
+   - contrato Tauri preservado sem drift em comandos/DTOs e sem mudanca de schema.
+3. Riscos residuais:
+   - faltam testes de integracao de runtime para assertar emissao de `stdout/stderr` por ramo;
+   - warnings de rustfmt por config nightly seguem como divida de tooling.
+4. Ajuste para continuidade da Fase 4:
+   - priorizar consolidacao de testes de integracao de `send_codex_input_impl` e avaliar padronizacao incremental de canais de erro/feedback sem quebrar UX.
 

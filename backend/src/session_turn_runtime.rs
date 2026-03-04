@@ -1920,13 +1920,7 @@ pub(crate) async fn send_codex_input_impl(
     state: State<'_, AppState>,
     text: String,
 ) -> Result<(), String> {
-    let prompt = text.trim_end_matches(['\r', '\n']).to_string();
-    if prompt.trim().is_empty() {
-        return Err("cannot send empty input".to_string());
-    }
-
-    let runtime_config = lock_runtime_config(state.inner())?.clone();
-    let input_action = session_turn_use_cases::decide_send_codex_input_action(&prompt);
+    let plan = session_turn_use_cases::plan_send_codex_input(&text)?;
 
     let (session_id, pid, thread_id, cwd, binary, transport, slash_status_requested) = {
         let mut guard = lock_active_session(state.inner())?;
@@ -1938,8 +1932,12 @@ pub(crate) async fn send_codex_input_impl(
             return Err("codex session is still processing the previous turn".to_string());
         }
 
-        match &input_action {
-            session_turn_use_cases::SendCodexInputAction::RenderStatus => (
+        match &plan {
+            session_turn_use_cases::SendCodexInputPlan::RejectUnsupportedSlash { message } => {
+                emit_stderr(&app, active.session_id, message.clone());
+                return Ok(());
+            }
+            session_turn_use_cases::SendCodexInputPlan::RenderStatus => (
                 active.session_id,
                 active.pid,
                 active.thread_id.clone(),
@@ -1948,7 +1946,7 @@ pub(crate) async fn send_codex_input_impl(
                 active.transport(),
                 true,
             ),
-            session_turn_use_cases::SendCodexInputAction::ForwardTurnRun => (
+            session_turn_use_cases::SendCodexInputPlan::ForwardTurnRun { .. } => (
                 active.session_id,
                 active.pid,
                 active.thread_id.clone(),
@@ -1957,14 +1955,11 @@ pub(crate) async fn send_codex_input_impl(
                 active.transport(),
                 false,
             ),
-            session_turn_use_cases::SendCodexInputAction::RejectUnsupportedSlash { message } => {
-                emit_stderr(&app, active.session_id, message.clone());
-                return Ok(());
-            }
         }
     };
 
     if slash_status_requested {
+        let runtime_config = lock_runtime_config(state.inner())?.clone();
         let chunk = build_non_tui_status_snapshot(StatusSnapshotRequest {
             session_id,
             pid,
@@ -1977,6 +1972,15 @@ pub(crate) async fn send_codex_input_impl(
         emit_stdout(&app, session_id, chunk);
         return Ok(());
     }
+
+    let prompt = match plan {
+        session_turn_use_cases::SendCodexInputPlan::ForwardTurnRun { prompt } => prompt,
+        session_turn_use_cases::SendCodexInputPlan::RenderStatus
+        | session_turn_use_cases::SendCodexInputPlan::RejectUnsupportedSlash { .. } => {
+            return Ok(());
+        }
+    };
+
     let request = CodexTurnRunRequest {
         thread_id,
         input_items: vec![CodexInputItem {
