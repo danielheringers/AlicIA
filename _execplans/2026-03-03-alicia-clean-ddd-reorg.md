@@ -42,6 +42,7 @@ Excluido:
 - [x] (2026-03-04) Fase 4 (slice 3): recorte ADT/Neuro (server registry/select/connect) extraido para application/domain/infrastructure.
 - [x] (2026-03-04) Fase 4 (slice 4): desacoplamento neuro_adt de neuro_runtime com contracts/ports/tipos proprios.
 - [x] (2026-03-04) Fase 4 (slice 5): extracao Session/Thread/Review (thread list/read + review validation) para clean layers.
+- [x] (2026-03-04) Fase 4 (slice 6): shared thread catalog extraido para runtime_bridge com desacoplamento de session_turn_runtime.
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
 
@@ -481,12 +482,57 @@ Revisao tecnica final:
 Resultado:
 1. Slice 5 da Fase 4 concluido sem blocker de merge.
 2. Fase 4 continua com proxima prioridade em reduzir acoplamento residual deste adapter e extrair fluxos mutaveis restantes de Session/Thread/Review.
+## Fase 4 Slice 6 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-04.
+2. Objetivo: remover acoplamento residual entre `session_thread_catalog` e helpers de `session_turn_runtime` via modulo neutro em `infrastructure/runtime_bridge`.
+3. Escopo do slice:
+   - criacao de shared module para config/mapeamentos de thread list/read
+   - migracao de `session_thread_catalog` para dependencia direta do shared module
+   - manutencao de wrappers finos em `session_turn_runtime` sem alterar assinatura externa
+
+Entregas:
+1. Shared module criado:
+   - `backend/src/infrastructure/runtime_bridge/session_thread_shared.rs`
+2. Adapter atualizado:
+   - `backend/src/infrastructure/runtime_bridge/session_thread_catalog.rs`
+   - paginacao refatorada para loader injetado (testavel)
+3. Exports atualizados:
+   - `backend/src/infrastructure/runtime_bridge/mod.rs`
+4. Ajuste de visibilidade:
+   - wrappers legados em `session_turn_runtime.rs` reduzidos para privados (sem `pub(crate)`) para diminuir superficie de acoplamento
+5. Testes adicionados/expandidos no adapter:
+   - paginacao multipagina com stop em cursor repetido
+   - filtros (`source/cwd`) e forwarding de model provider
+   - fallback de summary sem rollout path (via shared module)
+
+Validacao executada:
+1. `cd alicia/backend && cargo fmt --all -- --check` -> OK.
+2. `cd alicia/backend && cargo check` -> OK.
+3. `cd alicia/backend && cargo test` -> OK (`157 passed; 0 failed`).
+4. `cd alicia/backend && cargo clippy --all-targets --all-features -- -D warnings` -> OK.
+5. `node alicia/codex-bridge/generators/check-runtime-contract.mjs` -> OK (`runtimeMethods=51`, `tauriCommands=70`, `tauriEventChannels=6`).
+6. Verificacao read-only:
+   - `session_thread_catalog` sem dependencia direta de `session_turn_runtime`
+   - sem mudancas em `backend/src/interface/tauri/commands/session_turn.rs`
+   - sem mudancas em `backend/src/interface/tauri/dto/session_turn.rs`
+
+Revisao tecnica final:
+1. Sem findings de severidade alta/media.
+2. Findings de baixa severidade registrados:
+   - gaps de teste adicional para `read_thread` (caminhos rollout/fallback/not found)
+   - branch `archived` e mapeamento de erro de producao ainda sem teste dedicado
+
+Resultado:
+1. Slice 6 da Fase 4 concluido sem blocker de merge.
+2. Acoplamento residual do adapter com `session_turn_runtime` foi removido no caminho principal.
 ## Current Architecture Snapshot (Key Risks)
 
 1. Frontend com `god component` em `app/page.tsx` concentrando UI + fluxo + regras.
 2. Componentes de UI sem import direto de `tauri-bridge` nos painéis priorizados da Fase 2; ainda existe acoplamento residual via adapter concreto em alguns fluxos.
 3. `main.rs` agora esta focado em bootstrap/estado/registro de handlers; comandos e DTOs foram movidos para `interface/tauri`.
-4. `session_turn_runtime.rs` iniciou decomposicao (thread list/read e review validation extraidos), mas ainda concentra fluxos mutaveis; `command_runtime.rs` e `neuro_runtime.rs` seguem avancando com blocos residuais especificos.
+4. `session_turn_runtime.rs` avancou na decomposicao (thread list/read + shared helpers extraidos), mas ainda concentra fluxos mutaveis; `command_runtime.rs` e `neuro_runtime.rs` seguem com blocos residuais especificos.
 5. Contrato runtime duplicado entre frontend e backend.
 
 ## Target Architecture
@@ -752,3 +798,4 @@ Fase 4 (slice 5):
    - faltam testes diretos de adapter para cenarios avancados de paginacao/filtros em rollout real.
 4. Ajuste para continuidade da Fase 4:
    - extrair helpers compartilhados para modulo neutro e seguir com fluxos mutaveis de Session/Thread/Review.
+
