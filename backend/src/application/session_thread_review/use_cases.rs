@@ -1,6 +1,15 @@
 use tauri::State;
 
-use crate::domain::session_thread_review::{review_policy, thread_query};
+#[cfg(feature = "native-codex-runtime")]
+use codex_protocol::protocol::{ExecPolicyAmendment, Op, ReviewDecision};
+#[cfg(feature = "native-codex-runtime")]
+use codex_protocol::request_user_input::{RequestUserInputAnswer, RequestUserInputResponse};
+#[cfg(feature = "native-codex-runtime")]
+use serde_json::{json, Value};
+#[cfg(feature = "native-codex-runtime")]
+use std::collections::HashMap;
+
+use crate::domain::session_thread_review::{interaction_policy, review_policy, thread_query};
 use crate::infrastructure::runtime_bridge::session_thread_catalog::{self, ThreadListQuery};
 use crate::interface::tauri::dto::{
     CodexReviewStartRequest, CodexThreadListRequest, CodexThreadListResponse,
@@ -10,6 +19,28 @@ use crate::{lock_active_session, AppState};
 
 const DEFAULT_PAGE_SIZE: usize = 25;
 const MAX_PAGE_SIZE: usize = 100;
+
+#[cfg(feature = "native-codex-runtime")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ApprovalPendingKind {
+    CommandExecution,
+    FileChange,
+}
+
+#[cfg(feature = "native-codex-runtime")]
+#[derive(Debug)]
+pub(crate) struct ApprovalResponsePlan {
+    pub(crate) op: Op,
+    pub(crate) resolved_event: Value,
+}
+
+#[cfg(feature = "native-codex-runtime")]
+#[derive(Debug)]
+pub(crate) struct UserInputResponsePlan {
+    pub(crate) op: Op,
+    pub(crate) resolved_event: Value,
+    pub(crate) decision: String,
+}
 
 fn requested_page_size(limit: Option<u32>) -> usize {
     limit
@@ -22,6 +53,177 @@ pub(crate) fn validate_review_start_request(
     request: &CodexReviewStartRequest,
 ) -> Result<(), String> {
     review_policy::validate_review_start(request.target.as_ref(), request.delivery.as_deref())
+}
+
+#[cfg(feature = "native-codex-runtime")]
+fn approval_kind_label(kind: ApprovalPendingKind) -> &'static str {
+    match kind {
+        ApprovalPendingKind::CommandExecution => "command_execution",
+        ApprovalPendingKind::FileChange => "file_change",
+    }
+}
+
+#[cfg(feature = "native-codex-runtime")]
+fn to_domain_approval_kind(kind: ApprovalPendingKind) -> interaction_policy::ApprovalKind {
+    match kind {
+        ApprovalPendingKind::CommandExecution => interaction_policy::ApprovalKind::CommandExecution,
+        ApprovalPendingKind::FileChange => interaction_policy::ApprovalKind::FileChange,
+    }
+}
+
+#[cfg(feature = "native-codex-runtime")]
+fn to_review_decision(decision: interaction_policy::ApprovalDecision) -> ReviewDecision {
+    match decision {
+        interaction_policy::ApprovalDecision::Approved => ReviewDecision::Approved,
+        interaction_policy::ApprovalDecision::ApprovedForSession => {
+            ReviewDecision::ApprovedForSession
+        }
+        interaction_policy::ApprovalDecision::Denied => ReviewDecision::Denied,
+        interaction_policy::ApprovalDecision::Abort => ReviewDecision::Abort,
+        interaction_policy::ApprovalDecision::ApprovedExecpolicyAmendment {
+            proposed_execpolicy_amendment,
+        } => ReviewDecision::ApprovedExecpolicyAmendment {
+            proposed_execpolicy_amendment: ExecPolicyAmendment::new(proposed_execpolicy_amendment),
+        },
+    }
+}
+
+#[cfg(feature = "native-codex-runtime")]
+pub(crate) fn plan_approval_response(
+    action_id: &str,
+    pending_kind: ApprovalPendingKind,
+    pending_call_id: &str,
+    pending_turn_id: &str,
+    decision: &str,
+    remember: bool,
+    execpolicy_amendment: Option<Vec<String>>,
+) -> Result<ApprovalResponsePlan, String> {
+    let normalized_execpolicy_amendment =
+        interaction_policy::normalize_execpolicy_amendment(execpolicy_amendment);
+    let domain_decision = interaction_policy::resolve_approval_decision(
+        to_domain_approval_kind(pending_kind),
+        decision,
+        remember,
+        &normalized_execpolicy_amendment,
+    )?;
+    let review_decision = to_review_decision(domain_decision);
+    let decision_label = review_decision.to_opaque_string().to_string();
+
+    let op = match pending_kind {
+        ApprovalPendingKind::CommandExecution => Op::ExecApproval {
+            id: pending_call_id.to_string(),
+            turn_id: Some(pending_turn_id.to_string()).filter(|value| !value.trim().is_empty()),
+            decision: review_decision,
+        },
+        ApprovalPendingKind::FileChange => Op::PatchApproval {
+            id: pending_call_id.to_string(),
+            decision: review_decision,
+        },
+    };
+
+    Ok(ApprovalResponsePlan {
+        op,
+        resolved_event: json!({
+            "type": "approval.resolved",
+            "action_id": action_id,
+            "kind": approval_kind_label(pending_kind),
+            "decision": decision_label,
+        }),
+    })
+}
+
+#[cfg(feature = "native-codex-runtime")]
+fn build_user_input_resolved_payload(
+    action_id: &str,
+    pending_thread_id: &str,
+    pending_turn_id: &str,
+    pending_call_id: &str,
+    outcome: &str,
+) -> Value {
+    let mut resolved_payload = serde_json::Map::new();
+    resolved_payload.insert(
+        "type".to_string(),
+        Value::String("user_input.resolved".to_string()),
+    );
+    resolved_payload.insert(
+        "action_id".to_string(),
+        Value::String(action_id.to_string()),
+    );
+    resolved_payload.insert(
+        "thread_id".to_string(),
+        Value::String(pending_thread_id.to_string()),
+    );
+    resolved_payload.insert(
+        "turn_id".to_string(),
+        Value::String(pending_turn_id.to_string()),
+    );
+    resolved_payload.insert(
+        "item_id".to_string(),
+        Value::String(pending_call_id.to_string()),
+    );
+    resolved_payload.insert("outcome".to_string(), Value::String(outcome.to_string()));
+    if outcome == "cancelled" {
+        resolved_payload.insert(
+            "error".to_string(),
+            Value::String("user input cancelled by user".to_string()),
+        );
+    }
+    Value::Object(resolved_payload)
+}
+
+#[cfg(feature = "native-codex-runtime")]
+fn to_protocol_answers(
+    answers: HashMap<String, interaction_policy::UserInputAnswer>,
+) -> HashMap<String, RequestUserInputAnswer> {
+    answers
+        .into_iter()
+        .map(|(question_id, answer)| {
+            (
+                question_id,
+                RequestUserInputAnswer {
+                    answers: answer.answers,
+                },
+            )
+        })
+        .collect()
+}
+
+#[cfg(feature = "native-codex-runtime")]
+pub(crate) fn plan_user_input_response(
+    action_id: &str,
+    pending_thread_id: &str,
+    pending_turn_id: &str,
+    pending_call_id: &str,
+    decision: &str,
+    answers: HashMap<String, Value>,
+) -> Result<UserInputResponsePlan, String> {
+    let user_decision = interaction_policy::parse_user_input_decision(decision)?;
+    let response_id =
+        interaction_policy::resolve_user_input_response_id(pending_turn_id, pending_call_id)?;
+
+    let protocol_answers = match user_decision {
+        interaction_policy::UserInputDecision::Submit => {
+            to_protocol_answers(interaction_policy::normalize_user_input_answers(answers))
+        }
+        interaction_policy::UserInputDecision::Cancel => HashMap::new(),
+    };
+
+    Ok(UserInputResponsePlan {
+        op: Op::UserInputAnswer {
+            id: response_id,
+            response: RequestUserInputResponse {
+                answers: protocol_answers,
+            },
+        },
+        resolved_event: build_user_input_resolved_payload(
+            action_id,
+            pending_thread_id,
+            pending_turn_id,
+            pending_call_id,
+            user_decision.outcome(),
+        ),
+        decision: user_decision.as_str().to_string(),
+    })
 }
 
 pub(crate) async fn codex_thread_list(
@@ -105,6 +307,15 @@ pub(crate) async fn codex_thread_read(
 mod tests {
     use super::requested_page_size;
 
+    #[cfg(feature = "native-codex-runtime")]
+    use super::{plan_approval_response, plan_user_input_response, ApprovalPendingKind};
+    #[cfg(feature = "native-codex-runtime")]
+    use codex_protocol::protocol::Op;
+    #[cfg(feature = "native-codex-runtime")]
+    use serde_json::{json, Value};
+    #[cfg(feature = "native-codex-runtime")]
+    use std::collections::HashMap;
+
     #[test]
     fn requested_page_size_defaults_to_twenty_five() {
         assert_eq!(requested_page_size(None), 25);
@@ -118,5 +329,129 @@ mod tests {
     #[test]
     fn requested_page_size_clamps_to_maximum_when_limit_is_large() {
         assert_eq!(requested_page_size(Some(999)), 100);
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    #[test]
+    fn plan_approval_response_builds_exec_approval_with_resolved_event() {
+        let plan = plan_approval_response(
+            "approval-1",
+            ApprovalPendingKind::CommandExecution,
+            "call-1",
+            "turn-1",
+            "acceptWithExecpolicyAmendment",
+            false,
+            Some(vec!["  echo hello  ".to_string(), "".to_string()]),
+        )
+        .expect("approval plan should be valid");
+
+        let decision_label = match &plan.op {
+            Op::ExecApproval {
+                id,
+                turn_id,
+                decision,
+            } => {
+                assert_eq!(id, "call-1");
+                assert_eq!(turn_id.as_deref(), Some("turn-1"));
+                decision.to_opaque_string().to_string()
+            }
+            other => panic!("expected Op::ExecApproval, got {other:?}"),
+        };
+
+        assert_eq!(
+            plan.resolved_event.get("type").and_then(Value::as_str),
+            Some("approval.resolved")
+        );
+        assert_eq!(
+            plan.resolved_event.get("action_id").and_then(Value::as_str),
+            Some("approval-1")
+        );
+        assert_eq!(
+            plan.resolved_event.get("kind").and_then(Value::as_str),
+            Some("command_execution")
+        );
+        assert_eq!(
+            plan.resolved_event.get("decision").and_then(Value::as_str),
+            Some(decision_label.as_str())
+        );
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    #[test]
+    fn plan_user_input_response_builds_submit_plan_and_normalizes_answers() {
+        let mut answers = HashMap::new();
+        answers.insert("question-1".to_string(), json!([" yes ", " "]));
+
+        let plan = plan_user_input_response(
+            "user-input-1",
+            "thread-1",
+            "  ",
+            "call-1",
+            "submit",
+            answers,
+        )
+        .expect("user input submit plan should be valid");
+
+        assert_eq!(plan.decision, "submit");
+
+        match &plan.op {
+            Op::UserInputAnswer { id, response } => {
+                assert_eq!(id, "call-1");
+                assert_eq!(
+                    response
+                        .answers
+                        .get("question-1")
+                        .map(|answer| answer.answers.clone()),
+                    Some(vec!["yes".to_string()])
+                );
+            }
+            other => panic!("expected Op::UserInputAnswer, got {other:?}"),
+        }
+
+        assert_eq!(
+            plan.resolved_event.get("type").and_then(Value::as_str),
+            Some("user_input.resolved")
+        );
+        assert_eq!(
+            plan.resolved_event.get("outcome").and_then(Value::as_str),
+            Some("submitted")
+        );
+        assert!(plan.resolved_event.get("error").is_none());
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    #[test]
+    fn plan_user_input_response_rejects_missing_response_identifier() {
+        let result = plan_user_input_response(
+            "user-input-1",
+            "thread-1",
+            " ",
+            " ",
+            "submit",
+            HashMap::new(),
+        );
+
+        assert_eq!(
+            result.err(),
+            Some("missing turn identifier for user_input response".to_string())
+        );
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    #[test]
+    fn plan_user_input_response_rejects_invalid_decision() {
+        let result = plan_user_input_response(
+            "user-input-1",
+            "thread-1",
+            "turn-1",
+            "call-1",
+            "later",
+            HashMap::new(),
+        );
+
+        assert_eq!(
+            result.err(),
+            Some("decision must be one of: submit, cancel".to_string())
+        );
     }
 }

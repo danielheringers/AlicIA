@@ -43,6 +43,7 @@ Excluido:
 - [x] (2026-03-04) Fase 4 (slice 4): desacoplamento neuro_adt de neuro_runtime com contracts/ports/tipos proprios.
 - [x] (2026-03-04) Fase 4 (slice 5): extracao Session/Thread/Review (thread list/read + review validation) para clean layers.
 - [x] (2026-03-04) Fase 4 (slice 6): shared thread catalog extraido para runtime_bridge com desacoplamento de session_turn_runtime.
+- [x] (2026-03-04) Fase 4 (slice 7): extracao de approval.respond + user_input.respond para clean layers com fail-fast de decisao.
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
 
@@ -527,6 +528,48 @@ Revisao tecnica final:
 Resultado:
 1. Slice 6 da Fase 4 concluido sem blocker de merge.
 2. Acoplamento residual do adapter com `session_turn_runtime` foi removido no caminho principal.
+## Fase 4 Slice 7 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-04.
+2. Objetivo: extrair os fluxos mutaveis `approval.respond` e `user_input.respond` para `application/domain`, mantendo o contrato Tauri e reduzindo regras inline no runtime.
+3. Escopo do slice:
+   - politicas de decisao/normalizacao movidas para `domain/session_thread_review`
+   - planejamento de `Op` e payload de evento resolvido movido para `application/session_thread_review`
+   - `session_turn_runtime` reduzido para orquestracao e reinsercao defensiva de pendencias
+
+Entregas:
+1. Novo modulo de dominio:
+   - `backend/src/domain/session_thread_review/interaction_policy.rs`
+2. Use-cases estendidos:
+   - `backend/src/application/session_thread_review/use_cases.rs`
+3. Runtime simplificado:
+   - `backend/src/session_turn_runtime.rs`
+4. Exports de dominio atualizados:
+   - `backend/src/domain/session_thread_review/mod.rs`
+5. Cobertura de testes ampliada para:
+   - matriz de decisoes approval/user_input no dominio
+   - montagem de `Op` + payload de eventos no application layer
+   - precedencia fail-fast de validacao no runtime
+
+Validacao executada:
+1. `cd alicia/backend && cargo fmt --all -- --check` -> OK.
+2. `cd alicia/backend && cargo check` -> OK.
+3. `cd alicia/backend && cargo test` -> OK (`174 passed; 0 failed`).
+4. `cd alicia/backend && cargo clippy --all-targets --all-features -- -D warnings` -> OK.
+5. `node alicia/codex-bridge/generators/check-runtime-contract.mjs` -> OK (`runtimeMethods=51`, `tauriCommands=70`, `tauriEventChannels=6`).
+6. Verificacao de contrato/assinaturas:
+   - sem drift em `backend/src/interface/tauri/commands/session_turn.rs`
+   - sem drift em `backend/src/interface/tauri/dto/session_turn.rs`
+
+Revisao tecnica final:
+1. Finding medio identificado durante a rodada: precedencia de erro podia retornar "action not found" antes de validar decisao.
+2. Correcao aplicada no mesmo slice com validacao fail-fast em runtime antes do lookup de pendencia.
+3. Rodada final sem findings de severidade alta/media.
+
+Resultado:
+1. Slice 7 da Fase 4 concluido sem blocker de merge.
+2. Fluxos mutaveis de Session/Thread/Review avancaram para `application/domain` mantendo contrato externo estavel.
 ## Current Architecture Snapshot (Key Risks)
 
 1. Frontend com `god component` em `app/page.tsx` concentrando UI + fluxo + regras.
@@ -798,4 +841,25 @@ Fase 4 (slice 5):
    - faltam testes diretos de adapter para cenarios avancados de paginacao/filtros em rollout real.
 4. Ajuste para continuidade da Fase 4:
    - extrair helpers compartilhados para modulo neutro e seguir com fluxos mutaveis de Session/Thread/Review.
+Fase 4 (slice 6):
+1. Resultado entregue: shared module de thread catalog extraido para `infrastructure/runtime_bridge`, removendo dependencia direta do adapter em `session_turn_runtime`.
+2. Incidentes/regressoes:
+   - sem findings de severidade alta/media nas validacoes finais;
+   - contrato Tauri preservado sem drift em comandos/canais.
+3. Riscos residuais:
+   - faltavam cenarios adicionais para `read_thread` (rollout/fallback/not found);
+   - branch `archived` e mapeamento de erro de producao ainda sem teste dedicado.
+4. Ajuste para continuidade da Fase 4:
+   - seguir para fluxos mutaveis de Session/Thread/Review (`approval.respond` e `user_input.respond`) em clean layers.
+
+Fase 4 (slice 7):
+1. Resultado entregue: fluxos mutaveis `approval.respond` e `user_input.respond` extraidos para `application/domain`, com `session_turn_runtime` reduzido a orquestracao.
+2. Incidentes/regressoes:
+   - finding medio de precedencia de erro (validacao de decisao apos lookup) corrigido no proprio slice;
+   - validacoes finais sem findings de severidade alta/media.
+3. Riscos residuais:
+   - `session_turn_runtime` ainda concentra outros fluxos mutaveis (`turn.run`/`review.start`) nao extraidos;
+   - ainda faltam testes de integracao Tauri end-to-end cobrindo sequencia completa de pending actions.
+4. Ajuste para continuidade da Fase 4:
+   - extrair caminho comum de agendamento/resolucao para `turn.run` e `review.start`, mantendo contratos e eventos inalterados.
 

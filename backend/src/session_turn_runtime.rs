@@ -31,11 +31,8 @@ use codex_protocol::config_types::WebSearchMode as WebSearchModeConfig;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 #[cfg(feature = "native-codex-runtime")]
 use codex_protocol::protocol::{
-    AskForApproval, EventMsg, ExecPolicyAmendment, Op, ReviewDecision, ReviewRequest, ReviewTarget,
-    SandboxPolicy,
+    AskForApproval, EventMsg, Op, ReviewRequest, ReviewTarget, SandboxPolicy,
 };
-#[cfg(feature = "native-codex-runtime")]
-use codex_protocol::request_user_input::{RequestUserInputAnswer, RequestUserInputResponse};
 #[cfg(feature = "native-codex-runtime")]
 use codex_protocol::user_input::UserInput;
 #[cfg(feature = "native-codex-runtime")]
@@ -591,98 +588,63 @@ fn with_native_handles_mut<R>(
 }
 
 #[cfg(feature = "native-codex-runtime")]
-fn action_to_review_decision(
-    kind: crate::NativeApprovalKind,
-    decision: &str,
-    remember: bool,
-    execpolicy_amendment: &[String],
-) -> Result<ReviewDecision, String> {
-    let normalized = decision.trim();
-    if normalized.is_empty() {
-        return Err("decision is required".to_string());
-    }
-
-    let mut decision_key = normalized.to_ascii_lowercase();
-    if remember && decision_key == "accept" {
-        decision_key = "acceptforsession".to_string();
-    }
-
-    match decision_key.as_str() {
-        "accept" => Ok(ReviewDecision::Approved),
-        "acceptforsession" => Ok(ReviewDecision::ApprovedForSession),
-        "decline" => Ok(ReviewDecision::Denied),
-        "cancel" => Ok(ReviewDecision::Abort),
-        "acceptwithexecpolicyamendment" => {
-            if !matches!(kind, crate::NativeApprovalKind::CommandExecution) {
-                return Err(
-                    "acceptWithExecpolicyAmendment is only supported for command_execution approvals"
-                        .to_string(),
-                );
-            }
-            if execpolicy_amendment.is_empty() {
-                return Err(
-                    "acceptWithExecpolicyAmendment requires execpolicyAmendment".to_string()
-                );
-            }
-            Ok(ReviewDecision::ApprovedExecpolicyAmendment {
-                proposed_execpolicy_amendment: ExecPolicyAmendment::new(
-                    execpolicy_amendment.to_vec(),
-                ),
-            })
-        }
-        _ => Err(format!("unsupported approval decision: {normalized}")),
-    }
+fn reinsert_pending_approval_entry(
+    pending_approvals: &mut std::collections::HashMap<String, crate::NativePendingApproval>,
+    action_id: &str,
+    pending_approval: crate::NativePendingApproval,
+) {
+    pending_approvals.insert(action_id.to_string(), pending_approval);
 }
 
 #[cfg(feature = "native-codex-runtime")]
-fn normalize_user_input_answers(
-    answers: std::collections::HashMap<String, Value>,
-) -> std::collections::HashMap<String, RequestUserInputAnswer> {
-    fn as_answer_list(value: Value) -> Vec<String> {
-        let raw_answers = match value {
-            Value::Object(mut object) => object
-                .remove("answers")
-                .or_else(|| object.remove("value"))
-                .unwrap_or(Value::Null),
-            other => other,
-        };
+fn reinsert_pending_user_input_entry(
+    pending_user_inputs: &mut std::collections::HashMap<String, crate::NativePendingUserInput>,
+    action_id: &str,
+    pending_user_input: crate::NativePendingUserInput,
+) {
+    pending_user_inputs.insert(action_id.to_string(), pending_user_input);
+}
 
-        match raw_answers {
-            Value::Array(entries) => entries
-                .into_iter()
-                .map(|entry| match entry {
-                    Value::String(text) => text.trim().to_string(),
-                    other => other.to_string(),
-                })
-                .filter(|entry| !entry.is_empty())
-                .collect(),
-            Value::String(text) => {
-                let trimmed = text.trim().to_string();
-                if trimmed.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![trimmed]
-                }
-            }
-            Value::Null => Vec::new(),
-            other => vec![other.to_string()],
-        }
+#[cfg(feature = "native-codex-runtime")]
+fn validate_approval_decision_before_lookup(decision: &str) -> Result<(), String> {
+    if decision.trim().is_empty() {
+        return Err("decision is required".to_string());
     }
+    Ok(())
+}
 
-    let mut normalized = std::collections::HashMap::new();
-    for (question_id, value) in answers {
-        let question_id = question_id.trim().to_string();
-        if question_id.is_empty() {
-            continue;
-        }
-        normalized.insert(
-            question_id,
-            RequestUserInputAnswer {
-                answers: as_answer_list(value),
-            },
-        );
-    }
-    normalized
+#[cfg(feature = "native-codex-runtime")]
+fn validate_user_input_decision_before_lookup(decision: &str) -> Result<(), String> {
+    crate::domain::session_thread_review::interaction_policy::parse_user_input_decision(decision)
+        .map(|_| ())
+}
+
+#[cfg(feature = "native-codex-runtime")]
+fn reinsert_pending_approval_for_session(
+    app: &AppHandle,
+    session_id: u64,
+    action_id: &str,
+    pending_approval: crate::NativePendingApproval,
+) {
+    let _ = with_native_handles_mut(app, session_id, |native| {
+        reinsert_pending_approval_entry(&mut native.pending_approvals, action_id, pending_approval)
+    });
+}
+
+#[cfg(feature = "native-codex-runtime")]
+fn reinsert_pending_user_input_for_session(
+    app: &AppHandle,
+    session_id: u64,
+    action_id: &str,
+    pending_user_input: crate::NativePendingUserInput,
+) {
+    let _ = with_native_handles_mut(app, session_id, |native| {
+        reinsert_pending_user_input_entry(
+            &mut native.pending_user_inputs,
+            action_id,
+            pending_user_input,
+        )
+    });
 }
 
 #[cfg(feature = "native-codex-runtime")]
@@ -695,7 +657,6 @@ fn map_native_steer_error(error: SteerInputError) -> String {
         SteerInputError::EmptyInput => "input_items cannot be empty".to_string(),
     }
 }
-
 #[cfg(feature = "native-codex-runtime")]
 fn turn_id_mismatch_error(expected: &str, actual: &str) -> String {
     format!("turn_id mismatch: expected `{expected}`, active `{actual}`")
@@ -743,43 +704,6 @@ fn clear_native_pending_actions_for_threads(
     native
         .pending_user_inputs
         .retain(|_, pending| !thread_id_set.contains(pending.thread_id.as_str()));
-}
-
-#[cfg(feature = "native-codex-runtime")]
-fn build_native_user_input_resolved_payload(
-    action_id: &str,
-    pending_user_input: &crate::NativePendingUserInput,
-    outcome: &str,
-) -> Value {
-    let mut resolved_payload = serde_json::Map::new();
-    resolved_payload.insert(
-        "type".to_string(),
-        Value::String("user_input.resolved".to_string()),
-    );
-    resolved_payload.insert(
-        "action_id".to_string(),
-        Value::String(action_id.to_string()),
-    );
-    resolved_payload.insert(
-        "thread_id".to_string(),
-        Value::String(pending_user_input.thread_id.clone()),
-    );
-    resolved_payload.insert(
-        "turn_id".to_string(),
-        Value::String(pending_user_input.turn_id.clone()),
-    );
-    resolved_payload.insert(
-        "item_id".to_string(),
-        Value::String(pending_user_input.call_id.clone()),
-    );
-    resolved_payload.insert("outcome".to_string(), Value::String(outcome.to_string()));
-    if outcome == "cancelled" {
-        resolved_payload.insert(
-            "error".to_string(),
-            Value::String("user input cancelled by user".to_string()),
-        );
-    }
-    Value::Object(resolved_payload)
 }
 
 #[cfg(feature = "native-codex-runtime")]
@@ -2063,20 +1987,9 @@ pub(crate) async fn codex_approval_respond_impl(
     if action_id.is_empty() {
         return Err("action_id is required".to_string());
     }
-
-    let decision = request.decision.trim();
-    if decision.is_empty() {
-        return Err("decision is required".to_string());
-    }
+    validate_approval_decision_before_lookup(&request.decision)?;
 
     let remember = request.remember.unwrap_or(false);
-    let execpolicy_amendment = request
-        .execpolicy_amendment
-        .unwrap_or_default()
-        .into_iter()
-        .map(|entry| entry.trim().to_string())
-        .filter(|entry| !entry.is_empty())
-        .collect::<Vec<_>>();
 
     let (session_id, thread, pending_approval, event_seq) = {
         let mut guard = lock_active_session(state.inner())?;
@@ -2094,9 +2007,11 @@ pub(crate) async fn codex_approval_respond_impl(
 
         let thread = native.threads.get(&pending_approval.thread_id).cloned();
         let Some(thread) = thread else {
-            native
-                .pending_approvals
-                .insert(action_id.to_string(), pending_approval.clone());
+            reinsert_pending_approval_entry(
+                &mut native.pending_approvals,
+                action_id,
+                pending_approval.clone(),
+            );
             return Err(format!("thread not found: {}", pending_approval.thread_id));
         };
 
@@ -2108,63 +2023,51 @@ pub(crate) async fn codex_approval_respond_impl(
         )
     };
 
-    let review_decision = action_to_review_decision(
-        pending_approval.kind,
-        decision,
+    let pending_kind = match pending_approval.kind {
+        crate::NativeApprovalKind::CommandExecution => {
+            session_thread_review_use_cases::ApprovalPendingKind::CommandExecution
+        }
+        crate::NativeApprovalKind::FileChange => {
+            session_thread_review_use_cases::ApprovalPendingKind::FileChange
+        }
+    };
+    let approval_plan = match session_thread_review_use_cases::plan_approval_response(
+        action_id,
+        pending_kind,
+        &pending_approval.call_id,
+        &pending_approval.turn_id,
+        &request.decision,
         remember,
-        &execpolicy_amendment,
-    )
-    .inspect_err(|_error| {
-        let _ = with_native_handles_mut(&app, session_id, |native| {
-            native
-                .pending_approvals
-                .insert(action_id.to_string(), pending_approval.clone());
-        });
-    })?;
-    let decision_label = review_decision.to_opaque_string().to_string();
-    let op = match pending_approval.kind {
-        crate::NativeApprovalKind::CommandExecution => Op::ExecApproval {
-            id: pending_approval.call_id.clone(),
-            turn_id: Some(pending_approval.turn_id.clone())
-                .filter(|value| !value.trim().is_empty()),
-            decision: review_decision,
-        },
-        crate::NativeApprovalKind::FileChange => Op::PatchApproval {
-            id: pending_approval.call_id.clone(),
-            decision: review_decision,
-        },
+        request.execpolicy_amendment,
+    ) {
+        Ok(plan) => plan,
+        Err(error) => {
+            reinsert_pending_approval_for_session(
+                &app,
+                session_id,
+                action_id,
+                pending_approval.clone(),
+            );
+            return Err(error);
+        }
     };
 
-    if let Err(error) = thread.submit(op).await {
-        let _ = with_native_handles_mut(&app, session_id, |native| {
-            native
-                .pending_approvals
-                .insert(action_id.to_string(), pending_approval.clone());
-        });
+    if let Err(error) = thread.submit(approval_plan.op).await {
+        reinsert_pending_approval_for_session(
+            &app,
+            session_id,
+            action_id,
+            pending_approval.clone(),
+        );
         return Err(format!(
             "failed to submit native approval response: {error}"
         ));
     }
 
-    let kind_label = match pending_approval.kind {
-        crate::NativeApprovalKind::CommandExecution => "command_execution",
-        crate::NativeApprovalKind::FileChange => "file_change",
-    };
-    emit_codex_event(
-        &app,
-        session_id,
-        json!({
-            "type": "approval.resolved",
-            "action_id": action_id,
-            "kind": kind_label,
-            "decision": decision_label,
-        }),
-        &event_seq,
-    );
+    emit_codex_event(&app, session_id, approval_plan.resolved_event, &event_seq);
 
     Ok(())
 }
-
 pub(crate) async fn codex_user_input_respond_impl(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -2174,14 +2077,7 @@ pub(crate) async fn codex_user_input_respond_impl(
     if action_id.is_empty() {
         return Err("action_id is required".to_string());
     }
-
-    let decision = request.decision.trim().to_ascii_lowercase();
-    if decision.is_empty() {
-        return Err("decision is required".to_string());
-    }
-    if decision != "submit" && decision != "cancel" {
-        return Err("decision must be one of: submit, cancel".to_string());
-    }
+    validate_user_input_decision_before_lookup(&request.decision)?;
 
     let (session_id, thread, pending_user_input, event_seq) = {
         let mut guard = lock_active_session(state.inner())?;
@@ -2199,9 +2095,11 @@ pub(crate) async fn codex_user_input_respond_impl(
 
         let thread = native.threads.get(&pending_user_input.thread_id).cloned();
         let Some(thread) = thread else {
-            native
-                .pending_user_inputs
-                .insert(action_id.to_string(), pending_user_input.clone());
+            reinsert_pending_user_input_entry(
+                &mut native.pending_user_inputs,
+                action_id,
+                pending_user_input.clone(),
+            );
             return Err(format!(
                 "thread not found: {}",
                 pending_user_input.thread_id
@@ -2216,85 +2114,44 @@ pub(crate) async fn codex_user_input_respond_impl(
         )
     };
 
-    let outcome = if decision == "submit" {
-        let answers = normalize_user_input_answers(request.answers);
-        let response = RequestUserInputResponse { answers };
-        let response_id = if pending_user_input.turn_id.trim().is_empty() {
-            pending_user_input.call_id.clone()
-        } else {
-            pending_user_input.turn_id.clone()
-        };
-        if response_id.trim().is_empty() {
-            let _ = with_native_handles_mut(&app, session_id, |native| {
-                native
-                    .pending_user_inputs
-                    .insert(action_id.to_string(), pending_user_input.clone());
-            });
-            return Err("missing turn identifier for user_input response".to_string());
+    let response_plan = match session_thread_review_use_cases::plan_user_input_response(
+        action_id,
+        &pending_user_input.thread_id,
+        &pending_user_input.turn_id,
+        &pending_user_input.call_id,
+        &request.decision,
+        request.answers,
+    ) {
+        Ok(plan) => plan,
+        Err(error) => {
+            reinsert_pending_user_input_for_session(
+                &app,
+                session_id,
+                action_id,
+                pending_user_input.clone(),
+            );
+            return Err(error);
         }
-        if let Err(error) = thread
-            .submit(Op::UserInputAnswer {
-                id: response_id,
-                response,
-            })
-            .await
-        {
-            let _ = with_native_handles_mut(&app, session_id, |native| {
-                native
-                    .pending_user_inputs
-                    .insert(action_id.to_string(), pending_user_input.clone());
-            });
-            return Err(format!(
-                "failed to submit native user_input response: {error}"
-            ));
-        }
-        "submitted"
-    } else {
-        let response_id = if pending_user_input.turn_id.trim().is_empty() {
-            pending_user_input.call_id.clone()
-        } else {
-            pending_user_input.turn_id.clone()
-        };
-        if response_id.trim().is_empty() {
-            let _ = with_native_handles_mut(&app, session_id, |native| {
-                native
-                    .pending_user_inputs
-                    .insert(action_id.to_string(), pending_user_input.clone());
-            });
-            return Err("missing turn identifier for user_input response".to_string());
-        }
-        if let Err(error) = thread
-            .submit(Op::UserInputAnswer {
-                id: response_id,
-                response: RequestUserInputResponse {
-                    answers: std::collections::HashMap::new(),
-                },
-            })
-            .await
-        {
-            let _ = with_native_handles_mut(&app, session_id, |native| {
-                native
-                    .pending_user_inputs
-                    .insert(action_id.to_string(), pending_user_input.clone());
-            });
-            return Err(format!(
-                "failed to submit native user_input response: {error}"
-            ));
-        }
-        "cancelled"
     };
 
-    emit_codex_event(
-        &app,
-        session_id,
-        build_native_user_input_resolved_payload(action_id, &pending_user_input, outcome),
-        &event_seq,
-    );
+    if let Err(error) = thread.submit(response_plan.op).await {
+        reinsert_pending_user_input_for_session(
+            &app,
+            session_id,
+            action_id,
+            pending_user_input.clone(),
+        );
+        return Err(format!(
+            "failed to submit native user_input response: {error}"
+        ));
+    }
+
+    emit_codex_event(&app, session_id, response_plan.resolved_event, &event_seq);
 
     Ok(CodexUserInputRespondResponse {
         ok: true,
         action_id: action_id.to_string(),
-        decision,
+        decision: response_plan.decision,
     })
 }
 pub(crate) async fn send_codex_input_impl(
@@ -2388,16 +2245,21 @@ pub(crate) async fn send_codex_input_impl(
 mod tests {
     #[cfg(feature = "native-codex-runtime")]
     use super::{
-        build_native_user_input_resolved_payload, runtime_model_override,
+        reinsert_pending_approval_entry, reinsert_pending_user_input_entry, runtime_model_override,
         runtime_profile_or_internal, runtime_profile_override, runtime_web_search_mode,
+        validate_approval_decision_before_lookup, validate_user_input_decision_before_lookup,
         ALICIA_NATIVE_INTERNAL_PROFILE,
     };
     #[cfg(feature = "native-codex-runtime")]
-    use crate::NativePendingUserInput;
+    use crate::application::session_thread_review::use_cases as session_thread_review_use_cases;
+    #[cfg(feature = "native-codex-runtime")]
+    use crate::{NativeApprovalKind, NativePendingApproval, NativePendingUserInput};
     #[cfg(feature = "native-codex-runtime")]
     use codex_protocol::config_types::WebSearchMode as WebSearchModeConfig;
     #[cfg(feature = "native-codex-runtime")]
     use serde_json::Value;
+    #[cfg(feature = "native-codex-runtime")]
+    use std::collections::HashMap;
 
     #[cfg(feature = "native-codex-runtime")]
     #[test]
@@ -2456,27 +2318,144 @@ mod tests {
 
     #[cfg(feature = "native-codex-runtime")]
     #[test]
-    fn build_native_user_input_resolved_payload_marks_cancel_with_error() {
-        let pending = NativePendingUserInput {
+    fn runtime_reinsert_pending_approval_smoke() {
+        let mut pending = HashMap::new();
+        let action_id = "approval-7";
+        let value = NativePendingApproval {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
-            call_id: "item-1".to_string(),
+            call_id: "call-1".to_string(),
+            kind: NativeApprovalKind::CommandExecution,
         };
 
-        let submitted = build_native_user_input_resolved_payload("action-1", &pending, "submitted");
-        assert_eq!(
-            submitted.get("outcome").and_then(Value::as_str),
-            Some("submitted")
-        );
-        assert!(submitted.get("error").is_none());
+        reinsert_pending_approval_entry(&mut pending, action_id, value.clone());
 
-        let cancelled = build_native_user_input_resolved_payload("action-1", &pending, "cancelled");
+        let inserted = pending
+            .get(action_id)
+            .expect("pending approval should be reinserted");
+        assert_eq!(inserted.thread_id, value.thread_id);
+        assert_eq!(inserted.turn_id, value.turn_id);
+        assert_eq!(inserted.call_id, value.call_id);
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    #[test]
+    fn runtime_reinsert_pending_user_input_smoke() {
+        let mut pending = HashMap::new();
+        let action_id = "user-input-7";
+        let value = NativePendingUserInput {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            call_id: "call-1".to_string(),
+        };
+
+        reinsert_pending_user_input_entry(&mut pending, action_id, value.clone());
+
+        let inserted = pending
+            .get(action_id)
+            .expect("pending user input should be reinserted");
+        assert_eq!(inserted.thread_id, value.thread_id);
+        assert_eq!(inserted.turn_id, value.turn_id);
+        assert_eq!(inserted.call_id, value.call_id);
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    #[test]
+    fn runtime_approval_decision_validation_requires_non_empty_value() {
         assert_eq!(
-            cancelled.get("outcome").and_then(Value::as_str),
+            validate_approval_decision_before_lookup(" "),
+            Err("decision is required".to_string())
+        );
+        assert_eq!(validate_approval_decision_before_lookup("accept"), Ok(()));
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    #[test]
+    fn runtime_user_input_decision_validation_is_fail_fast() {
+        assert_eq!(
+            validate_user_input_decision_before_lookup(""),
+            Err("decision is required".to_string())
+        );
+        assert_eq!(
+            validate_user_input_decision_before_lookup("later"),
+            Err("decision must be one of: submit, cancel".to_string())
+        );
+        assert_eq!(
+            validate_user_input_decision_before_lookup(" Submit "),
+            Ok(())
+        );
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    #[test]
+    fn runtime_resolved_event_shapes_smoke() {
+        let approval_plan = session_thread_review_use_cases::plan_approval_response(
+            "approval-1",
+            session_thread_review_use_cases::ApprovalPendingKind::CommandExecution,
+            "call-1",
+            "turn-1",
+            "accept",
+            false,
+            None,
+        )
+        .expect("approval plan should be valid");
+
+        assert_eq!(
+            approval_plan
+                .resolved_event
+                .get("type")
+                .and_then(Value::as_str),
+            Some("approval.resolved")
+        );
+        assert_eq!(
+            approval_plan
+                .resolved_event
+                .get("action_id")
+                .and_then(Value::as_str),
+            Some("approval-1")
+        );
+        assert_eq!(
+            approval_plan
+                .resolved_event
+                .get("kind")
+                .and_then(Value::as_str),
+            Some("command_execution")
+        );
+        assert!(approval_plan
+            .resolved_event
+            .get("decision")
+            .and_then(Value::as_str)
+            .is_some());
+
+        let user_input_plan = session_thread_review_use_cases::plan_user_input_response(
+            "user-input-1",
+            "thread-1",
+            "turn-1",
+            "call-1",
+            "cancel",
+            HashMap::new(),
+        )
+        .expect("user_input plan should be valid");
+
+        assert_eq!(
+            user_input_plan
+                .resolved_event
+                .get("type")
+                .and_then(Value::as_str),
+            Some("user_input.resolved")
+        );
+        assert_eq!(
+            user_input_plan
+                .resolved_event
+                .get("outcome")
+                .and_then(Value::as_str),
             Some("cancelled")
         );
         assert_eq!(
-            cancelled.get("error").and_then(Value::as_str),
+            user_input_plan
+                .resolved_event
+                .get("error")
+                .and_then(Value::as_str),
             Some("user input cancelled by user")
         );
     }
