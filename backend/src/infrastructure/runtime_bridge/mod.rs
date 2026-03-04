@@ -1,5 +1,6 @@
 pub(crate) mod app_server;
 pub(crate) mod mcp_native;
+pub(crate) mod session_pending_action_runtime_access;
 pub(crate) mod session_send_input_effects;
 pub(crate) mod session_thread_catalog;
 pub(crate) mod session_thread_housekeeping;

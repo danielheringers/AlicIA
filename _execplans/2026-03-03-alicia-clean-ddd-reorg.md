@@ -57,6 +57,7 @@ Excluido:
 - [x] (2026-03-04) Fase 4 (slice 18): extracao da matriz de efeitos de send_codex_input para runtime_bridge com runtime orquestrador.
 - [x] (2026-03-04) Fase 4 (slice 19): plano send_codex_input migrado para domain removendo acoplamento infrastructure->application.
 - [x] (2026-03-04) Fase 4 (slice 20): acesso/resolucao de thread nativa extraido para runtime_bridge.
+- [x] (2026-03-04) Fase 4 (slice 21): gateway de pending actions extraido para runtime_bridge com cobertura dedicada.
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
 
@@ -1129,6 +1130,51 @@ Revisao tecnica final:
 Resultado:
 1. Slice 20 da Fase 4 concluido sem blocker de merge.
 2. `session_turn_runtime.rs` reduziu significativamente o bloco de acesso a thread nativa, reforcando separacao de responsabilidades no backend.
+## Fase 4 Slice 21 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-04.
+2. Objetivo: extrair remove/reinsert/lookup de pending actions nativas (`approval` e `user_input`) para `runtime_bridge`, reduzindo mutacao direta em `session_turn_runtime.rs`.
+3. Escopo do slice:
+   - criar modulo dedicado para acesso de pending actions
+   - delegar `codex_approval_respond_impl` e `codex_user_input_respond_impl` para o novo gateway
+   - preservar mensagens de erro, semantica de reinsercao e contrato externo
+
+Entregas:
+1. Novo modulo backend:
+   - `backend/src/infrastructure/runtime_bridge/session_pending_action_runtime_access.rs`
+2. Registro no runtime bridge:
+   - `backend/src/infrastructure/runtime_bridge/mod.rs`
+3. Runtime simplificado com delegacao:
+   - `backend/src/session_turn_runtime.rs`
+4. Cobertura adicionada no modulo extraido:
+   - sucesso de remove+lookup (approval/user_input)
+   - thread ausente com reinsercao obrigatoria (approval/user_input)
+   - erro de acao inexistente (approval/user_input)
+   - erro de sessao ausente nos wrappers publicos
+
+Validacao executada:
+1. `cd alicia/backend && cargo fmt --all -- --check` -> OK.
+2. `cd alicia/backend && cargo check` -> OK.
+3. `cd alicia/backend && cargo test session_pending_action_runtime_access` -> OK (`8 passed; 0 failed`).
+4. `cd alicia/backend && cargo test` -> OK (`219 passed; 0 failed`).
+5. `cd alicia/backend && cargo clippy --all-targets --all-features -- -D warnings` -> OK.
+6. `node alicia/codex-bridge/generators/check-runtime-contract.mjs` -> OK (`runtimeMethods=51`, `tauriCommands=70`, `tauriEventChannels=6`).
+7. `rg -n "pending_approvals|pending_user_inputs" alicia/backend/src/session_turn_runtime.rs` -> sem ocorrencias.
+8. Verificacao de drift de contrato:
+   - sem drift em `backend/src/interface/tauri/commands/session_turn.rs`
+   - sem drift em `backend/src/interface/tauri/dto/session_turn.rs`
+   - sem alteracao em `alicia/codex-bridge/schema/runtime-contract.json`
+
+Revisao tecnica final:
+1. Rodada final sem findings de severidade critica/alta/media/baixa.
+2. Finding baixo inicial de cobertura no modulo extraido foi resolvido no proprio slice com testes dedicados.
+3. Comportamento de mensagens/semantica de reinsercao e contrato externo preservado.
+4. Sem blocker de merge.
+
+Resultado:
+1. Slice 21 da Fase 4 concluido sem blocker de merge.
+2. `session_turn_runtime.rs` deixou de mutar diretamente `pending_approvals` e `pending_user_inputs`, reforcando separacao de responsabilidades no backend.
 ## Current Architecture Snapshot (Key Risks)
 
 1. Frontend com `god component` em `app/page.tsx` concentrando UI + fluxo + regras.
@@ -1557,4 +1603,15 @@ Fase 4 (slice 20):
    - warnings recorrentes de rustfmt (config nightly) seguem como divida de tooling.
 4. Ajuste para continuidade da Fase 4:
    - selecionar proximo recorte pequeno sobre fluxos mutaveis remanescentes de `session_turn_runtime.rs` (sem alterar contrato) para continuar a reducao de complexidade ciclomática.
+
+Fase 4 (slice 21):
+1. Resultado entregue: gateway de pending actions nativas extraido para `runtime_bridge` com testes diretos de sucesso/erro/reinsercao.
+2. Incidentes/regressoes:
+   - revisao intermediaria apontou lacuna baixa de cobertura no modulo novo;
+   - lacuna foi corrigida no mesmo slice e revalidada sem findings.
+3. Riscos residuais:
+   - `session_turn_runtime.rs` segue concentrando outros fluxos mutaveis alem de pending actions (apesar da reducao incremental);
+   - warnings recorrentes de rustfmt (config nightly) seguem como divida de tooling.
+4. Ajuste para continuidade da Fase 4:
+   - priorizar proximo recorte pequeno de extracao sobre bloco mutavel remanescente em `session_turn_runtime.rs` mantendo contrato externo estavel.
 

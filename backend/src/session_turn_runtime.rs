@@ -47,8 +47,8 @@ use crate::infrastructure::runtime_bridge::session_send_input_effects::{
 use crate::infrastructure::runtime_bridge::status_snapshot::build_non_tui_status_snapshot;
 #[cfg(feature = "native-codex-runtime")]
 use crate::infrastructure::runtime_bridge::{
-    session_thread_housekeeping, session_thread_runtime_access, session_thread_shared,
-    session_turn_event_pipeline,
+    session_pending_action_runtime_access, session_thread_housekeeping,
+    session_thread_runtime_access, session_thread_shared, session_turn_event_pipeline,
 };
 #[cfg(feature = "native-codex-runtime")]
 use crate::interface::tauri::dto::CodexThreadSummary;
@@ -333,24 +333,6 @@ fn translate_turn_input_items(items: Vec<CodexInputItem>) -> Result<Vec<UserInpu
 }
 
 #[cfg(feature = "native-codex-runtime")]
-fn reinsert_pending_approval_entry(
-    pending_approvals: &mut std::collections::HashMap<String, crate::NativePendingApproval>,
-    action_id: &str,
-    pending_approval: crate::NativePendingApproval,
-) {
-    pending_approvals.insert(action_id.to_string(), pending_approval);
-}
-
-#[cfg(feature = "native-codex-runtime")]
-fn reinsert_pending_user_input_entry(
-    pending_user_inputs: &mut std::collections::HashMap<String, crate::NativePendingUserInput>,
-    action_id: &str,
-    pending_user_input: crate::NativePendingUserInput,
-) {
-    pending_user_inputs.insert(action_id.to_string(), pending_user_input);
-}
-
-#[cfg(feature = "native-codex-runtime")]
 fn validate_approval_decision_before_lookup(decision: &str) -> Result<(), String> {
     if decision.trim().is_empty() {
         return Err("decision is required".to_string());
@@ -362,34 +344,6 @@ fn validate_approval_decision_before_lookup(decision: &str) -> Result<(), String
 fn validate_user_input_decision_before_lookup(decision: &str) -> Result<(), String> {
     crate::domain::session_thread_review::interaction_policy::parse_user_input_decision(decision)
         .map(|_| ())
-}
-
-#[cfg(feature = "native-codex-runtime")]
-fn reinsert_pending_approval_for_session(
-    app: &AppHandle,
-    session_id: u64,
-    action_id: &str,
-    pending_approval: crate::NativePendingApproval,
-) {
-    let _ = session_turn_event_pipeline::with_native_handles_mut(app, session_id, |native| {
-        reinsert_pending_approval_entry(&mut native.pending_approvals, action_id, pending_approval)
-    });
-}
-
-#[cfg(feature = "native-codex-runtime")]
-fn reinsert_pending_user_input_for_session(
-    app: &AppHandle,
-    session_id: u64,
-    action_id: &str,
-    pending_user_input: crate::NativePendingUserInput,
-) {
-    let _ = session_turn_event_pipeline::with_native_handles_mut(app, session_id, |native| {
-        reinsert_pending_user_input_entry(
-            &mut native.pending_user_inputs,
-            action_id,
-            pending_user_input,
-        )
-    });
 }
 
 #[cfg(feature = "native-codex-runtime")]
@@ -1526,29 +1480,10 @@ pub(crate) async fn codex_approval_respond_impl(
     let remember = request.remember.unwrap_or(false);
 
     let (session_id, thread, pending_approval, event_seq) = {
-        let mut guard = lock_active_session(state.inner())?;
-        let active = guard
-            .as_mut()
-            .ok_or_else(|| "no active codex session".to_string())?;
-
-        let session_id = active.session_id;
-        let crate::ActiveSessionTransport::Native(native) = &mut active.transport;
-
-        let pending_approval = native
-            .pending_approvals
-            .remove(action_id)
-            .ok_or_else(|| format!("approval action not found: {action_id}"))?;
-
-        let thread = native.threads.get(&pending_approval.thread_id).cloned();
-        let Some(thread) = thread else {
-            reinsert_pending_approval_entry(
-                &mut native.pending_approvals,
-                action_id,
-                pending_approval.clone(),
-            );
-            return Err(format!("thread not found: {}", pending_approval.thread_id));
-        };
-
+        let (session_id, thread, pending_approval) =
+            session_pending_action_runtime_access::remove_pending_approval_and_lookup_thread(
+                &state, action_id,
+            )?;
         (
             session_id,
             thread,
@@ -1576,7 +1511,7 @@ pub(crate) async fn codex_approval_respond_impl(
     ) {
         Ok(plan) => plan,
         Err(error) => {
-            reinsert_pending_approval_for_session(
+            session_pending_action_runtime_access::reinsert_pending_approval_for_session(
                 &app,
                 session_id,
                 action_id,
@@ -1587,7 +1522,7 @@ pub(crate) async fn codex_approval_respond_impl(
     };
 
     if let Err(error) = thread.submit(approval_plan.op).await {
-        reinsert_pending_approval_for_session(
+        session_pending_action_runtime_access::reinsert_pending_approval_for_session(
             &app,
             session_id,
             action_id,
@@ -1614,32 +1549,10 @@ pub(crate) async fn codex_user_input_respond_impl(
     validate_user_input_decision_before_lookup(&request.decision)?;
 
     let (session_id, thread, pending_user_input, event_seq) = {
-        let mut guard = lock_active_session(state.inner())?;
-        let active = guard
-            .as_mut()
-            .ok_or_else(|| "no active codex session".to_string())?;
-
-        let session_id = active.session_id;
-        let crate::ActiveSessionTransport::Native(native) = &mut active.transport;
-
-        let pending_user_input = native
-            .pending_user_inputs
-            .remove(action_id)
-            .ok_or_else(|| format!("user input action not found: {action_id}"))?;
-
-        let thread = native.threads.get(&pending_user_input.thread_id).cloned();
-        let Some(thread) = thread else {
-            reinsert_pending_user_input_entry(
-                &mut native.pending_user_inputs,
-                action_id,
-                pending_user_input.clone(),
-            );
-            return Err(format!(
-                "thread not found: {}",
-                pending_user_input.thread_id
-            ));
-        };
-
+        let (session_id, thread, pending_user_input) =
+            session_pending_action_runtime_access::remove_pending_user_input_and_lookup_thread(
+                &state, action_id,
+            )?;
         (
             session_id,
             thread,
@@ -1658,7 +1571,7 @@ pub(crate) async fn codex_user_input_respond_impl(
     ) {
         Ok(plan) => plan,
         Err(error) => {
-            reinsert_pending_user_input_for_session(
+            session_pending_action_runtime_access::reinsert_pending_user_input_for_session(
                 &app,
                 session_id,
                 action_id,
@@ -1669,7 +1582,7 @@ pub(crate) async fn codex_user_input_respond_impl(
     };
 
     if let Err(error) = thread.submit(response_plan.op).await {
-        reinsert_pending_user_input_for_session(
+        session_pending_action_runtime_access::reinsert_pending_user_input_for_session(
             &app,
             session_id,
             action_id,
@@ -1814,10 +1727,9 @@ pub(crate) async fn send_codex_input_impl(
 mod tests {
     #[cfg(feature = "native-codex-runtime")]
     use super::{
-        reinsert_pending_approval_entry, reinsert_pending_user_input_entry, runtime_model_override,
-        runtime_profile_or_internal, runtime_profile_override, runtime_web_search_mode,
-        validate_approval_decision_before_lookup, validate_user_input_decision_before_lookup,
-        ALICIA_NATIVE_INTERNAL_PROFILE,
+        runtime_model_override, runtime_profile_or_internal, runtime_profile_override,
+        runtime_web_search_mode, validate_approval_decision_before_lookup,
+        validate_user_input_decision_before_lookup, ALICIA_NATIVE_INTERNAL_PROFILE,
     };
     #[cfg(feature = "native-codex-runtime")]
     use super::{
@@ -1827,6 +1739,10 @@ mod tests {
     #[cfg(feature = "native-codex-runtime")]
     use crate::application::session_thread_review::use_cases as session_thread_review_use_cases;
     use crate::application::session_turn::use_cases as session_turn_use_cases;
+    #[cfg(feature = "native-codex-runtime")]
+    use crate::infrastructure::runtime_bridge::session_pending_action_runtime_access::{
+        reinsert_pending_approval_entry, reinsert_pending_user_input_entry,
+    };
     use crate::infrastructure::runtime_bridge::session_send_input_effects::{
         resolve_send_codex_input_effect, resolve_send_codex_input_side_effect,
         SendCodexInputEffectContext, SendCodexInputSideEffect,
