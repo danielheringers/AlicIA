@@ -54,6 +54,7 @@ Excluido:
 - [x] (2026-03-04) Fase 4 (slice 15): seam de efeitos em send_codex_input extraida no runtime com testes deterministas.
 - [x] (2026-03-04) Fase 4 (slice 16): execucao de side-effects de send_codex_input isolada com cobertura thread_id none/some.
 - [x] (2026-03-04) Fase 4 (slice 17): testes de integracao de send_codex_input_impl para stderr/stdout/schedule com robustez anti-flake.
+- [x] (2026-03-04) Fase 4 (slice 18): extracao da matriz de efeitos de send_codex_input para runtime_bridge com runtime orquestrador.
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
 
@@ -1004,6 +1005,46 @@ Revisao tecnica final:
 Resultado:
 1. Slice 17 da Fase 4 concluido sem blocker de merge.
 2. Risco residual principal de integracao de `send_codex_input_impl` foi fechado no escopo backend runtime com testes de fluxo completo.
+## Fase 4 Slice 18 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-04.
+2. Objetivo: reduzir complexidade de `session_turn_runtime.rs` extraindo a matriz de resolucao/shape de efeitos de `send_codex_input` para `runtime_bridge` sem alterar contrato externo.
+3. Escopo do slice:
+   - criar modulo dedicado em runtime_bridge para tipos e funcoes de efeitos de send input
+   - manter `session_turn_runtime.rs` como orquestrador + executor de side-effects
+   - preservar testes da matriz e testes de integracao do Slice 17
+
+Entregas:
+1. Novo modulo backend:
+   - `backend/src/infrastructure/runtime_bridge/session_send_input_effects.rs`
+2. Registro de modulo:
+   - `backend/src/infrastructure/runtime_bridge/mod.rs`
+3. Runtime simplificado com delegacao para runtime_bridge:
+   - `backend/src/session_turn_runtime.rs`
+4. Testes de `send_codex_input` mantidos verdes sem mudar asserts funcionais.
+
+Validacao executada:
+1. `cd alicia/backend && cargo fmt --all -- --check` -> OK.
+2. `cd alicia/backend && cargo check` -> OK.
+3. `cd alicia/backend && cargo test send_codex_input` -> OK (`8 passed; 0 failed`).
+4. `cd alicia/backend && cargo test` -> OK (`211 passed; 0 failed`).
+5. `cd alicia/backend && cargo clippy --all-targets --all-features -- -D warnings` -> OK.
+6. `node alicia/codex-bridge/generators/check-runtime-contract.mjs` -> OK (`runtimeMethods=51`, `tauriCommands=70`, `tauriEventChannels=6`).
+7. Verificacao de drift de contrato:
+   - sem drift em `backend/src/interface/tauri/commands/session_turn.rs`
+   - sem drift em `backend/src/interface/tauri/dto/session_turn.rs`
+   - sem alteracao em `alicia/codex-bridge/schema/runtime-contract.json`
+
+Revisao tecnica final:
+1. Sem findings de severidade critica/alta/media; 1 finding baixo (arquitetural).
+2. Corretude de ramos `slash/status/forward`, shape de request/payload e preservacao de `thread_id` confirmadas.
+3. Integracao do Slice 17 (hook cfg(test) + testes de canais) permaneceu integra.
+4. Sem blocker de merge.
+
+Resultado:
+1. Slice 18 da Fase 4 concluido sem blocker de merge.
+2. `session_turn_runtime.rs` ficou mais enxuto, com matriz de efeitos deslocada para `runtime_bridge` e comportamento preservado por testes.
 ## Current Architecture Snapshot (Key Risks)
 
 1. Frontend com `god component` em `app/page.tsx` concentrando UI + fluxo + regras.
@@ -1399,4 +1440,15 @@ Fase 4 (slice 17):
    - warnings recorrentes de rustfmt (config nightly) seguem como divida de tooling.
 4. Ajuste para continuidade da Fase 4:
    - manter foco em recortes incrementais de desacoplamento restante em `session_turn_runtime.rs` sem alterar contrato externo.
+
+Fase 4 (slice 18):
+1. Resultado entregue: extracao da matriz de efeitos de `send_codex_input` para modulo dedicado em `runtime_bridge`, mantendo runtime como orquestrador/executor.
+2. Incidentes/regressoes:
+   - nenhuma regressao funcional detectada;
+   - revisao final registrou apenas risco arquitetural baixo de acoplamento `runtime_bridge -> application::session_turn::use_cases`.
+3. Riscos residuais:
+   - acoplamento baixo introduzido no novo modulo pode elevar custo de evolucao se nao for tratado nos proximos recortes;
+   - warnings recorrentes de rustfmt (config nightly) seguem como divida de tooling.
+4. Ajuste para continuidade da Fase 4:
+   - avaliar recorte futuro para reduzir o acoplamento apontado (mapping planner->effect fora de `runtime_bridge`) sem reintroduzir complexidade em `session_turn_runtime.rs`.
 

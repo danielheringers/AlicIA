@@ -40,9 +40,11 @@ use crate::application::session_thread_review::use_cases as session_thread_revie
 use crate::application::session_turn::use_cases as session_turn_use_cases;
 #[cfg(feature = "native-codex-runtime")]
 use crate::emit_codex_event;
-use crate::infrastructure::runtime_bridge::status_snapshot::{
-    build_non_tui_status_snapshot, StatusSnapshotRequest,
+use crate::infrastructure::runtime_bridge::session_send_input_effects::{
+    resolve_send_codex_input_effect, resolve_send_codex_input_side_effect,
+    SendCodexInputEffectContext, SendCodexInputSideEffect,
 };
+use crate::infrastructure::runtime_bridge::status_snapshot::build_non_tui_status_snapshot;
 #[cfg(feature = "native-codex-runtime")]
 use crate::infrastructure::runtime_bridge::{
     session_thread_housekeeping, session_thread_shared, session_turn_event_pipeline,
@@ -1916,118 +1918,6 @@ pub(crate) async fn codex_user_input_respond_impl(
     })
 }
 
-enum SendCodexInputEffect {
-    RejectUnsupportedSlash { message: String },
-    RenderStatus,
-    ForwardTurnRun { request: CodexTurnRunRequest },
-}
-
-struct SendCodexInputEffectContext {
-    session_id: u64,
-    pid: Option<u32>,
-    thread_id: Option<String>,
-    cwd: std::path::PathBuf,
-    binary: String,
-    transport: crate::SessionTransport,
-}
-
-struct SendCodexInputStatusSnapshotPayload {
-    session_id: u64,
-    pid: Option<u32>,
-    thread_id: Option<String>,
-    cwd: std::path::PathBuf,
-    binary: String,
-    transport: crate::SessionTransport,
-}
-
-impl SendCodexInputStatusSnapshotPayload {
-    fn as_snapshot_request<'a>(
-        &'a self,
-        runtime_config: &'a RuntimeCodexConfig,
-    ) -> StatusSnapshotRequest<'a> {
-        StatusSnapshotRequest {
-            session_id: self.session_id,
-            pid: self.pid,
-            thread_id: self.thread_id.as_deref(),
-            cwd: &self.cwd,
-            runtime_config,
-            transport: self.transport,
-            binary: &self.binary,
-        }
-    }
-}
-
-enum SendCodexInputSideEffect {
-    EmitStderr {
-        session_id: u64,
-        message: String,
-    },
-    EmitStatusToStdout {
-        session_id: u64,
-        payload: SendCodexInputStatusSnapshotPayload,
-    },
-    ScheduleTurnRun {
-        request: CodexTurnRunRequest,
-    },
-}
-
-fn resolve_send_codex_input_effect(
-    plan: session_turn_use_cases::SendCodexInputPlan,
-    thread_id: Option<String>,
-) -> SendCodexInputEffect {
-    match plan {
-        session_turn_use_cases::SendCodexInputPlan::RejectUnsupportedSlash { message } => {
-            SendCodexInputEffect::RejectUnsupportedSlash { message }
-        }
-        session_turn_use_cases::SendCodexInputPlan::RenderStatus => {
-            SendCodexInputEffect::RenderStatus
-        }
-        session_turn_use_cases::SendCodexInputPlan::ForwardTurnRun { prompt } => {
-            SendCodexInputEffect::ForwardTurnRun {
-                request: CodexTurnRunRequest {
-                    thread_id,
-                    input_items: vec![CodexInputItem {
-                        item_type: "text".to_string(),
-                        text: Some(prompt),
-                        path: None,
-                        image_url: None,
-                        name: None,
-                    }],
-                    output_schema: None,
-                },
-            }
-        }
-    }
-}
-
-fn resolve_send_codex_input_side_effect(
-    effect: SendCodexInputEffect,
-    context: SendCodexInputEffectContext,
-) -> SendCodexInputSideEffect {
-    match effect {
-        SendCodexInputEffect::RejectUnsupportedSlash { message } => {
-            SendCodexInputSideEffect::EmitStderr {
-                session_id: context.session_id,
-                message,
-            }
-        }
-        SendCodexInputEffect::RenderStatus => SendCodexInputSideEffect::EmitStatusToStdout {
-            session_id: context.session_id,
-            payload: SendCodexInputStatusSnapshotPayload {
-                session_id: context.session_id,
-                pid: context.pid,
-                thread_id: context.thread_id,
-                cwd: context.cwd,
-                binary: context.binary,
-                transport: context.transport,
-            },
-        },
-        SendCodexInputEffect::ForwardTurnRun { request } => {
-            SendCodexInputSideEffect::ScheduleTurnRun { request }
-        }
-    }
-}
-
 async fn execute_send_codex_input_side_effect(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -2158,10 +2048,6 @@ mod tests {
         validate_approval_decision_before_lookup, validate_user_input_decision_before_lookup,
         ALICIA_NATIVE_INTERNAL_PROFILE,
     };
-    use super::{
-        resolve_send_codex_input_effect, resolve_send_codex_input_side_effect,
-        SendCodexInputEffectContext, SendCodexInputSideEffect,
-    };
     #[cfg(feature = "native-codex-runtime")]
     use super::{
         send_codex_input_impl, with_send_codex_input_schedule_hook_state,
@@ -2170,6 +2056,10 @@ mod tests {
     #[cfg(feature = "native-codex-runtime")]
     use crate::application::session_thread_review::use_cases as session_thread_review_use_cases;
     use crate::application::session_turn::use_cases as session_turn_use_cases;
+    use crate::infrastructure::runtime_bridge::session_send_input_effects::{
+        resolve_send_codex_input_effect, resolve_send_codex_input_side_effect,
+        SendCodexInputEffectContext, SendCodexInputSideEffect,
+    };
     #[cfg(feature = "native-codex-runtime")]
     use crate::{NativeApprovalKind, NativePendingApproval, NativePendingUserInput};
     #[cfg(feature = "native-codex-runtime")]
