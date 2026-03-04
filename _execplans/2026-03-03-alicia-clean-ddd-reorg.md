@@ -41,6 +41,7 @@ Excluido:
 - [x] (2026-03-04) Fase 4 (slice 2): contexto Account/MCP/App List extraido para application/domain/infrastructure.
 - [x] (2026-03-04) Fase 4 (slice 3): recorte ADT/Neuro (server registry/select/connect) extraido para application/domain/infrastructure.
 - [x] (2026-03-04) Fase 4 (slice 4): desacoplamento neuro_adt de neuro_runtime com contracts/ports/tipos proprios.
+- [x] (2026-03-04) Fase 4 (slice 5): extracao Session/Thread/Review (thread list/read + review validation) para clean layers.
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
 
@@ -439,12 +440,53 @@ Revisao tecnica final:
 Resultado:
 1. Slice 4 da Fase 4 concluido sem blocker de merge.
 2. Contexto `neuro_adt` (server registry/select/connect) ficou com fronteira clean mais estrita e sem dependencia direta de `neuro_runtime` nas camadas internas.
+## Fase 4 Slice 5 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-04.
+2. Objetivo: iniciar decomposicao de `session_turn_runtime.rs` extraindo o recorte read-only de `thread list/read` e validacao de `review.start` para `application/domain/infrastructure`.
+3. Escopo do slice:
+   - extracao de `codex_thread_list_impl`
+   - extracao de `codex_thread_read_impl`
+   - extracao da validacao de input de `codex_review_start_impl` (target/delivery)
+
+Entregas:
+1. Camada de aplicacao criada para o contexto:
+   - `backend/src/application/session_thread_review/{mod.rs,use_cases.rs}`
+2. Camada de dominio criada:
+   - `backend/src/domain/session_thread_review/{mod.rs,thread_query.rs,review_policy.rs}`
+3. Camada de infraestrutura criada para catalogo de threads:
+   - `backend/src/infrastructure/runtime_bridge/session_thread_catalog.rs`
+4. Modulos-raiz atualizados:
+   - `backend/src/{application,domain}/mod.rs`
+   - `backend/src/infrastructure/runtime_bridge/mod.rs`
+5. `session_turn_runtime.rs` reduzido para delegacao nos pontos do recorte sem mudanca de assinatura externa.
+6. Testes novos adicionados no contexto extraido:
+   - `application/session_thread_review/use_cases.rs` (3)
+   - `domain/session_thread_review/review_policy.rs` (8)
+   - `domain/session_thread_review/thread_query.rs` (6)
+
+Validacao executada:
+1. `cd alicia/backend && cargo fmt --all -- --check` -> OK.
+2. `cd alicia/backend && cargo check` -> OK.
+3. `cd alicia/backend && cargo test` -> OK (`154 passed; 0 failed`).
+4. `cd alicia/backend && cargo clippy --all-targets --all-features -- -D warnings` -> OK.
+5. `node alicia/codex-bridge/generators/check-runtime-contract.mjs` -> OK (`runtimeMethods=51`, `tauriCommands=70`, `tauriEventChannels=6`).
+6. Verificacao de contrato/assinatura: sem drift em comandos/assinaturas Tauri de thread/review.
+
+Revisao tecnica final:
+1. Sem findings de severidade alta/media.
+2. 1 finding baixo registrado: acoplamento residual do adapter `session_thread_catalog` com helpers de `session_turn_runtime`.
+
+Resultado:
+1. Slice 5 da Fase 4 concluido sem blocker de merge.
+2. Fase 4 continua com proxima prioridade em reduzir acoplamento residual deste adapter e extrair fluxos mutaveis restantes de Session/Thread/Review.
 ## Current Architecture Snapshot (Key Risks)
 
 1. Frontend com `god component` em `app/page.tsx` concentrando UI + fluxo + regras.
 2. Componentes de UI sem import direto de `tauri-bridge` nos painéis priorizados da Fase 2; ainda existe acoplamento residual via adapter concreto em alguns fluxos.
 3. `main.rs` agora esta focado em bootstrap/estado/registro de handlers; comandos e DTOs foram movidos para `interface/tauri`.
-4. `session_turn_runtime.rs` segue monolitico; `command_runtime.rs` e `neuro_runtime.rs` avancaram na decomposicao por contexto (Workspace, Account/MCP e ADT server registry), com desacoplamento parcial concluido e blocos residuais ainda em Session/Thread e ADT avancado.
+4. `session_turn_runtime.rs` iniciou decomposicao (thread list/read e review validation extraidos), mas ainda concentra fluxos mutaveis; `command_runtime.rs` e `neuro_runtime.rs` seguem avancando com blocos residuais especificos.
 5. Contrato runtime duplicado entre frontend e backend.
 
 ## Target Architecture
@@ -699,3 +741,14 @@ Fase 4 (slice 4):
    - falta teste explicito de serializacao dos DTOs extraidos de `neuro_adt`.
 4. Ajuste para continuidade da Fase 4:
    - priorizar separacao de `Session/Thread/Review` e/ou blocos ADT/Neuro restantes fora do recorte server registry.
+
+Fase 4 (slice 5):
+1. Resultado entregue: recorte read-only de Session/Thread/Review extraido para `application/domain/infrastructure` com `session_turn_runtime` atuando como fachada.
+2. Incidentes/regressoes:
+   - sem findings de severidade alta/media nas validacoes finais;
+   - contrato Tauri preservado sem drift de comandos/assinaturas.
+3. Riscos residuais:
+   - adapter `session_thread_catalog` ainda depende de helpers de `session_turn_runtime` (acoplamento baixo);
+   - faltam testes diretos de adapter para cenarios avancados de paginacao/filtros em rollout real.
+4. Ajuste para continuidade da Fase 4:
+   - extrair helpers compartilhados para modulo neutro e seguir com fluxos mutaveis de Session/Thread/Review.

@@ -24,10 +24,8 @@ use codex_core::CodexThread;
 use codex_core::SteerInputError;
 #[cfg(feature = "native-codex-runtime")]
 use codex_core::{
-    find_archived_thread_path_by_id_str, find_thread_path_by_id_str, parse_cursor,
-    read_session_meta_line, rollout_date_parts, Cursor as RolloutCursor, RolloutRecorder,
-    ThreadSortKey as CoreThreadSortKey, ARCHIVED_SESSIONS_SUBDIR, INTERACTIVE_SESSION_SOURCES,
-    SESSIONS_SUBDIR,
+    find_archived_thread_path_by_id_str, find_thread_path_by_id_str, read_session_meta_line,
+    rollout_date_parts, RolloutRecorder, ARCHIVED_SESSIONS_SUBDIR, SESSIONS_SUBDIR,
 };
 #[cfg(feature = "native-codex-runtime")]
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
@@ -51,6 +49,7 @@ use codex_protocol::ThreadId;
 #[cfg(feature = "native-codex-runtime")]
 use toml::map::Map as TomlMap;
 
+use crate::application::session_thread_review::use_cases as session_thread_review_use_cases;
 #[cfg(feature = "native-codex-runtime")]
 use crate::codex_event_translator::NativeCodexEventTranslator;
 #[cfg(feature = "native-codex-runtime")]
@@ -161,7 +160,7 @@ fn runtime_profile_or_internal(profile: &str) -> String {
 }
 
 #[cfg(feature = "native-codex-runtime")]
-fn native_profile_harness_overrides(cwd: &Path) -> ConfigOverrides {
+pub(crate) fn native_profile_harness_overrides(cwd: &Path) -> ConfigOverrides {
     ConfigOverrides {
         cwd: Some(cwd.to_path_buf()),
         config_profile: Some(ALICIA_NATIVE_INTERNAL_PROFILE.to_string()),
@@ -170,7 +169,7 @@ fn native_profile_harness_overrides(cwd: &Path) -> ConfigOverrides {
 }
 
 #[cfg(feature = "native-codex-runtime")]
-fn native_config_builder(codex_home: PathBuf, cwd: &Path) -> ConfigBuilder {
+pub(crate) fn native_config_builder(codex_home: PathBuf, cwd: &Path) -> ConfigBuilder {
     ConfigBuilder::default()
         .codex_home(codex_home)
         .fallback_cwd(Some(cwd.to_path_buf()))
@@ -824,7 +823,7 @@ fn parse_native_review_request(
 }
 
 #[cfg(feature = "native-codex-runtime")]
-fn native_now_epoch_seconds() -> i64 {
+pub(crate) fn native_now_epoch_seconds() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()
@@ -840,143 +839,6 @@ fn native_path_epoch_seconds(path: &Path) -> i64 {
         .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
         .and_then(|duration| i64::try_from(duration.as_secs()).ok())
         .unwrap_or_else(native_now_epoch_seconds)
-}
-
-#[cfg(feature = "native-codex-runtime")]
-fn normalize_source_kind_key(value: &str) -> String {
-    value
-        .trim()
-        .to_ascii_lowercase()
-        .chars()
-        .filter(|char| char.is_ascii_alphanumeric())
-        .collect::<String>()
-}
-
-#[cfg(feature = "native-codex-runtime")]
-fn parse_native_source_filters(
-    source_kinds: Option<Vec<String>>,
-) -> (Vec<SessionSource>, Option<Vec<String>>) {
-    fn default_native_sources() -> Vec<SessionSource> {
-        let mut sources = INTERACTIVE_SESSION_SOURCES.to_vec();
-        if !sources
-            .iter()
-            .any(|source| matches!(source, SessionSource::Unknown))
-        {
-            sources.push(SessionSource::Unknown);
-        }
-        sources
-    }
-
-    let Some(source_kinds) = source_kinds else {
-        return (default_native_sources(), None);
-    };
-
-    let normalized = source_kinds
-        .into_iter()
-        .map(|entry| normalize_source_kind_key(&entry))
-        .filter(|entry| !entry.is_empty())
-        .collect::<Vec<_>>();
-
-    if normalized.is_empty() {
-        return (default_native_sources(), None);
-    }
-
-    let requires_post_filter = normalized
-        .iter()
-        .any(|kind| !matches!(kind.as_str(), "cli" | "vscode"));
-
-    if requires_post_filter {
-        (Vec::new(), Some(normalized))
-    } else {
-        let allowed_sources = normalized
-            .iter()
-            .filter_map(|kind| match kind.as_str() {
-                "cli" => Some(SessionSource::Cli),
-                "vscode" => Some(SessionSource::VSCode),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        (allowed_sources, Some(normalized))
-    }
-}
-
-#[cfg(any(test, feature = "native-codex-runtime"))]
-fn normalize_model_provider_filters(model_providers: Option<Vec<String>>) -> Option<Vec<String>> {
-    let entries = model_providers?;
-
-    let normalized = entries
-        .into_iter()
-        .map(|entry| entry.trim().to_string())
-        .filter(|entry| !entry.is_empty())
-        .collect::<Vec<_>>();
-
-    if normalized.is_empty() {
-        None
-    } else {
-        Some(normalized)
-    }
-}
-
-#[cfg(feature = "native-codex-runtime")]
-fn native_source_kind_matches_filter(source: &str, source_filters: &[String]) -> bool {
-    let source_key = normalize_source_kind_key(source);
-    source_filters.iter().any(|kind| match kind.as_str() {
-        "cli" => source_key == "cli",
-        "vscode" => source_key == "vscode",
-        "exec" => source_key == "exec",
-        "appserver" | "mcp" => source_key == "mcp",
-        "subagent" => source_key.starts_with("subagent"),
-        "subagentreview" => source_key == "subagentreview",
-        "subagentcompact" => source_key == "subagentcompact",
-        "subagentthreadspawn" => source_key.starts_with("subagentthreadspawn"),
-        "subagentother" => {
-            source_key.starts_with("subagent")
-                && source_key != "subagentreview"
-                && source_key != "subagentcompact"
-                && !source_key.starts_with("subagentthreadspawn")
-        }
-        "unknown" => source_key == "unknown",
-        _ => false,
-    })
-}
-
-#[cfg(feature = "native-codex-runtime")]
-fn parse_native_thread_sort_key(sort_key: Option<String>) -> Result<CoreThreadSortKey, String> {
-    let Some(raw) = sort_key else {
-        return Ok(CoreThreadSortKey::CreatedAt);
-    };
-    let normalized = normalize_source_kind_key(&raw);
-    if normalized.is_empty() || normalized == "createdat" {
-        return Ok(CoreThreadSortKey::CreatedAt);
-    }
-    if normalized == "updatedat" {
-        return Ok(CoreThreadSortKey::UpdatedAt);
-    }
-
-    Err("sort_key must be one of: created_at, updated_at".to_string())
-}
-
-#[cfg(feature = "native-codex-runtime")]
-fn parse_native_thread_cursor(cursor: Option<String>) -> Result<Option<RolloutCursor>, String> {
-    let Some(cursor) = cursor
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(None);
-    };
-
-    parse_cursor(&cursor)
-        .map(Some)
-        .ok_or_else(|| format!("invalid cursor: {cursor}"))
-}
-
-#[cfg(feature = "native-codex-runtime")]
-fn serialize_native_thread_cursor(cursor: Option<RolloutCursor>) -> Option<String> {
-    cursor.and_then(|value| {
-        serde_json::to_value(value)
-            .ok()
-            .and_then(|value| value.as_str().map(|entry| entry.to_string()))
-    })
 }
 
 #[cfg(feature = "native-codex-runtime")]
@@ -1179,7 +1041,7 @@ fn native_preview_from_turns(turns: &[CodexThreadTurnSummary]) -> String {
 }
 
 #[cfg(feature = "native-codex-runtime")]
-fn native_thread_summary_from_list_item(
+pub(crate) fn native_thread_summary_from_list_item(
     item: codex_core::ThreadItem,
     fallback_provider: &str,
 ) -> Option<CodexThreadSummary> {
@@ -1229,7 +1091,7 @@ async fn native_turn_summaries_from_rollout_path(
 }
 
 #[cfg(feature = "native-codex-runtime")]
-async fn native_thread_summary_from_rollout_path(
+pub(crate) async fn native_thread_summary_from_rollout_path(
     rollout_path: &Path,
     fallback_provider: &str,
     include_turns: bool,
@@ -1269,52 +1131,6 @@ async fn native_thread_summary_from_rollout_path(
         turn_count,
         turns,
     })
-}
-
-fn validate_review_target(target: Option<&Value>) -> Result<(), String> {
-    let Some(target) = target else {
-        return Ok(());
-    };
-
-    let Some(target_object) = target.as_object() else {
-        return Err("target must be a plain JSON object".to_string());
-    };
-
-    let is_files_target = target_object
-        .get("type")
-        .and_then(Value::as_str)
-        .is_some_and(|target_type| target_type == "files");
-    if !is_files_target {
-        return Ok(());
-    }
-
-    let Some(paths) = target_object.get("paths").and_then(Value::as_array) else {
-        return Err(
-            "target.paths must be a non-empty array when target.type is `files`".to_string(),
-        );
-    };
-
-    if paths.is_empty() {
-        return Err(
-            "target.paths must be a non-empty array when target.type is `files`".to_string(),
-        );
-    }
-
-    for (index, path) in paths.iter().enumerate() {
-        let Some(path) = path.as_str() else {
-            return Err(format!(
-                "target.paths[{index}] must be a non-empty string when target.type is `files`"
-            ));
-        };
-
-        if path.trim().is_empty() {
-            return Err(format!(
-                "target.paths[{index}] must be a non-empty string when target.type is `files`"
-            ));
-        }
-    }
-
-    Ok(())
 }
 
 fn unsupported_slash_command_message(command: &str) -> String {
@@ -1686,14 +1502,7 @@ pub(crate) async fn codex_review_start_impl(
     state: State<'_, AppState>,
     request: CodexReviewStartRequest,
 ) -> Result<CodexReviewStartResponse, String> {
-    validate_review_target(request.target.as_ref())?;
-
-    if let Some(delivery) = request.delivery.as_ref() {
-        let normalized = delivery.trim().to_ascii_lowercase();
-        if !normalized.is_empty() && normalized != "inline" && normalized != "detached" {
-            return Err("delivery must be `inline` or `detached`".to_string());
-        }
-    }
+    session_thread_review_use_cases::validate_review_start_request(&request)?;
 
     schedule_review_start(app, state, request).await
 }
@@ -1830,207 +1639,14 @@ pub(crate) async fn codex_thread_list_impl(
     state: State<'_, AppState>,
     request: CodexThreadListRequest,
 ) -> Result<CodexThreadListResponse, String> {
-    const DEFAULT_PAGE_SIZE: usize = 25;
-    const MAX_PAGE_SIZE: usize = 100;
-
-    let CodexThreadListRequest {
-        cursor,
-        limit,
-        sort_key,
-        model_providers,
-        source_kinds,
-        archived,
-        cwd,
-    } = request;
-
-    let (runtime, session_cwd) = {
-        let guard = lock_active_session(state.inner())?;
-        let active = guard
-            .as_ref()
-            .ok_or_else(|| "no active codex session".to_string())?;
-
-        let crate::ActiveSessionTransport::Native(native) = &active.transport;
-
-        (Arc::clone(&native.runtime), active.cwd.clone())
-    };
-
-    let config = native_config_builder(runtime.codex_home.clone(), session_cwd.as_path())
-        .harness_overrides(native_profile_harness_overrides(session_cwd.as_path()))
-        .build()
-        .await
-        .map_err(|error| format!("failed to build native thread list config: {error}"))?;
-    let fallback_provider = config.model_provider_id.clone();
-    let default_provider = config.model_provider_id.as_str();
-    let requested_page_size = limit
-        .map(|value| usize::try_from(value).unwrap_or(usize::MAX))
-        .unwrap_or(DEFAULT_PAGE_SIZE)
-        .clamp(1, MAX_PAGE_SIZE);
-
-    let archived = archived.unwrap_or(false);
-    let sort_key = parse_native_thread_sort_key(sort_key)?;
-    let (allowed_sources, source_filter) = parse_native_source_filters(source_kinds);
-    let model_provider_filter = normalize_model_provider_filters(model_providers);
-    let cwd_filter = cwd
-        .map(|entry| entry.trim().to_string())
-        .filter(|entry| !entry.is_empty());
-
-    let mut cursor_obj = parse_native_thread_cursor(cursor)?;
-    let mut last_cursor = cursor_obj.clone();
-    let mut remaining = requested_page_size;
-    let mut data = Vec::with_capacity(requested_page_size);
-    let mut next_cursor = None;
-
-    while remaining > 0 {
-        let page_size = remaining.min(MAX_PAGE_SIZE);
-        let page = if archived {
-            RolloutRecorder::list_archived_threads(
-                &config,
-                page_size,
-                cursor_obj.as_ref(),
-                sort_key,
-                &allowed_sources,
-                model_provider_filter.as_deref(),
-                default_provider,
-            )
-            .await
-            .map_err(|error| format!("failed to list archived threads: {error}"))?
-        } else {
-            RolloutRecorder::list_threads(
-                &config,
-                page_size,
-                cursor_obj.as_ref(),
-                sort_key,
-                &allowed_sources,
-                model_provider_filter.as_deref(),
-                default_provider,
-            )
-            .await
-            .map_err(|error| format!("failed to list threads: {error}"))?
-        };
-
-        for item in page.items {
-            let Some(summary) = native_thread_summary_from_list_item(item, &fallback_provider)
-            else {
-                continue;
-            };
-            if source_filter
-                .as_ref()
-                .is_some_and(|filter| !native_source_kind_matches_filter(&summary.source, filter))
-            {
-                continue;
-            }
-            if cwd_filter
-                .as_ref()
-                .is_some_and(|expected_cwd| summary.cwd != *expected_cwd)
-            {
-                continue;
-            }
-            data.push(summary);
-            if data.len() == requested_page_size {
-                break;
-            }
-        }
-
-        remaining = requested_page_size.saturating_sub(data.len());
-        let next_cursor_value = page.next_cursor;
-        next_cursor = serialize_native_thread_cursor(next_cursor_value.clone());
-
-        if remaining == 0 {
-            break;
-        }
-
-        match next_cursor_value {
-            Some(cursor_value) => {
-                if last_cursor.as_ref() == Some(&cursor_value) {
-                    next_cursor = None;
-                    break;
-                }
-                last_cursor = Some(cursor_value.clone());
-                cursor_obj = Some(cursor_value);
-            }
-            None => break,
-        }
-    }
-
-    Ok(CodexThreadListResponse { data, next_cursor })
+    session_thread_review_use_cases::codex_thread_list(state, request).await
 }
 
 pub(crate) async fn codex_thread_read_impl(
     state: State<'_, AppState>,
     request: CodexThreadReadRequest,
 ) -> Result<CodexThreadReadResponse, String> {
-    let thread_id = request.thread_id.trim().to_string();
-    if thread_id.is_empty() {
-        return Err("thread_id is required".to_string());
-    }
-
-    let include_turns = request.include_turns.unwrap_or(true);
-    let (runtime, loaded_thread, session_cwd) = {
-        let guard = lock_active_session(state.inner())?;
-        let active = guard
-            .as_ref()
-            .ok_or_else(|| "no active codex session".to_string())?;
-
-        let crate::ActiveSessionTransport::Native(native) = &active.transport;
-
-        (
-            Arc::clone(&native.runtime),
-            native.threads.get(&thread_id).cloned(),
-            active.cwd.clone(),
-        )
-    };
-
-    let config = native_config_builder(runtime.codex_home.clone(), session_cwd.as_path())
-        .harness_overrides(native_profile_harness_overrides(session_cwd.as_path()))
-        .build()
-        .await
-        .map_err(|error| format!("failed to build native thread read config: {error}"))?;
-    let fallback_provider = config.model_provider_id.clone();
-
-    let rollout_path = if let Some(path) = loaded_thread
-        .as_ref()
-        .and_then(|thread| thread.rollout_path())
-    {
-        Some(path)
-    } else {
-        find_thread_path_by_id_str(runtime.codex_home.as_path(), &thread_id)
-            .await
-            .map_err(|error| format!("failed to resolve thread path: {error}"))?
-    };
-
-    if let Some(rollout_path) = rollout_path {
-        return Ok(CodexThreadReadResponse {
-            thread: native_thread_summary_from_rollout_path(
-                rollout_path.as_path(),
-                fallback_provider.as_str(),
-                include_turns,
-                Some(thread_id.as_str()),
-            )
-            .await?,
-        });
-    }
-
-    if let Some(thread) = loaded_thread {
-        let snapshot = thread.config_snapshot().await;
-        let now = native_now_epoch_seconds();
-        return Ok(CodexThreadReadResponse {
-            thread: CodexThreadSummary {
-                id: thread_id.clone(),
-                codex_thread_id: Some(thread_id.clone()),
-                preview: String::new(),
-                model_provider: snapshot.model_provider_id,
-                created_at: now,
-                updated_at: now,
-                cwd: snapshot.cwd.to_string_lossy().to_string(),
-                path: None,
-                source: snapshot.session_source.to_string(),
-                turn_count: 0,
-                turns: Vec::new(),
-            },
-        });
-    }
-
-    Err(format!("thread not found: {thread_id}"))
+    session_thread_review_use_cases::codex_thread_read(state, request).await
 }
 
 pub(crate) async fn codex_thread_archive_impl(
@@ -3080,125 +2696,16 @@ pub(crate) async fn send_codex_input_impl(
 mod tests {
     #[cfg(feature = "native-codex-runtime")]
     use super::{
-        build_native_user_input_resolved_payload, parse_native_source_filters,
-        runtime_model_override, runtime_profile_or_internal, runtime_profile_override,
-        runtime_web_search_mode, ALICIA_NATIVE_INTERNAL_PROFILE,
+        build_native_user_input_resolved_payload, runtime_model_override,
+        runtime_profile_or_internal, runtime_profile_override, runtime_web_search_mode,
+        ALICIA_NATIVE_INTERNAL_PROFILE,
     };
-    use super::{normalize_model_provider_filters, validate_review_target};
     #[cfg(feature = "native-codex-runtime")]
     use crate::NativePendingUserInput;
     #[cfg(feature = "native-codex-runtime")]
     use codex_protocol::config_types::WebSearchMode as WebSearchModeConfig;
     #[cfg(feature = "native-codex-runtime")]
-    use codex_protocol::protocol::SessionSource;
-    use serde_json::json;
-    #[cfg(feature = "native-codex-runtime")]
     use serde_json::Value;
-
-    #[test]
-    fn validate_review_target_rejects_non_object_target() {
-        let result = validate_review_target(Some(&json!("invalid")));
-        assert_eq!(
-            result,
-            Err("target must be a plain JSON object".to_string())
-        );
-    }
-
-    #[test]
-    fn validate_review_target_keeps_existing_target_types_unchanged() {
-        let result = validate_review_target(Some(&json!({
-            "type": "uncommittedChanges"
-        })));
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn validate_review_target_requires_paths_for_files_target() {
-        let result = validate_review_target(Some(&json!({ "type": "files" })));
-        assert_eq!(
-            result,
-            Err("target.paths must be a non-empty array when target.type is `files`".to_string())
-        );
-    }
-
-    #[test]
-    fn validate_review_target_requires_non_empty_trimmed_path_values() {
-        let result = validate_review_target(Some(&json!({
-            "type": "files",
-            "paths": ["src/main.rs", "   "]
-        })));
-        assert_eq!(
-            result,
-            Err(
-                "target.paths[1] must be a non-empty string when target.type is `files`"
-                    .to_string()
-            )
-        );
-    }
-
-    #[test]
-    fn validate_review_target_accepts_files_target_with_paths() {
-        let result = validate_review_target(Some(&json!({
-            "type": "files",
-            "paths": ["src/main.rs", "src/session_turn_runtime.rs"]
-        })));
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn normalize_model_provider_filters_none_keeps_filter_disabled() {
-        let result = normalize_model_provider_filters(None);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn normalize_model_provider_filters_discards_empty_entries() {
-        let result =
-            normalize_model_provider_filters(Some(vec!["  ".to_string(), "\n".to_string()]));
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn normalize_model_provider_filters_keeps_non_empty_entries() {
-        let result = normalize_model_provider_filters(Some(vec![
-            " openai ".to_string(),
-            "anthropic".to_string(),
-        ]));
-        assert_eq!(
-            result,
-            Some(vec!["openai".to_string(), "anthropic".to_string()])
-        );
-    }
-
-    #[cfg(feature = "native-codex-runtime")]
-    #[test]
-    fn parse_native_source_filters_default_keeps_unknown_compatibility() {
-        let (allowed, post_filter) = parse_native_source_filters(None);
-        assert!(allowed.contains(&SessionSource::Cli));
-        assert!(allowed.contains(&SessionSource::VSCode));
-        assert!(allowed.contains(&SessionSource::Unknown));
-        assert_eq!(post_filter, None);
-    }
-
-    #[cfg(feature = "native-codex-runtime")]
-    #[test]
-    fn parse_native_source_filters_maps_unknown_with_post_filter() {
-        let (allowed, post_filter) = parse_native_source_filters(Some(vec!["unknown".to_string()]));
-        assert!(allowed.is_empty());
-        assert_eq!(post_filter, Some(vec!["unknown".to_string()]));
-    }
-
-    #[cfg(feature = "native-codex-runtime")]
-    #[test]
-    fn parse_native_source_filters_unknown_and_vscode_keep_post_filter() {
-        let (allowed, post_filter) =
-            parse_native_source_filters(Some(vec!["unknown".to_string(), "vscode".to_string()]));
-        assert!(allowed.is_empty());
-        assert_eq!(
-            post_filter,
-            Some(vec!["unknown".to_string(), "vscode".to_string()])
-        );
-    }
 
     #[cfg(feature = "native-codex-runtime")]
     #[test]
