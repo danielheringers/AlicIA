@@ -35,7 +35,8 @@ Excluido:
 - [x] (2026-03-03) Fase 3 (slice 1): camada `interface/tauri` criada e comandos low/medium migrados.
 - [x] (2026-03-03) Fase 3 (slice 2): comandos Session/Thread/Review migrados para `interface/tauri`.
 - [x] (2026-03-03) Fase 3 (slice 3): handlers Account/MCP/App migrados para `interface/tauri`.
-- [ ] (2026-03-03) Fase 3: extracao de interface Tauri no backend (conclusao completa).
+- [x] (2026-03-03) Fase 3 (slice 4): bloco neuro/native/models migrado; `main.rs` sem handlers Tauri locais.
+- [x] (2026-03-03) Fase 3: extracao de interface Tauri no backend (conclusao completa).
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
 
@@ -229,11 +230,46 @@ Resultado:
 1. Slice 3 da Fase 3 concluido sem blocker de merge.
 2. Fase 3 completa permanece em aberto para migracao do bloco `neuro_*` e ajustes finais do `main.rs`.
 
+## Fase 3 Slice 4 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-03.
+2. Objetivo: concluir a extracao de interface Tauri no backend, removendo o bloco restante de handlers (`neuro_*`, `codex_native_runtime_diagnose`, `codex_models_list`) do `main.rs`.
+3. Escopo do slice:
+   - criacao de `commands/neuro.rs`, `commands/native_runtime.rs`, `commands/models.rs`
+   - extracao de DTOs de models para `dto/models.rs`
+   - ajustes de imports em `command_runtime.rs` e `models_runtime.rs`
+
+Entregas:
+1. Handlers migrados para interface:
+   - `backend/src/interface/tauri/commands/neuro.rs`
+   - `backend/src/interface/tauri/commands/native_runtime.rs`
+   - `backend/src/interface/tauri/commands/models.rs`
+2. DTOs de modelagem movidos para:
+   - `backend/src/interface/tauri/dto/models.rs`
+3. `main.rs` reduzido a bootstrap + registro, com `0` ocorrencias de `#[tauri::command]`.
+4. Reexports atualizados em:
+   - `backend/src/interface/tauri/commands/mod.rs`
+   - `backend/src/interface/tauri/dto/mod.rs`
+
+Validacao executada:
+1. `cd alicia/backend && cargo fmt --all -- --check` -> OK (warnings conhecidos do rustfmt nightly-only).
+2. `cd alicia/backend && cargo check` -> OK.
+3. `cd alicia/backend && cargo test` -> OK (`121 passed; 0 failed`).
+4. `cd alicia/backend && cargo clippy --all-targets --all-features -- -D warnings` -> OK.
+5. `node alicia/codex-bridge/generators/check-runtime-contract.mjs` -> OK.
+6. `cd alicia/frontend && pnpm run build` -> OK.
+7. `cd alicia/backend && cargo check --no-default-features --features custom-protocol` -> FAIL (erro preexistente fora do escopo deste slice, reproduzido em baseline limpo no `HEAD`, sem blocker para fluxo default).
+
+Resultado:
+1. Slice 4 da Fase 3 concluido sem blocker para fluxo default.
+2. Fase 3 marcada como concluida (extração de interface Tauri no backend finalizada).
+
 ## Current Architecture Snapshot (Key Risks)
 
 1. Frontend com `god component` em `app/page.tsx` concentrando UI + fluxo + regras.
 2. Componentes de UI sem import direto de `tauri-bridge` nos painéis priorizados da Fase 2; ainda existe acoplamento residual via adapter concreto em alguns fluxos.
-3. `main.rs` ja perdeu utility/runtime/workspace/terminal/session-thread-review/account-mcp, mas ainda concentra wiring e comandos dos contexts restantes (`models`, `neuro`, `native diagnose`).
+3. `main.rs` agora esta focado em bootstrap/estado/registro de handlers; comandos e DTOs foram movidos para `interface/tauri`.
 4. Modulos backend monoliticos (`command_runtime.rs`, `session_turn_runtime.rs`, `neuro_runtime.rs`).
 5. Contrato runtime duplicado entre frontend e backend.
 
@@ -437,11 +473,13 @@ Fase 2:
 4. Ajuste para Fase 3:
    - extrair interface Tauri no backend, reduzindo `main.rs` para bootstrap/registro e alinhando portas por contexto.
 
-Fase 3 (slices 1-3):
-1. Resultado entregue: camada `interface/tauri` consolidada para comandos de baixo/medio risco, Session/Thread/Review e Account/MCP/App, com `main.rs` progressivamente reduzido.
-2. Incidentes/regressoes: nenhum blocker detectado em check/test/clippy e revisao read-only.
+Fase 3 (slices 1-4):
+1. Resultado entregue: extracao de interface Tauri concluida no backend; `main.rs` reduzido para bootstrap/registro sem handlers locais.
+2. Incidentes/regressoes:
+   - sem blocker no fluxo default (`cargo check`, `cargo test`, `clippy`, contrato e build frontend OK);
+   - falha em `cargo check --no-default-features --features custom-protocol` identificada como preexistente e fora do escopo do slice.
 3. Riscos residuais:
-   - faltam testes dedicados de serializacao/contrato para DTOs centralizados (ex.: `dto/session_turn.rs`);
-   - faltam testes de integracao para validar automaticamente registro/invocacao dos comandos Tauri no `generate_handler!`.
-4. Ajuste para continuidade da Fase 3:
-   - migrar comandos restantes de maior acoplamento (`neuro_*`, `codex_native_runtime_diagnose` e bloco residual de `main.rs`) para `interface/tauri` mantendo paridade total.
+   - faltam testes de integracao para validar automaticamente binding/registro Tauri no `generate_handler!`;
+   - faltam testes dedicados de serializacao para DTOs migrados (ex.: `dto/models.rs`, `dto/session_turn.rs`).
+4. Ajuste para Fase 4:
+   - iniciar separacao interna por bounded context (`application/domain/infrastructure`) sobre a base ja desacoplada de interface.

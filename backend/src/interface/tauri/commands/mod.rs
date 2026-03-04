@@ -1,4 +1,7 @@
 pub(crate) mod account_mcp;
+pub(crate) mod models;
+pub(crate) mod native_runtime;
+pub(crate) mod neuro;
 pub(crate) mod runtime_config;
 pub(crate) mod session_lifecycle;
 pub(crate) mod session_turn;

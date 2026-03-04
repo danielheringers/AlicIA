@@ -8,7 +8,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::app_server_runtime::write_json_line;
-use crate::{resolve_codex_launch, CodexModel, CodexReasoningEffortOption};
+use crate::interface::tauri::dto::{CodexModel, CodexReasoningEffortOption};
+use crate::resolve_codex_launch;
 
 fn parse_reasoning_effort_option(value: &Value) -> Option<CodexReasoningEffortOption> {
     let object = value.as_object()?;

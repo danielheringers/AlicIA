@@ -1,3 +1,4 @@
+mod models;
 mod runtime;
 mod session_lifecycle;
 mod session_turn;
@@ -5,6 +6,7 @@ mod terminal;
 mod utility;
 mod workspace_git;
 
+pub(crate) use models::{CodexModel, CodexModelListResponse, CodexReasoningEffortOption};
 pub(crate) use runtime::{
     RuntimeCapabilitiesResponse, RuntimeCodexConfig, RuntimeContractMetadata, RuntimeStatusResponse,
 };
