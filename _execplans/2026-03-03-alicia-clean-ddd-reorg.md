@@ -46,6 +46,7 @@ Excluido:
 - [x] (2026-03-04) Fase 4 (slice 7): extracao de approval.respond + user_input.respond para clean layers com fail-fast de decisao.
 - [x] (2026-03-04) Fase 4 (slice 8): extracao do scheduling comum de turn.run/review.start para domain+application.
 - [x] (2026-03-04) Fase 4 (slice 9): extracao de housekeeping close/archive para runtime_bridge.
+- [x] (2026-03-04) Fase 4 (slice 10): extracao do pipeline comum de eventos/lifecycle para turn-run-review-start.
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
 
@@ -657,6 +658,46 @@ Revisao tecnica final:
 Resultado:
 1. Slice 9 da Fase 4 concluido sem blocker de merge.
 2. Duplicacao de housekeeping close/archive removida de `session_turn_runtime` com fronteira interna mais clara.
+## Fase 4 Slice 10 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-04.
+2. Objetivo: extrair o pipeline comum de stream/traducao/finalizacao de eventos para `turn.run` e `review.start` em modulo unico de infraestrutura.
+3. Escopo do slice:
+   - centralizacao do loop de `next_event` + traducoes + emissao
+   - centralizacao da finalizacao (`busy release`) e gate de `lifecycle error` por sessao ativa
+   - `session_turn_runtime` reduzido para submit especifico de `Op` + delegacao do pipeline
+
+Entregas:
+1. Novo modulo de infraestrutura:
+   - `backend/src/infrastructure/runtime_bridge/session_turn_event_pipeline.rs`
+2. Exports atualizados:
+   - `backend/src/infrastructure/runtime_bridge/mod.rs`
+3. Runtime simplificado:
+   - `backend/src/session_turn_runtime.rs`
+4. Testes unitarios adicionados para:
+   - emissao de lifecycle error somente com sessao ativa
+   - preservacao de shape no plano de finalizacao comum (sucesso/erro)
+
+Validacao executada:
+1. `cd alicia/backend && cargo fmt --all -- --check` -> OK.
+2. `cd alicia/backend && cargo check` -> OK.
+3. `cd alicia/backend && cargo test` -> OK (`186 passed; 0 failed`).
+4. `cd alicia/backend && cargo clippy --all-targets --all-features -- -D warnings` -> OK.
+5. `node alicia/codex-bridge/generators/check-runtime-contract.mjs` -> OK (`runtimeMethods=51`, `tauriCommands=70`, `tauriEventChannels=6`).
+6. Verificacao de contrato/assinaturas:
+   - sem drift em `backend/src/interface/tauri/commands/session_turn.rs`
+   - sem drift em `backend/src/interface/tauri/dto/session_turn.rs`
+
+Revisao tecnica final:
+1. Sem findings de severidade alta/media/baixa.
+2. Ordem e semantica de eventos preservadas no fluxo principal de `turn.run` e `review.start`.
+3. Riscos residuais baixos:
+   - faltam testes de integracao E2E explicitos para ordem de eventos no pipeline compartilhado.
+
+Resultado:
+1. Slice 10 da Fase 4 concluido sem blocker de merge.
+2. Duplicacao de event/lifecycle pipeline removida entre `schedule_turn_run_native` e `schedule_review_start_native`.
 ## Current Architecture Snapshot (Key Risks)
 
 1. Frontend com `god component` em `app/page.tsx` concentrando UI + fluxo + regras.
@@ -969,4 +1010,14 @@ Fase 4 (slice 9):
    - helper centralizado agora concentra logica de limpeza para dois caminhos criticos.
 4. Ajuste para continuidade da Fase 4:
    - priorizar extracao incremental do proximo recorte mutavel (`review.update/status` ou lifecycle/event translation) com testes de sequencia de evento.
+Fase 4 (slice 10):
+1. Resultado entregue: pipeline comum de eventos/lifecycle extraido para `infrastructure/runtime_bridge`, reduzindo duplicacao de loop de stream e finalizacao de sessao em runtime.
+2. Incidentes/regressoes:
+   - sem findings de severidade alta/media/baixa na revisao final;
+   - contrato Tauri preservado sem drift em comandos/DTOs de session_turn.
+3. Riscos residuais:
+   - cobertura atual valida plano de finalizacao, mas ainda faltam testes de integracao fim-a-fim para ordem completa de eventos;
+   - helper centralizado passou a concentrar o comportamento de dois caminhos criticos (`turn.run` e `review.start`).
+4. Ajuste para continuidade da Fase 4:
+   - priorizar recorte incremental de `review/status pathway` com foco em padronizar erros/saida sem mexer no contrato.
 

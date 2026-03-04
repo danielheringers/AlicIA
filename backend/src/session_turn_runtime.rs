@@ -30,9 +30,7 @@ use codex_protocol::config_types::WebSearchMode as WebSearchModeConfig;
 #[cfg(feature = "native-codex-runtime")]
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 #[cfg(feature = "native-codex-runtime")]
-use codex_protocol::protocol::{
-    AskForApproval, EventMsg, Op, ReviewRequest, ReviewTarget, SandboxPolicy,
-};
+use codex_protocol::protocol::{AskForApproval, Op, ReviewRequest, ReviewTarget, SandboxPolicy};
 #[cfg(feature = "native-codex-runtime")]
 use codex_protocol::user_input::UserInput;
 #[cfg(feature = "native-codex-runtime")]
@@ -40,11 +38,11 @@ use codex_protocol::ThreadId;
 
 use crate::application::session_thread_review::use_cases as session_thread_review_use_cases;
 #[cfg(feature = "native-codex-runtime")]
-use crate::codex_event_translator::NativeCodexEventTranslator;
-#[cfg(feature = "native-codex-runtime")]
 use crate::emit_codex_event;
 #[cfg(feature = "native-codex-runtime")]
-use crate::infrastructure::runtime_bridge::{session_thread_housekeeping, session_thread_shared};
+use crate::infrastructure::runtime_bridge::{
+    session_thread_housekeeping, session_thread_shared, session_turn_event_pipeline,
+};
 #[cfg(feature = "native-codex-runtime")]
 use crate::interface::tauri::dto::CodexThreadSummary;
 use crate::interface::tauri::dto::{
@@ -60,7 +58,7 @@ use crate::interface::tauri::dto::{
 };
 use crate::status_runtime::{fetch_rate_limits_for_status, format_non_tui_status};
 use crate::{
-    emit_lifecycle, emit_stderr, emit_stdout, lock_active_session, lock_runtime_config, AppState,
+    emit_stderr, emit_stdout, lock_active_session, lock_runtime_config, AppState,
     RuntimeCodexConfig,
 };
 
@@ -572,22 +570,6 @@ async fn load_native_thread_from_active_session(
 }
 
 #[cfg(feature = "native-codex-runtime")]
-fn with_native_handles_mut<R>(
-    app: &AppHandle,
-    session_id: u64,
-    f: impl FnOnce(&mut crate::NativeSessionHandles) -> R,
-) -> Option<R> {
-    let state = app.state::<AppState>();
-    let mut guard = lock_active_session(state.inner()).ok()?;
-    let active = guard.as_mut()?;
-    if active.session_id != session_id {
-        return None;
-    }
-    let crate::ActiveSessionTransport::Native(native) = &mut active.transport;
-    Some(f(native))
-}
-
-#[cfg(feature = "native-codex-runtime")]
 fn reinsert_pending_approval_entry(
     pending_approvals: &mut std::collections::HashMap<String, crate::NativePendingApproval>,
     action_id: &str,
@@ -626,7 +608,7 @@ fn reinsert_pending_approval_for_session(
     action_id: &str,
     pending_approval: crate::NativePendingApproval,
 ) {
-    let _ = with_native_handles_mut(app, session_id, |native| {
+    let _ = session_turn_event_pipeline::with_native_handles_mut(app, session_id, |native| {
         reinsert_pending_approval_entry(&mut native.pending_approvals, action_id, pending_approval)
     });
 }
@@ -638,7 +620,7 @@ fn reinsert_pending_user_input_for_session(
     action_id: &str,
     pending_user_input: crate::NativePendingUserInput,
 ) {
-    let _ = with_native_handles_mut(app, session_id, |native| {
+    let _ = session_turn_event_pipeline::with_native_handles_mut(app, session_id, |native| {
         reinsert_pending_user_input_entry(
             &mut native.pending_user_inputs,
             action_id,
@@ -740,39 +722,6 @@ fn unsupported_slash_command_message(command: &str) -> String {
         "slash command `{display_command}` is not available in the current runtime. Supported command: /status"
     )
 }
-fn finish_session_turn(app: &AppHandle, session_id: u64, discovered_thread_id: Option<String>) {
-    let state = app.state::<AppState>();
-    let mut guard = match lock_active_session(state.inner()) {
-        Ok(guard) => guard,
-        Err(_) => return,
-    };
-
-    let Some(active) = guard.as_mut() else {
-        return;
-    };
-
-    if active.session_id != session_id {
-        return;
-    }
-
-    active.busy = false;
-    if let Some(thread_id) = discovered_thread_id {
-        active.thread_id = Some(thread_id);
-    }
-}
-
-fn is_active_session(app: &AppHandle, session_id: u64) -> bool {
-    let state = app.state::<AppState>();
-    let guard = match lock_active_session(state.inner()) {
-        Ok(guard) => guard,
-        Err(_) => return false,
-    };
-
-    guard
-        .as_ref()
-        .is_some_and(|active| active.session_id == session_id)
-}
-
 fn parse_slash_command(prompt: &str) -> Option<(&str, &str)> {
     let trimmed = prompt.trim();
     if !trimmed.starts_with('/') {
@@ -865,56 +814,25 @@ async fn schedule_turn_run_native(
                 .await
                 .map_err(|error| format!("failed to submit native turn: {error}"))?;
 
-            let mut translator = NativeCodexEventTranslator::new(thread_id.clone());
-            loop {
-                let event = thread
-                    .next_event()
-                    .await
-                    .map_err(|error| format!("native event stream failed: {error}"))?;
-                let is_terminal = matches!(
-                    event.msg,
-                    EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
-                );
-
-                let Some(translated_events) =
-                    with_native_handles_mut(&app_for_task, session_id, |native| {
-                        translator.translate_event(&event, native)
-                    })
-                else {
-                    break;
-                };
-
-                for translated in translated_events {
-                    emit_codex_event(&app_for_task, session_id, translated, &event_seq);
-                }
-
-                if is_terminal {
-                    break;
-                }
-            }
+            session_turn_event_pipeline::drive_session_turn_event_pipeline(
+                &app_for_task,
+                session_id,
+                thread_id.as_str(),
+                &thread,
+                &event_seq,
+            )
+            .await?;
 
             Ok(thread_id)
         }
         .await;
 
-        match result {
-            Ok(returned_thread_id) => {
-                finish_session_turn(&app_for_task, session_id, Some(returned_thread_id));
-            }
-            Err(error) => {
-                if is_active_session(&app_for_task, session_id) {
-                    emit_lifecycle(
-                        &app_for_task,
-                        "error",
-                        Some(session_id),
-                        pid,
-                        None,
-                        Some(error),
-                    );
-                }
-                finish_session_turn(&app_for_task, session_id, None);
-            }
-        }
+        session_turn_event_pipeline::finalize_session_turn_pipeline(
+            &app_for_task,
+            session_id,
+            pid,
+            result,
+        );
     });
 
     Ok(response)
@@ -1005,56 +923,25 @@ async fn schedule_review_start_native(
                 .await
                 .map_err(|error| format!("failed to submit native review: {error}"))?;
 
-            let mut translator = NativeCodexEventTranslator::new(thread_id.clone());
-            loop {
-                let event = thread
-                    .next_event()
-                    .await
-                    .map_err(|error| format!("native event stream failed: {error}"))?;
-                let is_terminal = matches!(
-                    event.msg,
-                    EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
-                );
-
-                let Some(translated_events) =
-                    with_native_handles_mut(&app_for_task, session_id, |native| {
-                        translator.translate_event(&event, native)
-                    })
-                else {
-                    break;
-                };
-
-                for translated in translated_events {
-                    emit_codex_event(&app_for_task, session_id, translated, &event_seq);
-                }
-
-                if is_terminal {
-                    break;
-                }
-            }
+            session_turn_event_pipeline::drive_session_turn_event_pipeline(
+                &app_for_task,
+                session_id,
+                thread_id.as_str(),
+                &thread,
+                &event_seq,
+            )
+            .await?;
 
             Ok(thread_id)
         }
         .await;
 
-        match result {
-            Ok(returned_thread_id) => {
-                finish_session_turn(&app_for_task, session_id, Some(returned_thread_id));
-            }
-            Err(error) => {
-                if is_active_session(&app_for_task, session_id) {
-                    emit_lifecycle(
-                        &app_for_task,
-                        "error",
-                        Some(session_id),
-                        pid,
-                        None,
-                        Some(error),
-                    );
-                }
-                finish_session_turn(&app_for_task, session_id, None);
-            }
-        }
+        session_turn_event_pipeline::finalize_session_turn_pipeline(
+            &app_for_task,
+            session_id,
+            pid,
+            result,
+        );
     });
 
     Ok(response)
