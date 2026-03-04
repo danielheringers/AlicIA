@@ -2051,10 +2051,69 @@ async fn execute_send_codex_input_side_effect(
             Ok(())
         }
         SendCodexInputSideEffect::ScheduleTurnRun { request } => {
+            #[cfg(test)]
+            if observe_send_codex_input_schedule_hook(&request) {
+                return Ok(());
+            }
             let _ = schedule_turn_run(app, state, request).await?;
             Ok(())
         }
     }
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct SendCodexInputScheduleHookObservation {
+    thread_id: Option<String>,
+    input_item_count: usize,
+    first_item_type: Option<String>,
+    first_item_text: Option<String>,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct SendCodexInputScheduleHookState {
+    observation_tx: Option<std::sync::mpsc::Sender<SendCodexInputScheduleHookObservation>>,
+    short_circuit: bool,
+}
+
+#[cfg(test)]
+thread_local! {
+    static SEND_CODEX_INPUT_SCHEDULE_HOOK_STATE: std::cell::RefCell<SendCodexInputScheduleHookState> =
+        std::cell::RefCell::new(SendCodexInputScheduleHookState::default());
+}
+
+#[cfg(test)]
+fn with_send_codex_input_schedule_hook_state<R>(
+    f: impl FnOnce(&mut SendCodexInputScheduleHookState) -> R,
+) -> R {
+    SEND_CODEX_INPUT_SCHEDULE_HOOK_STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        f(&mut state)
+    })
+}
+
+#[cfg(test)]
+fn observe_send_codex_input_schedule_hook(request: &CodexTurnRunRequest) -> bool {
+    with_send_codex_input_schedule_hook_state(|hook_state| {
+        if let Some(observation_tx) = hook_state.observation_tx.as_ref() {
+            let observation = SendCodexInputScheduleHookObservation {
+                thread_id: request.thread_id.clone(),
+                input_item_count: request.input_items.len(),
+                first_item_type: request
+                    .input_items
+                    .first()
+                    .map(|item| item.item_type.clone()),
+                first_item_text: request
+                    .input_items
+                    .first()
+                    .and_then(|item| item.text.clone()),
+            };
+            let _ = observation_tx.send(observation);
+        }
+
+        hook_state.short_circuit
+    })
 }
 
 pub(crate) async fn send_codex_input_impl(
@@ -2104,6 +2163,11 @@ mod tests {
         SendCodexInputEffectContext, SendCodexInputSideEffect,
     };
     #[cfg(feature = "native-codex-runtime")]
+    use super::{
+        send_codex_input_impl, with_send_codex_input_schedule_hook_state,
+        SendCodexInputScheduleHookObservation,
+    };
+    #[cfg(feature = "native-codex-runtime")]
     use crate::application::session_thread_review::use_cases as session_thread_review_use_cases;
     use crate::application::session_turn::use_cases as session_turn_use_cases;
     #[cfg(feature = "native-codex-runtime")]
@@ -2115,6 +2179,12 @@ mod tests {
     #[cfg(feature = "native-codex-runtime")]
     use std::collections::HashMap;
     use std::path::PathBuf;
+    #[cfg(feature = "native-codex-runtime")]
+    use std::sync::{mpsc, Mutex, OnceLock};
+    #[cfg(feature = "native-codex-runtime")]
+    use std::time::Duration;
+    #[cfg(feature = "native-codex-runtime")]
+    use tauri::{Listener, Manager};
 
     fn send_codex_input_effect_context_fixture(
         thread_id: Option<&str>,
@@ -2257,6 +2327,241 @@ mod tests {
                 panic!("unexpected side-effect for regular prompt with existing thread")
             }
         }
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    struct SendCodexInputScheduleHookGuard;
+
+    #[cfg(feature = "native-codex-runtime")]
+    impl Drop for SendCodexInputScheduleHookGuard {
+        fn drop(&mut self) {
+            with_send_codex_input_schedule_hook_state(|hook_state| {
+                hook_state.observation_tx = None;
+                hook_state.short_circuit = false;
+            });
+        }
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    fn install_send_codex_input_schedule_hook(
+        observation_tx: mpsc::Sender<SendCodexInputScheduleHookObservation>,
+        short_circuit: bool,
+    ) -> SendCodexInputScheduleHookGuard {
+        with_send_codex_input_schedule_hook_state(|hook_state| {
+            hook_state.observation_tx = Some(observation_tx);
+            hook_state.short_circuit = short_circuit;
+        });
+        SendCodexInputScheduleHookGuard
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    fn send_codex_input_integration_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    fn build_send_codex_input_test_app() -> tauri::App {
+        tauri::Builder::default()
+            .any_thread()
+            .manage(crate::AppState::default())
+            .build(tauri::generate_context!())
+            .expect("test app should build")
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    async fn start_send_codex_input_test_session(app: &tauri::App) -> u64 {
+        let cwd = std::env::current_dir().expect("current dir should resolve");
+        let response = crate::session_lifecycle_runtime::start_codex_session_impl(
+            app.handle().clone(),
+            app.handle().state::<crate::AppState>(),
+            Some(crate::StartCodexSessionConfig {
+                cwd: Some(cwd.to_string_lossy().to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("test session should start");
+        response.session_id
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    async fn stop_send_codex_input_test_session(app: &tauri::App) {
+        crate::session_lifecycle_runtime::stop_codex_session_impl(
+            app.handle().clone(),
+            app.handle().state::<crate::AppState>(),
+        )
+        .await
+        .expect("test session should stop");
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    fn listen_stream_channel(
+        app: &tauri::App,
+        channel: &str,
+    ) -> (mpsc::Receiver<Value>, tauri::EventId) {
+        let (tx, rx) = mpsc::channel();
+        let listener_id = app.listen(channel.to_string(), move |event| {
+            if let Ok(payload) = serde_json::from_str::<Value>(event.payload()) {
+                let _ = tx.send(payload);
+            }
+        });
+        (rx, listener_id)
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    fn assert_no_stream_payload(rx: &mpsc::Receiver<Value>, channel: &str) {
+        match rx.recv_timeout(Duration::from_millis(400)) {
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("stream listener disconnected before timeout for {channel}")
+            }
+            Ok(payload) => panic!("unexpected payload on {channel}: {payload:?}"),
+        }
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    #[test]
+    fn send_codex_input_impl_invalid_slash_emits_stderr_and_returns_ok() {
+        let _integration_lock = send_codex_input_integration_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+
+        tauri::async_runtime::block_on(async {
+            let app = build_send_codex_input_test_app();
+            let session_id = start_send_codex_input_test_session(&app).await;
+
+            let (stderr_rx, stderr_listener_id) = listen_stream_channel(
+                &app,
+                crate::generated::runtime_contract::EVENT_CHANNEL_CODEX_STDERR,
+            );
+            let (stdout_rx, stdout_listener_id) = listen_stream_channel(
+                &app,
+                crate::generated::runtime_contract::EVENT_CHANNEL_CODEX_STDOUT,
+            );
+
+            let result = send_codex_input_impl(
+                app.handle().clone(),
+                app.handle().state::<crate::AppState>(),
+                "/foo bar".to_string(),
+            )
+            .await;
+            assert!(result.is_ok());
+
+            let stderr_payload = stderr_rx
+                .recv_timeout(Duration::from_millis(600))
+                .expect("stderr event should be emitted");
+            assert_eq!(
+                stderr_payload.get("sessionId").and_then(Value::as_u64),
+                Some(session_id)
+            );
+            let message = stderr_payload
+                .get("chunk")
+                .and_then(Value::as_str)
+                .expect("stderr payload must include chunk");
+            assert!(message.contains("slash command `/foo` is not available"));
+            assert!(message.contains("Supported command: /status"));
+
+            assert_no_stream_payload(
+                &stdout_rx,
+                crate::generated::runtime_contract::EVENT_CHANNEL_CODEX_STDOUT,
+            );
+
+            app.unlisten(stderr_listener_id);
+            app.unlisten(stdout_listener_id);
+            stop_send_codex_input_test_session(&app).await;
+        });
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    #[test]
+    fn send_codex_input_impl_status_emits_stdout_and_returns_ok() {
+        let _integration_lock = send_codex_input_integration_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+
+        tauri::async_runtime::block_on(async {
+            let app = build_send_codex_input_test_app();
+            let session_id = start_send_codex_input_test_session(&app).await;
+
+            let (stdout_rx, stdout_listener_id) = listen_stream_channel(
+                &app,
+                crate::generated::runtime_contract::EVENT_CHANNEL_CODEX_STDOUT,
+            );
+            let (stderr_rx, stderr_listener_id) = listen_stream_channel(
+                &app,
+                crate::generated::runtime_contract::EVENT_CHANNEL_CODEX_STDERR,
+            );
+
+            let result = send_codex_input_impl(
+                app.handle().clone(),
+                app.handle().state::<crate::AppState>(),
+                "/status".to_string(),
+            )
+            .await;
+            assert!(result.is_ok());
+
+            let stdout_payload = stdout_rx
+                .recv_timeout(Duration::from_millis(600))
+                .expect("stdout event should be emitted");
+            assert_eq!(
+                stdout_payload.get("sessionId").and_then(Value::as_u64),
+                Some(session_id)
+            );
+            let chunk = stdout_payload
+                .get("chunk")
+                .and_then(Value::as_str)
+                .expect("stdout payload must include chunk");
+            assert!(chunk.contains("/status"));
+            assert!(chunk.contains("mode: native-runtime"));
+            assert!(chunk.contains(&format!("session: #{session_id}")));
+
+            assert_no_stream_payload(
+                &stderr_rx,
+                crate::generated::runtime_contract::EVENT_CHANNEL_CODEX_STDERR,
+            );
+
+            app.unlisten(stdout_listener_id);
+            app.unlisten(stderr_listener_id);
+            stop_send_codex_input_test_session(&app).await;
+        });
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    #[test]
+    fn send_codex_input_impl_prompt_observes_schedule_branch_via_hook_spy() {
+        let _integration_lock = send_codex_input_integration_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+
+        tauri::async_runtime::block_on(async {
+            let app = build_send_codex_input_test_app();
+            let _session_id = start_send_codex_input_test_session(&app).await;
+
+            let (observation_tx, observation_rx) = mpsc::channel();
+            let _hook_guard = install_send_codex_input_schedule_hook(observation_tx, true);
+
+            let result = send_codex_input_impl(
+                app.handle().clone(),
+                app.handle().state::<crate::AppState>(),
+                "hello schedule branch".to_string(),
+            )
+            .await;
+            assert!(result.is_ok());
+
+            let observation = observation_rx
+                .recv_timeout(Duration::from_millis(600))
+                .expect("schedule branch should be observed by hook");
+            assert!(observation.thread_id.is_none());
+            assert_eq!(observation.input_item_count, 1);
+            assert_eq!(observation.first_item_type.as_deref(), Some("text"));
+            assert_eq!(
+                observation.first_item_text.as_deref(),
+                Some("hello schedule branch")
+            );
+
+            stop_send_codex_input_test_session(&app).await;
+        });
     }
 
     #[cfg(feature = "native-codex-runtime")]

@@ -53,6 +53,7 @@ Excluido:
 - [x] (2026-03-04) Fase 4 (slice 14): planificacao send_codex_input extraida para application (runtime executor).
 - [x] (2026-03-04) Fase 4 (slice 15): seam de efeitos em send_codex_input extraida no runtime com testes deterministas.
 - [x] (2026-03-04) Fase 4 (slice 16): execucao de side-effects de send_codex_input isolada com cobertura thread_id none/some.
+- [x] (2026-03-04) Fase 4 (slice 17): testes de integracao de send_codex_input_impl para stderr/stdout/schedule com robustez anti-flake.
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
 
@@ -960,6 +961,49 @@ Revisao tecnica final:
 Resultado:
 1. Slice 16 da Fase 4 concluido sem blocker de merge.
 2. Orquestracao de `send_codex_input_impl` ficou mais testavel, com exclusividade de side-effects e preservacao de `thread_id` cobertas por testes.
+## Fase 4 Slice 17 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-04.
+2. Objetivo: fechar o risco residual de integracao de `send_codex_input_impl` com cobertura do fluxo completo (`stderr`, `stdout`, `schedule_turn_run`) sem alterar contrato externo.
+3. Escopo do slice:
+   - adicionar testes de integracao no runtime para os tres ramos de `send_codex_input_impl`
+   - introduzir hook de observacao de schedule sob `#[cfg(test)]`
+   - reforcar robustez anti-flake (isolamento de hook por thread e assert de ausencia de evento com janela dedicada)
+
+Entregas:
+1. Runtime/testes atualizados:
+   - `backend/src/session_turn_runtime.rs`
+2. Novos testes de integracao:
+   - slash invalido -> emite `codex://stderr` e retorna `Ok(())`
+   - `/status` -> emite `codex://stdout` e retorna `Ok(())`
+   - prompt normal -> ramo `schedule_turn_run` observado por hook/spy de teste
+3. Robustez adicional aplicada no proprio slice:
+   - estado do hook migrado para `thread_local` (evita interferencia global entre testes)
+   - helper `assert_no_stream_payload` para validar ausencia de evento no canal oposto
+   - timeouts de recepcao ampliados para reduzir flake em CI
+
+Validacao executada:
+1. `cd alicia/backend && cargo fmt --all -- --check` -> OK.
+2. `cd alicia/backend && cargo check` -> OK.
+3. `cd alicia/backend && cargo test send_codex_input` -> OK (`8 passed; 0 failed`).
+4. `cd alicia/backend && cargo test` -> OK (`211 passed; 0 failed`).
+5. `cd alicia/backend && cargo clippy --all-targets --all-features -- -D warnings` -> OK.
+6. `node alicia/codex-bridge/generators/check-runtime-contract.mjs` -> OK (`runtimeMethods=51`, `tauriCommands=70`, `tauriEventChannels=6`).
+7. Verificacao de drift de contrato:
+   - sem drift em `backend/src/interface/tauri/commands/session_turn.rs`
+   - sem drift em `backend/src/interface/tauri/dto/session_turn.rs`
+   - sem alteracao em `alicia/codex-bridge/schema/runtime-contract.json`
+
+Revisao tecnica final:
+1. Rodada final sem findings de severidade critica/alta/media/baixa.
+2. Finding medio intermediario (interferencia de hook global) foi resolvido com isolamento `thread_local`.
+3. Finding baixo intermediario (timeout curto/cegueira em assert negativo) foi mitigado com helper dedicado e janela maior.
+4. Sem blocker de merge.
+
+Resultado:
+1. Slice 17 da Fase 4 concluido sem blocker de merge.
+2. Risco residual principal de integracao de `send_codex_input_impl` foi fechado no escopo backend runtime com testes de fluxo completo.
 ## Current Architecture Snapshot (Key Risks)
 
 1. Frontend com `god component` em `app/page.tsx` concentrando UI + fluxo + regras.
@@ -1344,4 +1388,15 @@ Fase 4 (slice 16):
    - warnings recorrentes de rustfmt (config nightly) seguem como divida de tooling.
 4. Ajuste para continuidade da Fase 4:
    - priorizar teste de integracao de runtime para `send_codex_input_impl` com asserts de `stdout/stderr/schedule_turn_run` em fluxo completo.
+
+Fase 4 (slice 17):
+1. Resultado entregue: testes de integracao de `send_codex_input_impl` cobrindo os tres ramos (`stderr`, `stdout`, `schedule`) com hook de observacao `cfg(test)` e robustez anti-flake.
+2. Incidentes/regressoes:
+   - revisao intermediaria apontou risco medio de hook global e risco baixo de timeout curto;
+   - ambos os pontos foram corrigidos no proprio slice e a rodada final ficou sem findings.
+3. Riscos residuais:
+   - validacao de canais ainda ocorre em ambiente de teste unitario/integracao local (nao cobre app completo empacotado);
+   - warnings recorrentes de rustfmt (config nightly) seguem como divida de tooling.
+4. Ajuste para continuidade da Fase 4:
+   - manter foco em recortes incrementais de desacoplamento restante em `session_turn_runtime.rs` sem alterar contrato externo.
 
