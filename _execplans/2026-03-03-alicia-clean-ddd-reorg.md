@@ -55,6 +55,7 @@ Excluido:
 - [x] (2026-03-04) Fase 4 (slice 16): execucao de side-effects de send_codex_input isolada com cobertura thread_id none/some.
 - [x] (2026-03-04) Fase 4 (slice 17): testes de integracao de send_codex_input_impl para stderr/stdout/schedule com robustez anti-flake.
 - [x] (2026-03-04) Fase 4 (slice 18): extracao da matriz de efeitos de send_codex_input para runtime_bridge com runtime orquestrador.
+- [x] (2026-03-04) Fase 4 (slice 19): plano send_codex_input migrado para domain removendo acoplamento infrastructure->application.
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
 
@@ -1045,6 +1046,48 @@ Revisao tecnica final:
 Resultado:
 1. Slice 18 da Fase 4 concluido sem blocker de merge.
 2. `session_turn_runtime.rs` ficou mais enxuto, com matriz de efeitos deslocada para `runtime_bridge` e comportamento preservado por testes.
+## Fase 4 Slice 19 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-04.
+2. Objetivo: remover o acoplamento de `runtime_bridge` com `application::session_turn::use_cases` movendo `SendCodexInputPlan` para a camada de dominio.
+3. Escopo do slice:
+   - criar tipo de dominio para o plano de send input
+   - ajustar application para retornar tipo de dominio sem mudar regras
+   - ajustar runtime_bridge para depender de domain, preservando comportamento/shape
+
+Entregas:
+1. Novo tipo de dominio:
+   - `backend/src/domain/session_turn/send_codex_input_plan.rs`
+2. Exposicao no modulo de dominio:
+   - `backend/src/domain/session_turn/mod.rs`
+3. Application ajustada para usar tipo de dominio:
+   - `backend/src/application/session_turn/use_cases.rs`
+4. Runtime bridge desacoplado de application:
+   - `backend/src/infrastructure/runtime_bridge/session_send_input_effects.rs`
+
+Validacao executada:
+1. `cd alicia/backend && cargo fmt --all -- --check` -> OK.
+2. `cd alicia/backend && cargo check` -> OK.
+3. `cd alicia/backend && cargo test send_codex_input` -> OK (`8 passed; 0 failed`).
+4. `cd alicia/backend && cargo test` -> OK (`211 passed; 0 failed`).
+5. `cd alicia/backend && cargo clippy --all-targets --all-features -- -D warnings` -> OK.
+6. `node alicia/codex-bridge/generators/check-runtime-contract.mjs` -> OK (`runtimeMethods=51`, `tauriCommands=70`, `tauriEventChannels=6`).
+7. `rg -n "use crate::application::" alicia/backend/src/infrastructure` -> sem ocorrencias para `session_send_input_effects.rs`.
+8. Verificacao de drift de contrato:
+   - sem drift em `backend/src/interface/tauri/commands/session_turn.rs`
+   - sem drift em `backend/src/interface/tauri/dto/session_turn.rs`
+   - sem alteracao em `alicia/codex-bridge/schema/runtime-contract.json`
+
+Revisao tecnica final:
+1. Rodada final sem findings de severidade critica/alta/media/baixa.
+2. Migracao do tipo para domain preservou variants, comportamento e shape de mapeamento no runtime bridge.
+3. Sem novo acoplamento indevido/circular identificado.
+4. Sem blocker de merge.
+
+Resultado:
+1. Slice 19 da Fase 4 concluido sem blocker de merge.
+2. Acoplamento `infrastructure -> application` no fluxo `send_codex_input` foi removido, reforcando limites Clean/DDD no backend.
 ## Current Architecture Snapshot (Key Risks)
 
 1. Frontend com `god component` em `app/page.tsx` concentrando UI + fluxo + regras.
@@ -1451,4 +1494,15 @@ Fase 4 (slice 18):
    - warnings recorrentes de rustfmt (config nightly) seguem como divida de tooling.
 4. Ajuste para continuidade da Fase 4:
    - avaliar recorte futuro para reduzir o acoplamento apontado (mapping planner->effect fora de `runtime_bridge`) sem reintroduzir complexidade em `session_turn_runtime.rs`.
+
+Fase 4 (slice 19):
+1. Resultado entregue: `SendCodexInputPlan` migrado para domain e `session_send_input_effects` desacoplado de `application`, sem alterar comportamento do fluxo.
+2. Incidentes/regressoes:
+   - nao houve findings de revisao nem regressao funcional nos testes focados e suite completa;
+   - checks de contrato e drift permaneceram estaveis.
+3. Riscos residuais:
+   - ainda existe concentracao de orquestracao em `session_turn_runtime.rs` (apesar da reducao incremental de acoplamentos);
+   - warnings recorrentes de rustfmt (config nightly) seguem como divida de tooling.
+4. Ajuste para continuidade da Fase 4:
+   - priorizar novo recorte pequeno para reduzir concentracao de orquestracao em `session_turn_runtime.rs` mantendo os limites de camada estabilizados nos slices 18-19.
 

@@ -1,15 +1,9 @@
 use crate::domain::session_turn::slash_command_policy::{
     classify_slash_prompt, unsupported_slash_command_message, SlashPromptClassification,
 };
+use crate::domain::session_turn::SendCodexInputPlan;
 
 const EMPTY_PROMPT_ERROR: &str = "cannot send empty input";
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum SendCodexInputPlan {
-    ForwardTurnRun { prompt: String },
-    RenderStatus,
-    RejectUnsupportedSlash { message: String },
-}
 
 pub(crate) fn plan_send_codex_input(text: &str) -> Result<SendCodexInputPlan, String> {
     let prompt = normalize_send_codex_input_prompt(text);
@@ -35,7 +29,8 @@ fn normalize_send_codex_input_prompt(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{plan_send_codex_input, SendCodexInputPlan};
+    use super::plan_send_codex_input;
+    use crate::domain::session_turn::SendCodexInputPlan;
 
     #[test]
     fn empty_prompt_returns_validation_error() {

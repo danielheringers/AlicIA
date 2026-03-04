@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::application::session_turn::use_cases as session_turn_use_cases;
+use crate::domain::session_turn::SendCodexInputPlan;
 use crate::interface::tauri::dto::{CodexInputItem, CodexTurnRunRequest};
 use crate::{RuntimeCodexConfig, SessionTransport};
 
@@ -62,31 +62,27 @@ pub(crate) enum SendCodexInputSideEffect {
 }
 
 pub(crate) fn resolve_send_codex_input_effect(
-    plan: session_turn_use_cases::SendCodexInputPlan,
+    plan: SendCodexInputPlan,
     thread_id: Option<String>,
 ) -> SendCodexInputEffect {
     match plan {
-        session_turn_use_cases::SendCodexInputPlan::RejectUnsupportedSlash { message } => {
+        SendCodexInputPlan::RejectUnsupportedSlash { message } => {
             SendCodexInputEffect::RejectUnsupportedSlash { message }
         }
-        session_turn_use_cases::SendCodexInputPlan::RenderStatus => {
-            SendCodexInputEffect::RenderStatus
-        }
-        session_turn_use_cases::SendCodexInputPlan::ForwardTurnRun { prompt } => {
-            SendCodexInputEffect::ForwardTurnRun {
-                request: CodexTurnRunRequest {
-                    thread_id,
-                    input_items: vec![CodexInputItem {
-                        item_type: "text".to_string(),
-                        text: Some(prompt),
-                        path: None,
-                        image_url: None,
-                        name: None,
-                    }],
-                    output_schema: None,
-                },
-            }
-        }
+        SendCodexInputPlan::RenderStatus => SendCodexInputEffect::RenderStatus,
+        SendCodexInputPlan::ForwardTurnRun { prompt } => SendCodexInputEffect::ForwardTurnRun {
+            request: CodexTurnRunRequest {
+                thread_id,
+                input_items: vec![CodexInputItem {
+                    item_type: "text".to_string(),
+                    text: Some(prompt),
+                    path: None,
+                    image_url: None,
+                    name: None,
+                }],
+                output_schema: None,
+            },
+        },
     }
 }
 
