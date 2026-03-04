@@ -38,6 +38,7 @@ Excluido:
 - [x] (2026-03-03) Fase 3 (slice 4): bloco neuro/native/models migrado; `main.rs` sem handlers Tauri locais.
 - [x] (2026-03-03) Fase 3: extracao de interface Tauri no backend (conclusao completa).
 - [x] (2026-03-04) Fase 4 (slice 1): contexto Workspace Filesystem extraido para application/domain/infrastructure.
+- [x] (2026-03-04) Fase 4 (slice 2): contexto Account/MCP/App List extraido para application/domain/infrastructure.
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
 
@@ -307,6 +308,49 @@ Resultado:
 1. Slice 1 da Fase 4 concluido sem blocker de merge.
 2. Fase 4 completa permanece em aberto para separacao dos demais contexts (`Session/Thread/Review`, `Account/MCP`, `ADT/Neuro`).
 
+## Fase 4 Slice 2 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-04.
+2. Objetivo: extrair o contexto Account/MCP/App List de `command_runtime.rs` para camadas `application/domain/infrastructure`, mantendo contrato Tauri inalterado.
+3. Escopo do slice:
+   - migracao de `codex_app_list_impl`, `codex_account_*`, `codex_mcp_*`, `codex_wait_for_mcp_startup_impl`
+   - criacao de modulos `application/account_mcp`, `domain/account_mcp`, `infrastructure/runtime_bridge`
+   - adicao de testes para validacao de payloads/account/mcp e fallback de method nao suportado
+
+Entregas:
+1. Estrutura Clean criada para Account/MCP:
+   - `backend/src/application/account_mcp/{mod.rs,use_cases.rs}`
+   - `backend/src/domain/account_mcp/{mod.rs,validation.rs}`
+   - `backend/src/infrastructure/runtime_bridge/{mod.rs,app_server.rs,mcp_native.rs}`
+   - modulos-raiz atualizados: `backend/src/{application,domain,infrastructure}/mod.rs`
+2. `command_runtime.rs` reduzido para delegacao dos fluxos:
+   - `codex_wait_for_mcp_startup_impl`
+   - `codex_app_list_impl`
+   - `codex_account_read_impl`
+   - `codex_account_login_start_impl`
+   - `codex_account_logout_impl`
+   - `codex_account_rate_limits_read_impl`
+   - `codex_mcp_list_impl`
+   - `codex_mcp_login_impl`
+   - `codex_mcp_reload_impl`
+3. Testes adicionais cobrindo riscos levantados na revisao:
+   - payload e validacao de account/app list (`build_app_list_payload`, `validate_account_login_start_request`, `is_unsupported_method_error_for`)
+   - fallback de `app/list` nao suportado com retorno vazio e estavel
+   - mapeamento/aggregacao de MCP nativo (`mcp_entry_from_config`, `auth_status_label`, composicao da lista consolidada)
+
+Validacao executada:
+1. `cd alicia/backend && cargo fmt --all -- --check` -> OK.
+2. `cd alicia/backend && cargo check` -> OK.
+3. `cd alicia/backend && cargo test` -> OK (`136 passed; 0 failed`).
+4. `cd alicia/backend && cargo clippy --all-targets --all-features -- -D warnings` -> OK.
+5. `node alicia/codex-bridge/generators/check-runtime-contract.mjs` -> OK (`tauriCommands=70`).
+6. `cd alicia/frontend && pnpm run build` -> OK.
+7. Verificacao de paridade: 9 comandos Account/MCP/App seguem registrados no `generate_handler!`.
+
+Resultado:
+1. Slice 2 da Fase 4 concluido sem blocker de merge.
+2. Fase 4 completa permanece em aberto para separacao dos contexts restantes (`Session/Thread/Review` e `ADT/Neuro`).
 ## Current Architecture Snapshot (Key Risks)
 
 1. Frontend com `god component` em `app/page.tsx` concentrando UI + fluxo + regras.
@@ -534,3 +578,14 @@ Fase 4 (slice 1):
    - acoplamento de `application/workspace` com `tauri::State` e DTOs de interface ainda precisa ser reduzido em slices seguintes.
 4. Ajuste para continuidade da Fase 4:
    - separar proximo contexto (`Session/Thread/Review` ou `Account/MCP`) com o mesmo padrao de extracao incremental e testes de regressao.
+
+Fase 4 (slice 2):
+1. Resultado entregue: contexto Account/MCP/App List extraido para `application/domain/infrastructure`, com `command_runtime` consolidado como fachada para este bounded context.
+2. Incidentes/regressoes:
+   - sem regressao funcional observada nas validacoes tecnicas (fmt/check/test/clippy, contrato e build frontend);
+   - findings de cobertura identificados na revisao foram tratados no proprio slice com testes adicionais.
+3. Riscos residuais:
+   - ainda existe duplicacao parcial de helper de execucao de comando/app-server entre modulos de runtime;
+   - dependencias de `tauri::State` nos use-cases de aplicacao permanecem como divida tecnica para slices seguintes.
+4. Ajuste para continuidade da Fase 4:
+   - priorizar extracao de `Session/Thread/Review` ou `ADT/Neuro` para reduzir os blocos monoliticos restantes de runtime.

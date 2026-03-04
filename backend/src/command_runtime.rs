@@ -1,42 +1,22 @@
-#[cfg(feature = "native-codex-runtime")]
-use codex_core::config::{ConfigBuilder, ConfigOverrides};
-#[cfg(feature = "native-codex-runtime")]
-use codex_core::mcp::auth::{oauth_login_support, McpOAuthLoginSupport};
-#[cfg(feature = "native-codex-runtime")]
-use codex_core::mcp::{collect_mcp_snapshot, group_tools_by_server};
-#[cfg(feature = "native-codex-runtime")]
-use codex_protocol::protocol::{McpAuthStatus, McpServerRefreshConfig};
-#[cfg(feature = "native-codex-runtime")]
-use codex_rmcp_client::perform_oauth_login_return_url;
-use serde_json::{json, Value};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::env;
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
-#[cfg(feature = "native-codex-runtime")]
-use std::time::Duration;
-use std::time::Instant;
 use tauri::State;
-#[cfg(feature = "native-codex-runtime")]
-use toml::map::Map as TomlMap;
 
 use crate::account_runtime::{
-    parse_account_login_start_runtime_result, parse_account_logout_runtime_result,
-    parse_account_rate_limits_runtime_result, parse_account_read_runtime_result,
-    parse_app_list_runtime_result, AccountLoginStartRequest, AccountLoginStartResponse,
-    AccountLogoutResponse, AccountRateLimitsReadResponse, AccountReadRequest, AccountReadResponse,
-    AppListRequest, AppListResponse,
+    AccountLoginStartRequest, AccountLoginStartResponse, AccountLogoutResponse,
+    AccountRateLimitsReadResponse, AccountReadRequest, AccountReadResponse, AppListRequest,
+    AppListResponse,
 };
-#[cfg(feature = "native-codex-runtime")]
-use crate::app_server_runtime::request_app_server_method;
+use crate::application::account_mcp::use_cases as account_mcp_use_cases;
 use crate::application::workspace::use_cases as workspace_use_cases;
 use crate::generated::runtime_contract::{RUNTIME_CONTRACT_VERSION, RUNTIME_METHOD_KEYS};
 use crate::interface::tauri::dto::CodexModelListResponse;
 use crate::mcp_runtime::{
-    parse_mcp_server_list_runtime_result, McpLoginRequest, McpLoginResponse, McpReloadResponse,
-    McpServerListResponse, McpStartupWarmupResponse,
+    McpLoginRequest, McpLoginResponse, McpReloadResponse, McpServerListResponse,
+    McpStartupWarmupResponse,
 };
 use crate::models_runtime::fetch_models_for_picker;
 use crate::{
@@ -50,232 +30,6 @@ use crate::{
     GitWorkspaceChangesRequest, GitWorkspaceChangesResponse, RunCodexCommandResponse,
     RuntimeCapabilitiesResponse, RuntimeContractMetadata,
 };
-
-#[cfg(feature = "native-codex-runtime")]
-type NativeReloadContext = (
-    Arc<crate::codex_native_runtime::NativeCodexRuntime>,
-    std::path::PathBuf,
-);
-
-#[cfg(feature = "native-codex-runtime")]
-fn native_reload_context_from_session(
-    session: &crate::ActiveSession,
-) -> Option<NativeReloadContext> {
-    match &session.transport {
-        ActiveSessionTransport::Native(native) => {
-            Some((Arc::clone(&native.runtime), session.cwd.clone()))
-        }
-    }
-}
-
-#[cfg(not(feature = "native-codex-runtime"))]
-fn native_reload_context_from_session(_session: &crate::ActiveSession) -> Option<()> {
-    None
-}
-
-#[cfg(feature = "native-codex-runtime")]
-type NativeBinaryCwdContext = (String, std::path::PathBuf);
-
-#[cfg(feature = "native-codex-runtime")]
-fn native_binary_cwd_context_from_session(
-    session: &crate::ActiveSession,
-) -> Option<NativeBinaryCwdContext> {
-    match &session.transport {
-        ActiveSessionTransport::Native(_) => Some((session.binary.clone(), session.cwd.clone())),
-    }
-}
-
-#[cfg(not(feature = "native-codex-runtime"))]
-fn native_binary_cwd_context_from_session(_session: &crate::ActiveSession) -> Option<()> {
-    None
-}
-
-#[cfg(feature = "native-codex-runtime")]
-async fn native_runtime_and_cwd_for_mcp(
-    state: &State<'_, AppState>,
-) -> Result<
-    (
-        Arc<crate::codex_native_runtime::NativeCodexRuntime>,
-        PathBuf,
-    ),
-    String,
-> {
-    let active_context = {
-        let active = lock_active_session(state.inner())?;
-        active.as_ref().and_then(native_reload_context_from_session)
-    };
-
-    if let Some(context) = active_context {
-        return Ok(context);
-    }
-
-    let runtime = crate::codex_native_runtime::native_runtime_get_or_init(state.inner()).await?;
-    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    Ok((runtime, cwd))
-}
-
-#[cfg(feature = "native-codex-runtime")]
-const ALICIA_NATIVE_INTERNAL_PROFILE: &str = "__alicia_native_internal";
-
-#[cfg(feature = "native-codex-runtime")]
-fn native_internal_profile_cli_overrides() -> Vec<(String, toml::Value)> {
-    vec![(
-        format!("profiles.{ALICIA_NATIVE_INTERNAL_PROFILE}"),
-        toml::Value::Table(TomlMap::new()),
-    )]
-}
-
-#[cfg(feature = "native-codex-runtime")]
-fn native_internal_profile_harness_overrides(cwd: PathBuf) -> ConfigOverrides {
-    ConfigOverrides {
-        cwd: Some(cwd),
-        config_profile: Some(ALICIA_NATIVE_INTERNAL_PROFILE.to_string()),
-        ..Default::default()
-    }
-}
-
-#[cfg(feature = "native-codex-runtime")]
-async fn build_native_config_for_cwd(
-    runtime: &crate::codex_native_runtime::NativeCodexRuntime,
-    cwd: PathBuf,
-    context: &str,
-) -> Result<codex_core::config::Config, String> {
-    ConfigBuilder::default()
-        .codex_home(runtime.codex_home.clone())
-        .fallback_cwd(Some(cwd.clone()))
-        .cli_overrides(native_internal_profile_cli_overrides())
-        .harness_overrides(native_internal_profile_harness_overrides(cwd))
-        .build()
-        .await
-        .map_err(|error| format!("failed to build {context} config: {error}"))
-}
-
-#[cfg(feature = "native-codex-runtime")]
-fn mcp_entry_from_config(
-    config_entries: &serde_json::Map<String, Value>,
-    name: &str,
-) -> (String, Option<String>, bool, Option<String>) {
-    let Some(entry) = config_entries.get(name).and_then(Value::as_object) else {
-        return ("stdio".to_string(), None, true, None);
-    };
-
-    let enabled = entry
-        .get("enabled")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
-    let status_reason = entry
-        .get("disabled_reason")
-        .or_else(|| entry.get("disabledReason"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-
-    let transport_entry = entry.get("transport").and_then(Value::as_object);
-    let transport_type = transport_entry
-        .and_then(|transport| transport.get("type"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .unwrap_or("stdio");
-
-    let transport = match transport_type {
-        "streamable_http" | "streamable-http" => "streamable-http".to_string(),
-        "sse" => "sse".to_string(),
-        _ => "stdio".to_string(),
-    };
-
-    let url = if transport == "streamable-http" {
-        transport_entry
-            .and_then(|transport| transport.get("url"))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-    } else {
-        None
-    };
-
-    (transport, url, enabled, status_reason)
-}
-
-#[cfg(feature = "native-codex-runtime")]
-fn auth_status_label(status: McpAuthStatus) -> &'static str {
-    match status {
-        McpAuthStatus::Unsupported => "not_logged_in",
-        McpAuthStatus::NotLoggedIn => "not_logged_in",
-        McpAuthStatus::BearerToken => "bearer_token",
-        McpAuthStatus::OAuth => "oauth",
-    }
-}
-
-#[cfg(feature = "native-codex-runtime")]
-async fn collect_native_mcp_server_list(
-    runtime: Arc<crate::codex_native_runtime::NativeCodexRuntime>,
-    cwd: PathBuf,
-    fallback_elapsed_ms: u64,
-) -> Result<McpServerListResponse, String> {
-    let config = build_native_config_for_cwd(runtime.as_ref(), cwd, "MCP list").await?;
-    let snapshot = collect_mcp_snapshot(&config).await;
-    let tools_by_server = group_tools_by_server(&snapshot.tools);
-
-    let config_servers_value = serde_json::to_value(config.mcp_servers.get())
-        .map_err(|error| format!("failed to serialize MCP server config: {error}"))?;
-    let config_servers = config_servers_value
-        .as_object()
-        .cloned()
-        .unwrap_or_default();
-
-    let mut server_names = BTreeSet::<String>::new();
-    server_names.extend(config_servers.keys().cloned());
-    server_names.extend(snapshot.auth_statuses.keys().cloned());
-    server_names.extend(snapshot.resources.keys().cloned());
-    server_names.extend(snapshot.resource_templates.keys().cloned());
-    server_names.extend(tools_by_server.keys().cloned());
-
-    let mut data = Vec::<Value>::with_capacity(server_names.len());
-    for name in server_names {
-        let (transport, url, enabled, status_reason) =
-            mcp_entry_from_config(&config_servers, &name);
-        let auth_status = snapshot
-            .auth_statuses
-            .get(&name)
-            .copied()
-            .unwrap_or(McpAuthStatus::NotLoggedIn);
-
-        let mut tools = tools_by_server
-            .get(&name)
-            .map(|tools| tools.keys().cloned().collect::<Vec<_>>())
-            .unwrap_or_default();
-        tools.sort();
-        tools.dedup();
-
-        let is_connected = enabled
-            && (snapshot.auth_statuses.contains_key(&name)
-                || snapshot.resources.contains_key(&name)
-                || snapshot.resource_templates.contains_key(&name)
-                || tools_by_server.contains_key(&name));
-
-        data.push(json!({
-            "name": name,
-            "transport": transport,
-            "status": if is_connected { "connected" } else { "disconnected" },
-            "statusReason": status_reason,
-            "authStatus": auth_status_label(auth_status),
-            "tools": tools,
-            "url": url,
-        }));
-    }
-
-    let result = json!({
-        "data": data,
-        "total": data.len(),
-    });
-    Ok(parse_mcp_server_list_runtime_result(
-        &result,
-        fallback_elapsed_ms,
-    ))
-}
-
 fn disable_methods_for_native_transport(methods: &mut HashMap<String, bool>) {
     const NATIVE_UNSUPPORTED_METHODS: &[&str] = &["tool.call.dynamic"];
 
@@ -325,23 +79,6 @@ fn extract_capabilities_contract_version(result: &serde_json::Value) -> Option<S
     None
 }
 
-fn is_unsupported_method_message(error: &str) -> bool {
-    let normalized = error.to_ascii_lowercase();
-    normalized.contains("unsupported method") || normalized.contains("method not found")
-}
-
-fn is_unsupported_method_error_for(error: &str, methods: &[&str]) -> bool {
-    if !is_unsupported_method_message(error) {
-        return false;
-    }
-
-    let normalized = error.to_ascii_lowercase();
-    methods.iter().any(|method| {
-        let dotted = method.to_ascii_lowercase();
-        let slashed = dotted.replace('.', "/");
-        normalized.contains(&dotted) || normalized.contains(&slashed)
-    })
-}
 pub(crate) fn run_codex_command_impl(
     args: Vec<String>,
     cwd: Option<String>,
@@ -890,473 +627,60 @@ pub(crate) async fn codex_runtime_capabilities_impl(
 pub(crate) async fn codex_wait_for_mcp_startup_impl(
     state: State<'_, AppState>,
 ) -> Result<McpStartupWarmupResponse, String> {
-    #[cfg(feature = "native-codex-runtime")]
-    {
-        let started_at = Instant::now();
-        let (runtime, cwd) = native_runtime_and_cwd_for_mcp(&state).await?;
-        let list = collect_native_mcp_server_list(runtime, cwd, 0).await?;
-        let elapsed_ms = started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
-        let ready_servers = list
-            .data
-            .into_iter()
-            .filter(|entry| entry.status == "connected")
-            .map(|entry| entry.name)
-            .collect::<Vec<_>>();
-        let total_ready = ready_servers.len();
-
-        Ok(McpStartupWarmupResponse {
-            ready_servers,
-            total_ready,
-            elapsed_ms,
-        })
-    }
-
-    #[cfg(not(feature = "native-codex-runtime"))]
-    {
-        let _ = state;
-        Err("mcp warmup requires native runtime support in this build".to_string())
-    }
+    account_mcp_use_cases::codex_wait_for_mcp_startup_impl(state).await
 }
 
 pub(crate) async fn codex_app_list_impl(
     state: State<'_, AppState>,
     request: AppListRequest,
 ) -> Result<AppListResponse, String> {
-    let native_binary_cwd_context = {
-        let active = lock_active_session(state.inner())?;
-        if let Some(session) = active.as_ref() {
-            native_binary_cwd_context_from_session(session)
-        } else {
-            None
-        }
-    };
-
-    let mut payload = serde_json::Map::new();
-    if let Some(cursor) = request
-        .cursor
-        .as_deref()
-        .map(str::trim)
-        .filter(|entry| !entry.is_empty())
-    {
-        payload.insert("cursor".to_string(), json!(cursor));
-    }
-    if let Some(limit) = request.limit {
-        payload.insert("limit".to_string(), json!(limit));
-    }
-    if let Some(thread_id) = request
-        .thread_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|entry| !entry.is_empty())
-    {
-        payload.insert("threadId".to_string(), json!(thread_id));
-    }
-    if request.force_refetch {
-        payload.insert("forceRefetch".to_string(), json!(true));
-    }
-
-    #[cfg(feature = "native-codex-runtime")]
-    let Some((binary, cwd)) = native_binary_cwd_context
-    else {
-        return Err("app list requires an active codex session".to_string());
-    };
-    #[cfg(not(feature = "native-codex-runtime"))]
-    {
-        let _ = (native_binary_cwd_context, payload);
-        return Err("app list requires native runtime support in this build".to_string());
-    }
-
-    #[cfg(feature = "native-codex-runtime")]
-    {
-        let started_at = Instant::now();
-        let result = request_app_server_method(
-            &binary,
-            &cwd,
-            "app/list",
-            serde_json::Value::Object(payload),
-            Duration::from_secs(90),
-        );
-        let elapsed_ms = started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
-
-        match result {
-            Ok(result) => Ok(parse_app_list_runtime_result(&result, elapsed_ms)),
-            Err(error) => {
-                if is_unsupported_method_error_for(&error, &["app.list", "app/list"]) {
-                    Ok(AppListResponse {
-                        data: Vec::new(),
-                        next_cursor: None,
-                        total: 0,
-                        elapsed_ms,
-                    })
-                } else {
-                    Err(error)
-                }
-            }
-        }
-    }
+    account_mcp_use_cases::codex_app_list_impl(state, request).await
 }
 
 pub(crate) async fn codex_account_read_impl(
     state: State<'_, AppState>,
     request: AccountReadRequest,
 ) -> Result<AccountReadResponse, String> {
-    let native_binary_cwd_context = {
-        let active = lock_active_session(state.inner())?;
-        if let Some(session) = active.as_ref() {
-            native_binary_cwd_context_from_session(session)
-        } else {
-            None
-        }
-    };
-
-    #[cfg(feature = "native-codex-runtime")]
-    let Some((binary, cwd)) = native_binary_cwd_context
-    else {
-        return Err("account read requires an active codex session".to_string());
-    };
-    #[cfg(not(feature = "native-codex-runtime"))]
-    {
-        let _ = (native_binary_cwd_context, request);
-        return Err("account read requires native runtime support in this build".to_string());
-    }
-
-    #[cfg(feature = "native-codex-runtime")]
-    {
-        let started_at = Instant::now();
-        let result = request_app_server_method(
-            &binary,
-            &cwd,
-            "account/read",
-            json!({
-                "refreshToken": request.refresh_token,
-            }),
-            Duration::from_secs(90),
-        )?;
-        let elapsed_ms = started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
-        Ok(parse_account_read_runtime_result(&result, elapsed_ms))
-    }
+    account_mcp_use_cases::codex_account_read_impl(state, request).await
 }
 
 pub(crate) async fn codex_account_login_start_impl(
     state: State<'_, AppState>,
     request: AccountLoginStartRequest,
 ) -> Result<AccountLoginStartResponse, String> {
-    let native_binary_cwd_context = {
-        let active = lock_active_session(state.inner())?;
-        if let Some(session) = active.as_ref() {
-            native_binary_cwd_context_from_session(session)
-        } else {
-            None
-        }
-    };
-
-    let login_type = request.login_type.trim();
-    if login_type.is_empty() {
-        return Err("type is required".to_string());
-    }
-
-    let mut payload = serde_json::Map::new();
-    if login_type.eq_ignore_ascii_case("chatgpt") {
-        payload.insert("type".to_string(), json!("chatgpt"));
-        payload.insert("authMode".to_string(), json!("chatgpt"));
-    } else if login_type.eq_ignore_ascii_case("apikey")
-        || login_type.eq_ignore_ascii_case("api_key")
-        || login_type.eq_ignore_ascii_case("apiKey")
-    {
-        let api_key = request
-            .api_key
-            .as_deref()
-            .map(str::trim)
-            .filter(|entry| !entry.is_empty())
-            .ok_or_else(|| "apiKey is required for type=apiKey".to_string())?;
-        payload.insert("type".to_string(), json!("apiKey"));
-        payload.insert("authMode".to_string(), json!("api_key"));
-        payload.insert("apiKey".to_string(), json!(api_key));
-    } else {
-        return Err("unsupported account login type".to_string());
-    }
-
-    #[cfg(feature = "native-codex-runtime")]
-    let Some((binary, cwd)) = native_binary_cwd_context
-    else {
-        return Err("account login requires an active codex session".to_string());
-    };
-    #[cfg(not(feature = "native-codex-runtime"))]
-    {
-        let _ = (native_binary_cwd_context, payload);
-        return Err("account login requires native runtime support in this build".to_string());
-    }
-
-    #[cfg(feature = "native-codex-runtime")]
-    {
-        let started_at = Instant::now();
-        if login_type.eq_ignore_ascii_case("chatgpt") {
-            let result = run_codex_command_with_context(
-                &binary,
-                vec!["login".to_string()],
-                Some(cwd.as_path()),
-            )?;
-            if !result.success {
-                let details = if result.stderr.trim().is_empty() {
-                    result.stdout.trim().to_string()
-                } else {
-                    result.stderr.trim().to_string()
-                };
-                return Err(format!("codex login failed: {details}"));
-            }
-
-            let elapsed_ms = started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
-            return Ok(AccountLoginStartResponse {
-                login_type: "chatgpt".to_string(),
-                login_id: None,
-                auth_url: None,
-                started: true,
-                elapsed_ms,
-            });
-        }
-
-        let result = request_app_server_method(
-            &binary,
-            &cwd,
-            "account/login/start",
-            serde_json::Value::Object(payload),
-            Duration::from_secs(90),
-        )?;
-        let elapsed_ms = started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
-        Ok(parse_account_login_start_runtime_result(
-            &result, elapsed_ms,
-        ))
-    }
+    account_mcp_use_cases::codex_account_login_start_impl(state, request).await
 }
 
 pub(crate) async fn codex_account_logout_impl(
     state: State<'_, AppState>,
 ) -> Result<AccountLogoutResponse, String> {
-    let native_binary_cwd_context = {
-        let active = lock_active_session(state.inner())?;
-        if let Some(session) = active.as_ref() {
-            native_binary_cwd_context_from_session(session)
-        } else {
-            None
-        }
-    };
-
-    #[cfg(feature = "native-codex-runtime")]
-    let Some((binary, cwd)) = native_binary_cwd_context
-    else {
-        return Err("account logout requires an active codex session".to_string());
-    };
-    #[cfg(not(feature = "native-codex-runtime"))]
-    {
-        let _ = native_binary_cwd_context;
-        return Err("account logout requires native runtime support in this build".to_string());
-    }
-
-    #[cfg(feature = "native-codex-runtime")]
-    {
-        let started_at = Instant::now();
-        let result = request_app_server_method(
-            &binary,
-            &cwd,
-            "account/logout",
-            serde_json::Value::Null,
-            Duration::from_secs(90),
-        )?;
-        let elapsed_ms = started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
-        Ok(parse_account_logout_runtime_result(&result, elapsed_ms))
-    }
+    account_mcp_use_cases::codex_account_logout_impl(state).await
 }
 
 pub(crate) async fn codex_account_rate_limits_read_impl(
     state: State<'_, AppState>,
 ) -> Result<AccountRateLimitsReadResponse, String> {
-    let native_binary_cwd_context = {
-        let active = lock_active_session(state.inner())?;
-        if let Some(session) = active.as_ref() {
-            native_binary_cwd_context_from_session(session)
-        } else {
-            None
-        }
-    };
-
-    #[cfg(feature = "native-codex-runtime")]
-    let Some((binary, cwd)) = native_binary_cwd_context
-    else {
-        return Err("account rate-limits requires an active codex session".to_string());
-    };
-    #[cfg(not(feature = "native-codex-runtime"))]
-    {
-        let _ = native_binary_cwd_context;
-        return Err(
-            "account rate-limits requires native runtime support in this build".to_string(),
-        );
-    }
-
-    #[cfg(feature = "native-codex-runtime")]
-    {
-        let started_at = Instant::now();
-        let result = request_app_server_method(
-            &binary,
-            &cwd,
-            "account/rateLimits/read",
-            json!({}),
-            Duration::from_secs(90),
-        )?;
-        let elapsed_ms = started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
-        Ok(parse_account_rate_limits_runtime_result(
-            &result, elapsed_ms,
-        ))
-    }
+    account_mcp_use_cases::codex_account_rate_limits_read_impl(state).await
 }
 
 pub(crate) async fn codex_mcp_list_impl(
     state: State<'_, AppState>,
 ) -> Result<McpServerListResponse, String> {
-    #[cfg(feature = "native-codex-runtime")]
-    {
-        let started_at = Instant::now();
-        let (runtime, cwd) = native_runtime_and_cwd_for_mcp(&state).await?;
-        let elapsed_ms = started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
-        collect_native_mcp_server_list(runtime, cwd, elapsed_ms).await
-    }
-
-    #[cfg(not(feature = "native-codex-runtime"))]
-    {
-        let _ = state;
-        Err("mcp list requires native runtime support in this build".to_string())
-    }
+    account_mcp_use_cases::codex_mcp_list_impl(state).await
 }
 
 pub(crate) async fn codex_mcp_login_impl(
     state: State<'_, AppState>,
     request: McpLoginRequest,
 ) -> Result<McpLoginResponse, String> {
-    let name = request.name.trim().to_string();
-    if name.is_empty() {
-        return Err("name is required".to_string());
-    }
-
-    let scopes: Vec<String> = request
-        .scopes
-        .into_iter()
-        .map(|entry| entry.trim().to_string())
-        .filter(|entry| !entry.is_empty())
-        .collect();
-
-    #[cfg(feature = "native-codex-runtime")]
-    {
-        let started_at = Instant::now();
-        let (runtime, cwd) = native_runtime_and_cwd_for_mcp(&state).await?;
-        let config = build_native_config_for_cwd(runtime.as_ref(), cwd, "MCP login").await?;
-
-        let server_config = config
-            .mcp_servers
-            .get()
-            .get(&name)
-            .ok_or_else(|| format!("mcp server `{name}` is not configured"))?;
-        let timeout_secs = request
-            .timeout_secs
-            .map(|value| i64::try_from(value).map_err(|_| "timeoutSecs is too large".to_string()))
-            .transpose()?;
-
-        let oauth_config = match oauth_login_support(&server_config.transport).await {
-            McpOAuthLoginSupport::Supported(config) => config,
-            McpOAuthLoginSupport::Unsupported => {
-                return Err(format!("mcp server `{name}` does not support oauth login"));
-            }
-            McpOAuthLoginSupport::Unknown(error) => {
-                return Err(format!(
-                    "failed to determine oauth login support for `{name}`: {error}"
-                ));
-            }
-        };
-
-        let login = perform_oauth_login_return_url(
-            &name,
-            oauth_config.url.as_str(),
-            config.mcp_oauth_credentials_store_mode,
-            oauth_config.http_headers,
-            oauth_config.env_http_headers,
-            &scopes,
-            timeout_secs,
-            config.mcp_oauth_callback_port,
-        )
-        .await
-        .map_err(|error| format!("failed to start mcp oauth login for `{name}`: {error}"))?;
-
-        let (authorization_url, completion) = login.into_parts();
-        tauri::async_runtime::spawn(async move {
-            let _ = completion.await;
-        });
-
-        let elapsed_ms = started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
-        Ok(McpLoginResponse {
-            name,
-            authorization_url: Some(authorization_url),
-            started: true,
-            elapsed_ms,
-        })
-    }
-
-    #[cfg(not(feature = "native-codex-runtime"))]
-    {
-        let _ = (state, scopes);
-        Err("mcp login requires native runtime support in this build".to_string())
-    }
+    account_mcp_use_cases::codex_mcp_login_impl(state, request).await
 }
 
 pub(crate) async fn codex_mcp_reload_impl(
     state: State<'_, AppState>,
 ) -> Result<McpReloadResponse, String> {
-    let native_reload_context = {
-        let active = lock_active_session(state.inner())?;
-        if let Some(session) = active.as_ref() {
-            native_reload_context_from_session(session)
-        } else {
-            None
-        }
-    };
-
-    #[cfg(feature = "native-codex-runtime")]
-    let Some((runtime, cwd)) = native_reload_context
-    else {
-        return Err("mcp reload requires an active codex session".to_string());
-    };
-    #[cfg(not(feature = "native-codex-runtime"))]
-    {
-        let _ = native_reload_context;
-        return Err("mcp reload requires native runtime support in this build".to_string());
-    }
-
-    #[cfg(feature = "native-codex-runtime")]
-    {
-        let started_at = Instant::now();
-        let config = build_native_config_for_cwd(runtime.as_ref(), cwd, "MCP reload").await?;
-
-        let mcp_servers = serde_json::to_value(config.mcp_servers.get())
-            .map_err(|error| format!("failed to serialize MCP servers: {error}"))?;
-        let mcp_oauth_credentials_store_mode =
-            serde_json::to_value(config.mcp_oauth_credentials_store_mode).map_err(|error| {
-                format!("failed to serialize MCP OAuth credentials store mode: {error}")
-            })?;
-
-        let refresh_config = McpServerRefreshConfig {
-            mcp_servers,
-            mcp_oauth_credentials_store_mode,
-        };
-        runtime
-            .thread_manager
-            .refresh_mcp_servers(refresh_config)
-            .await;
-
-        let elapsed_ms = started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
-        Ok(McpReloadResponse {
-            reloaded: true,
-            elapsed_ms,
-        })
-    }
+    account_mcp_use_cases::codex_mcp_reload_impl(state).await
 }
-
 #[cfg(test)]
 mod tests {
     use super::{
