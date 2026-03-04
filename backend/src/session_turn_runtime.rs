@@ -1922,6 +1922,55 @@ enum SendCodexInputEffect {
     ForwardTurnRun { request: CodexTurnRunRequest },
 }
 
+struct SendCodexInputEffectContext {
+    session_id: u64,
+    pid: Option<u32>,
+    thread_id: Option<String>,
+    cwd: std::path::PathBuf,
+    binary: String,
+    transport: crate::SessionTransport,
+}
+
+struct SendCodexInputStatusSnapshotPayload {
+    session_id: u64,
+    pid: Option<u32>,
+    thread_id: Option<String>,
+    cwd: std::path::PathBuf,
+    binary: String,
+    transport: crate::SessionTransport,
+}
+
+impl SendCodexInputStatusSnapshotPayload {
+    fn as_snapshot_request<'a>(
+        &'a self,
+        runtime_config: &'a RuntimeCodexConfig,
+    ) -> StatusSnapshotRequest<'a> {
+        StatusSnapshotRequest {
+            session_id: self.session_id,
+            pid: self.pid,
+            thread_id: self.thread_id.as_deref(),
+            cwd: &self.cwd,
+            runtime_config,
+            transport: self.transport,
+            binary: &self.binary,
+        }
+    }
+}
+
+enum SendCodexInputSideEffect {
+    EmitStderr {
+        session_id: u64,
+        message: String,
+    },
+    EmitStatusToStdout {
+        session_id: u64,
+        payload: SendCodexInputStatusSnapshotPayload,
+    },
+    ScheduleTurnRun {
+        request: CodexTurnRunRequest,
+    },
+}
+
 fn resolve_send_codex_input_effect(
     plan: session_turn_use_cases::SendCodexInputPlan,
     thread_id: Option<String>,
@@ -1950,6 +1999,64 @@ fn resolve_send_codex_input_effect(
         }
     }
 }
+
+fn resolve_send_codex_input_side_effect(
+    effect: SendCodexInputEffect,
+    context: SendCodexInputEffectContext,
+) -> SendCodexInputSideEffect {
+    match effect {
+        SendCodexInputEffect::RejectUnsupportedSlash { message } => {
+            SendCodexInputSideEffect::EmitStderr {
+                session_id: context.session_id,
+                message,
+            }
+        }
+        SendCodexInputEffect::RenderStatus => SendCodexInputSideEffect::EmitStatusToStdout {
+            session_id: context.session_id,
+            payload: SendCodexInputStatusSnapshotPayload {
+                session_id: context.session_id,
+                pid: context.pid,
+                thread_id: context.thread_id,
+                cwd: context.cwd,
+                binary: context.binary,
+                transport: context.transport,
+            },
+        },
+        SendCodexInputEffect::ForwardTurnRun { request } => {
+            SendCodexInputSideEffect::ScheduleTurnRun { request }
+        }
+    }
+}
+
+async fn execute_send_codex_input_side_effect(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    side_effect: SendCodexInputSideEffect,
+) -> Result<(), String> {
+    match side_effect {
+        SendCodexInputSideEffect::EmitStderr {
+            session_id,
+            message,
+        } => {
+            emit_stderr(&app, session_id, message);
+            Ok(())
+        }
+        SendCodexInputSideEffect::EmitStatusToStdout {
+            session_id,
+            payload,
+        } => {
+            let runtime_config = lock_runtime_config(state.inner())?.clone();
+            let chunk = build_non_tui_status_snapshot(payload.as_snapshot_request(&runtime_config));
+            emit_stdout(&app, session_id, chunk);
+            Ok(())
+        }
+        SendCodexInputSideEffect::ScheduleTurnRun { request } => {
+            let _ = schedule_turn_run(app, state, request).await?;
+            Ok(())
+        }
+    }
+}
+
 pub(crate) async fn send_codex_input_impl(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -1957,7 +2064,7 @@ pub(crate) async fn send_codex_input_impl(
 ) -> Result<(), String> {
     let plan = session_turn_use_cases::plan_send_codex_input(&text)?;
 
-    let (session_id, pid, thread_id, cwd, binary, transport, effect) = {
+    let (effect, context) = {
         let mut guard = lock_active_session(state.inner())?;
         let active = guard
             .as_mut()
@@ -1968,46 +2075,19 @@ pub(crate) async fn send_codex_input_impl(
         }
 
         let effect = resolve_send_codex_input_effect(plan, active.thread_id.clone());
-
-        match &effect {
-            SendCodexInputEffect::RejectUnsupportedSlash { message } => {
-                emit_stderr(&app, active.session_id, message.clone());
-                return Ok(());
-            }
-            SendCodexInputEffect::RenderStatus | SendCodexInputEffect::ForwardTurnRun { .. } => (
-                active.session_id,
-                active.pid,
-                active.thread_id.clone(),
-                active.cwd.clone(),
-                active.binary.clone(),
-                active.transport(),
-                effect,
-            ),
-        }
+        let context = SendCodexInputEffectContext {
+            session_id: active.session_id,
+            pid: active.pid,
+            thread_id: active.thread_id.clone(),
+            cwd: active.cwd.clone(),
+            binary: active.binary.clone(),
+            transport: active.transport(),
+        };
+        (effect, context)
     };
 
-    match effect {
-        SendCodexInputEffect::RejectUnsupportedSlash { .. } => Ok(()),
-        SendCodexInputEffect::RenderStatus => {
-            let runtime_config = lock_runtime_config(state.inner())?.clone();
-            let chunk = build_non_tui_status_snapshot(StatusSnapshotRequest {
-                session_id,
-                pid,
-                thread_id: thread_id.as_deref(),
-                cwd: &cwd,
-                runtime_config: &runtime_config,
-                transport,
-                binary: &binary,
-            });
-            emit_stdout(&app, session_id, chunk);
-            Ok(())
-        }
-        SendCodexInputEffect::ForwardTurnRun { request } => {
-            let _ = cwd;
-            let _ = schedule_turn_run(app, state, request).await?;
-            Ok(())
-        }
-    }
+    let side_effect = resolve_send_codex_input_side_effect(effect, context);
+    execute_send_codex_input_side_effect(app, state, side_effect).await
 }
 
 #[cfg(test)]
@@ -2019,7 +2099,10 @@ mod tests {
         validate_approval_decision_before_lookup, validate_user_input_decision_before_lookup,
         ALICIA_NATIVE_INTERNAL_PROFILE,
     };
-    use super::{resolve_send_codex_input_effect, SendCodexInputEffect};
+    use super::{
+        resolve_send_codex_input_effect, resolve_send_codex_input_side_effect,
+        SendCodexInputEffectContext, SendCodexInputSideEffect,
+    };
     #[cfg(feature = "native-codex-runtime")]
     use crate::application::session_thread_review::use_cases as session_thread_review_use_cases;
     use crate::application::session_turn::use_cases as session_turn_use_cases;
@@ -2031,55 +2114,92 @@ mod tests {
     use serde_json::Value;
     #[cfg(feature = "native-codex-runtime")]
     use std::collections::HashMap;
-    #[cfg(feature = "native-codex-runtime")]
     use std::path::PathBuf;
 
+    fn send_codex_input_effect_context_fixture(
+        thread_id: Option<&str>,
+    ) -> SendCodexInputEffectContext {
+        SendCodexInputEffectContext {
+            session_id: 7,
+            pid: Some(1234),
+            thread_id: thread_id.map(|value| value.to_string()),
+            cwd: PathBuf::from("workspace-dir"),
+            binary: "codex".to_string(),
+            transport: crate::SessionTransport::Native,
+        }
+    }
+
     #[test]
-    fn send_codex_input_effect_rejects_unsupported_slash() {
+    fn send_codex_input_side_effect_rejects_unsupported_slash_to_stderr_only() {
         let plan = session_turn_use_cases::plan_send_codex_input("/foo bar")
             .expect("plan should classify slash command");
-
         let effect = resolve_send_codex_input_effect(plan, Some("thread-1".to_string()));
+        let side_effect = resolve_send_codex_input_side_effect(
+            effect,
+            send_codex_input_effect_context_fixture(Some("thread-1")),
+        );
 
-        match effect {
-            SendCodexInputEffect::RejectUnsupportedSlash { message } => {
+        match side_effect {
+            SendCodexInputSideEffect::EmitStderr {
+                session_id,
+                message,
+            } => {
+                assert_eq!(session_id, 7);
                 assert_eq!(
                     message,
                     "slash command `/foo` is not available in the current runtime. Supported command: /status"
                 );
             }
-            SendCodexInputEffect::RenderStatus | SendCodexInputEffect::ForwardTurnRun { .. } => {
-                panic!("unexpected effect for unsupported slash")
+            SendCodexInputSideEffect::EmitStatusToStdout { .. }
+            | SendCodexInputSideEffect::ScheduleTurnRun { .. } => {
+                panic!("unexpected side-effect for unsupported slash")
             }
         }
     }
 
     #[test]
-    fn send_codex_input_effect_renders_status_for_status_slash() {
+    fn send_codex_input_side_effect_renders_status_to_stdout_only_with_none_thread_id() {
         let plan = session_turn_use_cases::plan_send_codex_input(" /STATUS ")
             .expect("plan should classify status slash");
+        let effect = resolve_send_codex_input_effect(plan, None);
+        let side_effect = resolve_send_codex_input_side_effect(
+            effect,
+            send_codex_input_effect_context_fixture(None),
+        );
 
-        let effect = resolve_send_codex_input_effect(plan, Some("thread-1".to_string()));
-
-        match effect {
-            SendCodexInputEffect::RenderStatus => {}
-            SendCodexInputEffect::RejectUnsupportedSlash { .. }
-            | SendCodexInputEffect::ForwardTurnRun { .. } => {
-                panic!("unexpected effect for /status")
+        match side_effect {
+            SendCodexInputSideEffect::EmitStatusToStdout {
+                session_id,
+                payload,
+            } => {
+                assert_eq!(session_id, 7);
+                assert_eq!(payload.session_id, 7);
+                assert_eq!(payload.pid, Some(1234));
+                assert!(payload.thread_id.is_none());
+                assert_eq!(payload.cwd, PathBuf::from("workspace-dir"));
+                assert_eq!(payload.binary, "codex");
+                assert_eq!(payload.transport, crate::SessionTransport::Native);
+            }
+            SendCodexInputSideEffect::EmitStderr { .. }
+            | SendCodexInputSideEffect::ScheduleTurnRun { .. } => {
+                panic!("unexpected side-effect for /status")
             }
         }
     }
 
     #[test]
-    fn send_codex_input_effect_forwards_turn_run_with_expected_request_shape() {
+    fn send_codex_input_side_effect_forwards_prompt_to_schedule_only_with_none_thread_id() {
         let plan = session_turn_use_cases::plan_send_codex_input("hello world\r\n")
             .expect("plan should classify normal prompt");
+        let effect = resolve_send_codex_input_effect(plan, None);
+        let side_effect = resolve_send_codex_input_side_effect(
+            effect,
+            send_codex_input_effect_context_fixture(None),
+        );
 
-        let effect = resolve_send_codex_input_effect(plan, Some("thread-42".to_string()));
-
-        match effect {
-            SendCodexInputEffect::ForwardTurnRun { request } => {
-                assert_eq!(request.thread_id, Some("thread-42".to_string()));
+        match side_effect {
+            SendCodexInputSideEffect::ScheduleTurnRun { request } => {
+                assert!(request.thread_id.is_none());
                 assert_eq!(request.input_items.len(), 1);
                 assert!(request.output_schema.is_none());
 
@@ -2090,9 +2210,51 @@ mod tests {
                 assert!(item.image_url.is_none());
                 assert!(item.name.is_none());
             }
-            SendCodexInputEffect::RejectUnsupportedSlash { .. }
-            | SendCodexInputEffect::RenderStatus => {
-                panic!("unexpected effect for regular prompt")
+            SendCodexInputSideEffect::EmitStderr { .. }
+            | SendCodexInputSideEffect::EmitStatusToStdout { .. } => {
+                panic!("unexpected side-effect for regular prompt")
+            }
+        }
+    }
+
+    #[test]
+    fn send_codex_input_side_effect_renders_status_preserving_existing_thread_id() {
+        let plan = session_turn_use_cases::plan_send_codex_input("/status")
+            .expect("plan should classify status slash");
+        let effect = resolve_send_codex_input_effect(plan, Some("thread-42".to_string()));
+        let side_effect = resolve_send_codex_input_side_effect(
+            effect,
+            send_codex_input_effect_context_fixture(Some("thread-42")),
+        );
+
+        match side_effect {
+            SendCodexInputSideEffect::EmitStatusToStdout { payload, .. } => {
+                assert_eq!(payload.thread_id.as_deref(), Some("thread-42"));
+            }
+            SendCodexInputSideEffect::EmitStderr { .. }
+            | SendCodexInputSideEffect::ScheduleTurnRun { .. } => {
+                panic!("unexpected side-effect for /status with existing thread")
+            }
+        }
+    }
+
+    #[test]
+    fn send_codex_input_side_effect_forwards_prompt_preserving_existing_thread_id() {
+        let plan = session_turn_use_cases::plan_send_codex_input("hello world")
+            .expect("plan should classify normal prompt");
+        let effect = resolve_send_codex_input_effect(plan, Some("thread-42".to_string()));
+        let side_effect = resolve_send_codex_input_side_effect(
+            effect,
+            send_codex_input_effect_context_fixture(Some("thread-42")),
+        );
+
+        match side_effect {
+            SendCodexInputSideEffect::ScheduleTurnRun { request } => {
+                assert_eq!(request.thread_id.as_deref(), Some("thread-42"));
+            }
+            SendCodexInputSideEffect::EmitStderr { .. }
+            | SendCodexInputSideEffect::EmitStatusToStdout { .. } => {
+                panic!("unexpected side-effect for regular prompt with existing thread")
             }
         }
     }

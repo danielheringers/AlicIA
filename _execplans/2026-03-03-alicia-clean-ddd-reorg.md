@@ -52,6 +52,7 @@ Excluido:
 - [x] (2026-03-04) Fase 4 (slice 13): consolidacao de testes golden do contrato textual /status (backend+frontend).
 - [x] (2026-03-04) Fase 4 (slice 14): planificacao send_codex_input extraida para application (runtime executor).
 - [x] (2026-03-04) Fase 4 (slice 15): seam de efeitos em send_codex_input extraida no runtime com testes deterministas.
+- [x] (2026-03-04) Fase 4 (slice 16): execucao de side-effects de send_codex_input isolada com cobertura thread_id none/some.
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
 
@@ -915,6 +916,50 @@ Revisao tecnica final:
 Resultado:
 1. Slice 15 da Fase 4 concluido sem blocker de merge.
 2. `send_codex_input_impl` passou a operar com decisao de efeito mais testavel e com shape de `turn.run` coberto por testes de unidade.
+## Fase 4 Slice 16 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-04.
+2. Objetivo: isolar a execucao de side-effects de `send_codex_input_impl` em helper dedicado e fechar cobertura de `thread_id` para cenarios `None` e `Some` sem alterar contrato externo.
+3. Escopo do slice:
+   - extrair resolucao de side-effect para um enum explicito no runtime
+   - extrair executor de side-effects mantendo lock curto e fluxo orquestrador
+   - ampliar testes deterministas para todos os ramos com `thread_id=None` e `thread_id=Some`
+
+Entregas:
+1. Refactor interno no runtime:
+   - `backend/src/session_turn_runtime.rs`
+2. Novas estruturas/helpers internos:
+   - `SendCodexInputEffectContext`
+   - `SendCodexInputStatusSnapshotPayload`
+   - `SendCodexInputSideEffect`
+   - `resolve_send_codex_input_side_effect(...)`
+   - `execute_send_codex_input_side_effect(...)`
+3. Cobertura de testes reforcada:
+   - slash invalido -> apenas stderr
+   - `/status` -> stdout com `thread_id=None` e preservacao com `thread_id=Some`
+   - prompt normal -> schedule_turn_run com `thread_id=None` e preservacao com `thread_id=Some`
+
+Validacao executada:
+1. `cd alicia/backend && cargo fmt --all -- --check` -> OK (warnings conhecidos de rustfmt nightly config em stable).
+2. `cd alicia/backend && cargo check` -> OK.
+3. `cd alicia/backend && cargo test send_codex_input` -> OK (`5 passed; 0 failed`).
+4. `cd alicia/backend && cargo test` -> OK (`208 passed; 0 failed`).
+5. `cd alicia/backend && cargo clippy --all-targets --all-features -- -D warnings` -> OK.
+6. `node alicia/codex-bridge/generators/check-runtime-contract.mjs` -> OK (`runtimeMethods=51`, `tauriCommands=70`, `tauriEventChannels=6`).
+7. Verificacao de drift de contrato:
+   - sem drift em `backend/src/interface/tauri/commands/session_turn.rs`
+   - sem drift em `backend/src/interface/tauri/dto/session_turn.rs`
+   - sem alteracao em `alicia/codex-bridge/schema/runtime-contract.json`
+
+Revisao tecnica final:
+1. Rodada final sem findings de severidade alta/media/baixa.
+2. Finding medio inicial de cobertura (`thread_id=Some`) foi corrigido no proprio slice e revalidado.
+3. Sem blocker de merge segundo revisao final.
+
+Resultado:
+1. Slice 16 da Fase 4 concluido sem blocker de merge.
+2. Orquestracao de `send_codex_input_impl` ficou mais testavel, com exclusividade de side-effects e preservacao de `thread_id` cobertas por testes.
 ## Current Architecture Snapshot (Key Risks)
 
 1. Frontend com `god component` em `app/page.tsx` concentrando UI + fluxo + regras.
@@ -1288,4 +1333,15 @@ Fase 4 (slice 15):
    - caso `thread_id=None` ainda sem teste dedicado no seam.
 4. Ajuste para continuidade da Fase 4:
    - priorizar teste de integracao de `send_codex_input_impl` e manter incrementalmente a padronizacao de canais de erro/feedback com contrato estavel.
+
+Fase 4 (slice 16):
+1. Resultado entregue: execucao de side-effects de `send_codex_input_impl` isolada em helper dedicado, com cobertura deterministica para `thread_id=None` e `thread_id=Some`.
+2. Incidentes/regressoes:
+   - revisao intermediaria apontou gap medio de cobertura em `thread_id=Some`;
+   - gap corrigido no mesmo slice com dois testes adicionais e revalidacao completa verde.
+3. Riscos residuais:
+   - ainda falta teste de integracao fim-a-fim de `send_codex_input_impl` observando emissao real de canais no runtime completo;
+   - warnings recorrentes de rustfmt (config nightly) seguem como divida de tooling.
+4. Ajuste para continuidade da Fase 4:
+   - priorizar teste de integracao de runtime para `send_codex_input_impl` com asserts de `stdout/stderr/schedule_turn_run` em fluxo completo.
 
