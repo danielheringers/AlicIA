@@ -39,6 +39,7 @@ Excluido:
 - [x] (2026-03-03) Fase 3: extracao de interface Tauri no backend (conclusao completa).
 - [x] (2026-03-04) Fase 4 (slice 1): contexto Workspace Filesystem extraido para application/domain/infrastructure.
 - [x] (2026-03-04) Fase 4 (slice 2): contexto Account/MCP/App List extraido para application/domain/infrastructure.
+- [x] (2026-03-04) Fase 4 (slice 3): recorte ADT/Neuro (server registry/select/connect) extraido para application/domain/infrastructure.
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
 
@@ -351,12 +352,55 @@ Validacao executada:
 Resultado:
 1. Slice 2 da Fase 4 concluido sem blocker de merge.
 2. Fase 4 completa permanece em aberto para separacao dos contexts restantes (`Session/Thread/Review` e `ADT/Neuro`).
+## Fase 4 Slice 3 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-04.
+2. Objetivo: extrair o recorte `ADT/Neuro - Server Registry & Selection` de `neuro_runtime.rs` para `application/domain/infrastructure`, preservando contrato Tauri.
+3. Escopo do slice:
+   - migracao de `neuro_adt_server_list`, `neuro_adt_server_upsert`, `neuro_adt_server_remove`, `neuro_adt_server_select`, `neuro_adt_server_connect`
+   - extracao de regras de normalizacao/invariantes do registry para `domain/neuro_adt`
+   - extracao de persistencia do store JSON para `infrastructure/filesystem/neuro_server_store`
+
+Entregas:
+1. Estrutura Clean criada para o recorte ADT/Neuro server registry:
+   - `backend/src/application/neuro_adt/{mod.rs,use_cases.rs}`
+   - `backend/src/domain/neuro_adt/{mod.rs,server_store.rs}`
+   - `backend/src/infrastructure/filesystem/neuro_server_store.rs`
+   - modulos-raiz atualizados: `backend/src/{application,domain}/mod.rs` e `backend/src/infrastructure/filesystem/mod.rs`
+2. `neuro_runtime.rs` reduzido para delegacao nos comandos server_*:
+   - `neuro_adt_server_list_impl`
+   - `neuro_adt_server_upsert_impl`
+   - `neuro_adt_server_remove_impl`
+   - `neuro_adt_server_select_impl`
+   - `neuro_adt_server_connect_impl`
+3. Testes novos adicionados para o slice:
+   - dominio (`normalize/upsert/select/remove` + invariantes de active server)
+   - infraestrutura (`load/save/parse error` + permissao `0600` em Unix)
+   - aplicacao (`server_*` com cobertura de invalidacao de cache e contrato de resposta)
+
+Validacao executada:
+1. `cd alicia/backend && cargo fmt --all -- --check` -> OK.
+2. `cd alicia/backend && cargo check` -> OK.
+3. `cd alicia/backend && cargo test` -> OK (`146 passed; 0 failed`).
+4. `cd alicia/backend && cargo clippy --all-targets --all-features -- -D warnings` -> OK.
+5. `node alicia/codex-bridge/generators/check-runtime-contract.mjs` -> OK (`runtimeMethods=51`, `tauriCommands=70`, `tauriEventChannels=6`).
+6. Verificacao de paridade: comandos Tauri `neuro_adt_server_*` e assinaturas publicas permanecem estaveis.
+
+Revisao tecnica final:
+1. Sem findings de severidade alta.
+2. 1 finding medio registrado como divida de transicao: acoplamento residual de tipos/erros de `neuro_runtime` nas camadas extraidas.
+3. 1 finding baixo de superficie de segredo (`password` com visibilidade `pub(crate)`), sem exploracao observada neste slice.
+
+Resultado:
+1. Slice 3 da Fase 4 concluido sem blocker alto de merge.
+2. Fase 4 permanece em aberto para reduzir acoplamentos residuais e atacar os blocos restantes (`Session/Thread/Review` e demais fluxos ADT/Neuro).
 ## Current Architecture Snapshot (Key Risks)
 
 1. Frontend com `god component` em `app/page.tsx` concentrando UI + fluxo + regras.
 2. Componentes de UI sem import direto de `tauri-bridge` nos painéis priorizados da Fase 2; ainda existe acoplamento residual via adapter concreto em alguns fluxos.
 3. `main.rs` agora esta focado em bootstrap/estado/registro de handlers; comandos e DTOs foram movidos para `interface/tauri`.
-4. `session_turn_runtime.rs` e `neuro_runtime.rs` seguem monoliticos; `command_runtime.rs` iniciou decomposicao com o contexto Workspace.
+4. `session_turn_runtime.rs` segue monolitico; `command_runtime.rs` e `neuro_runtime.rs` avancaram na decomposicao por contexto (Workspace, Account/MCP e ADT server registry), com blocos residuais ainda acoplados.
 5. Contrato runtime duplicado entre frontend e backend.
 
 ## Target Architecture
@@ -589,3 +633,14 @@ Fase 4 (slice 2):
    - dependencias de `tauri::State` nos use-cases de aplicacao permanecem como divida tecnica para slices seguintes.
 4. Ajuste para continuidade da Fase 4:
    - priorizar extracao de `Session/Thread/Review` ou `ADT/Neuro` para reduzir os blocos monoliticos restantes de runtime.
+
+Fase 4 (slice 3):
+1. Resultado entregue: recorte ADT/Neuro de server registry/select/connect extraido para `application/domain/infrastructure`, com `neuro_runtime` atuando como fachada dos comandos `server_*`.
+2. Incidentes/regressoes:
+   - sem regressao funcional detectada nas validacoes tecnicas e no checker de contrato;
+   - revisao final sem findings de severidade alta.
+3. Riscos residuais:
+   - acoplamento de transicao entre camadas extraidas e tipos/erros de `neuro_runtime` ainda presente;
+   - gap de testes E2E Tauri e de concorrencia de escrita simultanea no store de servers.
+4. Ajuste para continuidade da Fase 4:
+   - extrair contratos/ports proprios do contexto ADT/Neuro e seguir para separacao de `Session/Thread/Review`.
