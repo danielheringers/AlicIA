@@ -30,7 +30,7 @@ use codex_protocol::config_types::WebSearchMode as WebSearchModeConfig;
 #[cfg(feature = "native-codex-runtime")]
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 #[cfg(feature = "native-codex-runtime")]
-use codex_protocol::protocol::{AskForApproval, Op, ReviewRequest, ReviewTarget, SandboxPolicy};
+use codex_protocol::protocol::{AskForApproval, Op, SandboxPolicy};
 #[cfg(feature = "native-codex-runtime")]
 use codex_protocol::user_input::UserInput;
 #[cfg(feature = "native-codex-runtime")]
@@ -669,28 +669,6 @@ fn resolve_native_active_turn_for_thread(
 }
 
 #[cfg(feature = "native-codex-runtime")]
-fn parse_native_review_request(
-    target: Option<Value>,
-    delivery: Option<String>,
-) -> Result<ReviewRequest, String> {
-    let target = match target {
-        Some(target_value) => serde_json::from_value::<ReviewTarget>(target_value)
-            .map_err(|error| format!("target is invalid for native review request: {error}"))?,
-        None => ReviewTarget::UncommittedChanges,
-    };
-
-    let user_facing_hint = delivery
-        .map(|value| value.trim().to_ascii_lowercase())
-        .filter(|value| !value.is_empty())
-        .map(|value| format!("delivery:{value}"));
-
-    Ok(ReviewRequest {
-        target,
-        user_facing_hint,
-    })
-}
-
-#[cfg(feature = "native-codex-runtime")]
 fn infer_thread_id_from_rollout_path(path: &Path) -> Option<String> {
     session_thread_shared::infer_thread_id_from_rollout_path(path)
 }
@@ -917,9 +895,10 @@ async fn schedule_review_start_native(
                 );
             }
 
-            let review_request = parse_native_review_request(target, delivery)?;
+            let review_op =
+                session_thread_review_use_cases::plan_native_review_start_op(target, delivery)?;
             thread
-                .submit(Op::Review { review_request })
+                .submit(review_op)
                 .await
                 .map_err(|error| format!("failed to submit native review: {error}"))?;
 

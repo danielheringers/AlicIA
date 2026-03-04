@@ -47,6 +47,7 @@ Excluido:
 - [x] (2026-03-04) Fase 4 (slice 8): extracao do scheduling comum de turn.run/review.start para domain+application.
 - [x] (2026-03-04) Fase 4 (slice 9): extracao de housekeeping close/archive para runtime_bridge.
 - [x] (2026-03-04) Fase 4 (slice 10): extracao do pipeline comum de eventos/lifecycle para turn-run-review-start.
+- [x] (2026-03-04) Fase 4 (slice 11): extracao do parsing/normalizacao de review-start para application.
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
 
@@ -698,6 +699,45 @@ Revisao tecnica final:
 Resultado:
 1. Slice 10 da Fase 4 concluido sem blocker de merge.
 2. Duplicacao de event/lifecycle pipeline removida entre `schedule_turn_run_native` e `schedule_review_start_native`.
+## Fase 4 Slice 11 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-04.
+2. Objetivo: extrair parsing/normalizacao de `review.start` para `application/session_thread_review`, mantendo `session_turn_runtime` como orquestrador.
+3. Escopo do slice:
+   - mover parsing de target/delivery para use-case de application
+   - delegar montagem de `Op::Review` no runtime para use-case
+   - preservar fallback de target e mensagens de erro
+
+Entregas:
+1. Use-cases expandidos:
+   - `backend/src/application/session_thread_review/use_cases.rs`
+2. Runtime simplificado:
+   - `backend/src/session_turn_runtime.rs`
+3. Testes unitarios adicionados para:
+   - fallback de target ausente para `UncommittedChanges`
+   - rejeicao de target invalido com mensagem esperada
+   - validacao de delivery
+
+Validacao executada:
+1. `cd alicia/backend && cargo fmt --all -- --check` -> OK.
+2. `cd alicia/backend && cargo check` -> OK.
+3. `cd alicia/backend && cargo test` -> OK (`189 passed; 0 failed`).
+4. `cd alicia/backend && cargo clippy --all-targets --all-features -- -D warnings` -> OK.
+5. `node alicia/codex-bridge/generators/check-runtime-contract.mjs` -> OK (`runtimeMethods=51`, `tauriCommands=70`, `tauriEventChannels=6`).
+6. Verificacao de contrato/assinaturas:
+   - sem drift em `backend/src/interface/tauri/commands/session_turn.rs`
+   - sem drift em `backend/src/interface/tauri/dto/session_turn.rs`
+
+Revisao tecnica final:
+1. Sem findings de severidade alta/media/baixa.
+2. Contrato externo preservado para `review.start` (request/response inalterados).
+3. Riscos residuais baixos:
+   - faltam testes de integracao E2E para assertar texto de erro no fluxo Tauri completo de `review.start`.
+
+Resultado:
+1. Slice 11 da Fase 4 concluido sem blocker de merge.
+2. Parsing de `review.start` removido do runtime e centralizado em application/use-cases.
 ## Current Architecture Snapshot (Key Risks)
 
 1. Frontend com `god component` em `app/page.tsx` concentrando UI + fluxo + regras.
@@ -1020,4 +1060,14 @@ Fase 4 (slice 10):
    - helper centralizado passou a concentrar o comportamento de dois caminhos criticos (`turn.run` e `review.start`).
 4. Ajuste para continuidade da Fase 4:
    - priorizar recorte incremental de `review/status pathway` com foco em padronizar erros/saida sem mexer no contrato.
+Fase 4 (slice 11):
+1. Resultado entregue: parsing/normalizacao de `review.start` centralizado em `application/session_thread_review`, com runtime reduzido a delegacao de montagem de `Op::Review`.
+2. Incidentes/regressoes:
+   - sem findings de severidade alta/media/baixa na revisao final;
+   - contrato Tauri preservado sem drift em comandos/DTOs de session_turn.
+3. Riscos residuais:
+   - faltam testes de integracao para caminho assincrono de falha apos aceite do `review.start`;
+   - falta teste E2E Tauri com assert textual de erro fim-a-fim para target invalido.
+4. Ajuste para continuidade da Fase 4:
+   - priorizar recorte de `/status` pathway para reduzir parsing/mensageria residual em runtime, sem quebrar parser frontend.
 

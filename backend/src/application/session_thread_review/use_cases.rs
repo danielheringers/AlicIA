@@ -1,7 +1,9 @@
 use tauri::State;
 
 #[cfg(feature = "native-codex-runtime")]
-use codex_protocol::protocol::{ExecPolicyAmendment, Op, ReviewDecision};
+use codex_protocol::protocol::{
+    ExecPolicyAmendment, Op, ReviewDecision, ReviewRequest, ReviewTarget,
+};
 #[cfg(feature = "native-codex-runtime")]
 use codex_protocol::request_user_input::{RequestUserInputAnswer, RequestUserInputResponse};
 #[cfg(feature = "native-codex-runtime")]
@@ -133,6 +135,37 @@ pub(crate) fn validate_review_start_request(
     request: &CodexReviewStartRequest,
 ) -> Result<(), String> {
     review_policy::validate_review_start(request.target.as_ref(), request.delivery.as_deref())
+}
+
+#[cfg(feature = "native-codex-runtime")]
+pub(crate) fn plan_native_review_start_op(
+    target: Option<Value>,
+    delivery: Option<String>,
+) -> Result<Op, String> {
+    let review_request = parse_native_review_request(target, delivery)?;
+    Ok(Op::Review { review_request })
+}
+
+#[cfg(feature = "native-codex-runtime")]
+fn parse_native_review_request(
+    target: Option<Value>,
+    delivery: Option<String>,
+) -> Result<ReviewRequest, String> {
+    let target = match target {
+        Some(target_value) => serde_json::from_value::<ReviewTarget>(target_value)
+            .map_err(|error| format!("target is invalid for native review request: {error}"))?,
+        None => ReviewTarget::UncommittedChanges,
+    };
+
+    let user_facing_hint = delivery
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("delivery:{value}"));
+
+    Ok(ReviewRequest {
+        target,
+        user_facing_hint,
+    })
 }
 
 #[cfg(feature = "native-codex-runtime")]
@@ -389,11 +422,13 @@ mod tests {
 
     #[cfg(feature = "native-codex-runtime")]
     use super::{
-        plan_approval_response, plan_user_input_response, ApprovalPendingKind,
-        NativeSessionSlotReservation,
+        plan_approval_response, plan_native_review_start_op, plan_user_input_response,
+        validate_review_start_request, ApprovalPendingKind, NativeSessionSlotReservation,
     };
     #[cfg(feature = "native-codex-runtime")]
-    use codex_protocol::protocol::Op;
+    use crate::interface::tauri::dto::CodexReviewStartRequest;
+    #[cfg(feature = "native-codex-runtime")]
+    use codex_protocol::protocol::{Op, ReviewTarget};
     #[cfg(feature = "native-codex-runtime")]
     use serde_json::{json, Value};
     #[cfg(feature = "native-codex-runtime")]
@@ -449,6 +484,59 @@ mod tests {
         assert_eq!(response.session_id, 9);
         assert_eq!(response.thread_id, Some("thread-review".to_string()));
         assert_eq!(response.review_thread_id, Some("thread-review".to_string()));
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    #[test]
+    fn plan_native_review_start_op_falls_back_to_uncommitted_changes() {
+        let op = plan_native_review_start_op(None, Some(" INLINE ".to_string()))
+            .expect("review plan should be valid");
+
+        match op {
+            Op::Review { review_request } => {
+                assert_eq!(review_request.target, ReviewTarget::UncommittedChanges);
+                assert_eq!(
+                    review_request.user_facing_hint.as_deref(),
+                    Some("delivery:inline")
+                );
+            }
+            other => panic!("expected Op::Review, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    #[test]
+    fn plan_native_review_start_op_rejects_invalid_target() {
+        let invalid_target = json!("invalid");
+        let expected_error = format!(
+            "target is invalid for native review request: {}",
+            serde_json::from_value::<ReviewTarget>(invalid_target.clone())
+                .expect_err("target should be invalid")
+        );
+
+        let result = plan_native_review_start_op(Some(invalid_target), None);
+        assert_eq!(result, Err(expected_error));
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    #[test]
+    fn validate_review_start_request_applies_delivery_rules() {
+        let valid = CodexReviewStartRequest {
+            thread_id: None,
+            target: None,
+            delivery: Some(" detached ".to_string()),
+        };
+        assert_eq!(validate_review_start_request(&valid), Ok(()));
+
+        let invalid = CodexReviewStartRequest {
+            thread_id: None,
+            target: None,
+            delivery: Some("mail".to_string()),
+        };
+        assert_eq!(
+            validate_review_start_request(&invalid),
+            Err("delivery must be `inline` or `detached`".to_string())
+        );
     }
 
     #[cfg(feature = "native-codex-runtime")]
