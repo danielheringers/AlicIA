@@ -40,6 +40,7 @@ Excluido:
 - [x] (2026-03-04) Fase 4 (slice 1): contexto Workspace Filesystem extraido para application/domain/infrastructure.
 - [x] (2026-03-04) Fase 4 (slice 2): contexto Account/MCP/App List extraido para application/domain/infrastructure.
 - [x] (2026-03-04) Fase 4 (slice 3): recorte ADT/Neuro (server registry/select/connect) extraido para application/domain/infrastructure.
+- [x] (2026-03-04) Fase 4 (slice 4): desacoplamento neuro_adt de neuro_runtime com contracts/ports/tipos proprios.
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
 
@@ -395,12 +396,55 @@ Revisao tecnica final:
 Resultado:
 1. Slice 3 da Fase 4 concluido sem blocker alto de merge.
 2. Fase 4 permanece em aberto para reduzir acoplamentos residuais e atacar os blocos restantes (`Session/Thread/Review` e demais fluxos ADT/Neuro).
+## Fase 4 Slice 4 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-04.
+2. Objetivo: remover acoplamento residual de `application/domain/infrastructure/neuro_adt` com `neuro_runtime`, mantendo contrato Tauri externo inalterado.
+3. Escopo do slice:
+   - introducao de contratos/ports/tipos/erro proprios do contexto `neuro_adt`
+   - adaptacao de `neuro_runtime` para atuar como adapter/fachada do contexto
+   - correcoes dos findings medios da revisao anterior (mapping de erro connect + lock global de env para testes)
+
+Entregas:
+1. Contratos e ports da camada de aplicacao:
+   - `backend/src/application/neuro_adt/{contracts.rs,ports.rs}`
+   - `backend/src/application/neuro_adt/use_cases.rs` refatorado para depender de contratos/ports do contexto
+2. Tipos e erro do dominio:
+   - `backend/src/domain/neuro_adt/{types.rs,error.rs,server_store.rs}`
+   - `server_store.rs` desacoplado de `crate::neuro_runtime`
+3. Infra de store desacoplada:
+   - `backend/src/infrastructure/filesystem/neuro_server_store.rs` usando tipos/erro do contexto
+4. Adapter em `neuro_runtime.rs` preservando API externa dos comandos:
+   - `neuro_adt_server_*_impl` sem mudanca de assinatura
+   - mapping de erro do connect com preservacao de `NeuroRuntimeErrorCode`
+   - lock global de env de testes unificado com `domain/neuro_adt/types`
+5. Criterio de desacoplamento validado:
+   - `rg -n "crate::neuro_runtime" src/application/neuro_adt src/domain/neuro_adt src/infrastructure/filesystem/neuro_server_store.rs` -> sem ocorrencias
+
+Validacao executada:
+1. `cd alicia/backend && cargo fmt --all -- --check` -> OK.
+2. `cd alicia/backend && cargo check` -> OK.
+3. `cd alicia/backend && cargo test` -> OK (`148 passed; 0 failed`).
+4. `cd alicia/backend && cargo clippy --all-targets --all-features -- -D warnings` -> OK.
+5. `node alicia/codex-bridge/generators/check-runtime-contract.mjs` -> OK (`runtimeMethods=51`, `tauriCommands=70`, `tauriEventChannels=6`).
+6. Teste especifico de regressao de erro connect:
+   - `cargo test connect_failure_preserves_runtime_error_code_from_get_or_init_mapping` -> OK.
+
+Revisao tecnica final:
+1. Sem findings de severidade alta.
+2. Sem findings de severidade media apos os fixes.
+3. Riscos residuais documentados como baixo impacto (panic-safety em helper de teste de env e ausencia de teste explicito de serializacao DTO).
+
+Resultado:
+1. Slice 4 da Fase 4 concluido sem blocker de merge.
+2. Contexto `neuro_adt` (server registry/select/connect) ficou com fronteira clean mais estrita e sem dependencia direta de `neuro_runtime` nas camadas internas.
 ## Current Architecture Snapshot (Key Risks)
 
 1. Frontend com `god component` em `app/page.tsx` concentrando UI + fluxo + regras.
 2. Componentes de UI sem import direto de `tauri-bridge` nos painéis priorizados da Fase 2; ainda existe acoplamento residual via adapter concreto em alguns fluxos.
 3. `main.rs` agora esta focado em bootstrap/estado/registro de handlers; comandos e DTOs foram movidos para `interface/tauri`.
-4. `session_turn_runtime.rs` segue monolitico; `command_runtime.rs` e `neuro_runtime.rs` avancaram na decomposicao por contexto (Workspace, Account/MCP e ADT server registry), com blocos residuais ainda acoplados.
+4. `session_turn_runtime.rs` segue monolitico; `command_runtime.rs` e `neuro_runtime.rs` avancaram na decomposicao por contexto (Workspace, Account/MCP e ADT server registry), com desacoplamento parcial concluido e blocos residuais ainda em Session/Thread e ADT avancado.
 5. Contrato runtime duplicado entre frontend e backend.
 
 ## Target Architecture
@@ -644,3 +688,14 @@ Fase 4 (slice 3):
    - gap de testes E2E Tauri e de concorrencia de escrita simultanea no store de servers.
 4. Ajuste para continuidade da Fase 4:
    - extrair contratos/ports proprios do contexto ADT/Neuro e seguir para separacao de `Session/Thread/Review`.
+
+Fase 4 (slice 4):
+1. Resultado entregue: desacoplamento de `application/domain/infrastructure/neuro_adt` de `neuro_runtime` com contracts/ports/tipos/erro proprios e adapter dedicado no runtime.
+2. Incidentes/regressoes:
+   - findings medios da rodada anterior (mapping de erro connect e lock global de env) corrigidos no mesmo slice;
+   - validacoes finais sem findings alta/media.
+3. Riscos residuais:
+   - helpers `with_env_overrides` de testes nao sao panic-safe (risco baixo, escopo de testes);
+   - falta teste explicito de serializacao dos DTOs extraidos de `neuro_adt`.
+4. Ajuste para continuidade da Fase 4:
+   - priorizar separacao de `Session/Thread/Review` e/ou blocos ADT/Neuro restantes fora do recorte server registry.

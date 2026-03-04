@@ -1,11 +1,9 @@
 use std::collections::HashSet;
 
-use neuro_types::{NeuroRuntimeError, NeuroRuntimeErrorCode};
-
-use crate::neuro_runtime::{
-    runtime_error, AdtServerListResponse, AdtServerRecord, AdtServerStore, AdtServerUpsertRequest,
-    StoredAdtServer,
-};
+use crate::domain::neuro_adt::error::{NeuroAdtError, NeuroAdtErrorCode};
+#[cfg(test)]
+use crate::domain::neuro_adt::types::StoredAdtExplorerState;
+use crate::domain::neuro_adt::types::{AdtServerStore, AdtServerUpsertInput, StoredAdtServer};
 
 fn normalize_optional_field(value: Option<String>) -> Option<String> {
     value.and_then(|entry| {
@@ -18,17 +16,12 @@ fn normalize_optional_field(value: Option<String>) -> Option<String> {
     })
 }
 
-pub(crate) fn normalize_required_field(
-    field: &str,
-    value: &str,
-) -> Result<String, NeuroRuntimeError> {
+pub(crate) fn normalize_required_field(field: &str, value: &str) -> Result<String, NeuroAdtError> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        return Err(runtime_error(
-            NeuroRuntimeErrorCode::InvalidArgument,
-            format!("{field} must not be empty"),
-            None,
-        ));
+        return Err(NeuroAdtError::invalid_argument(format!(
+            "{field} must not be empty"
+        )));
     }
     Ok(trimmed.to_string())
 }
@@ -97,30 +90,10 @@ pub(crate) fn selected_server_id(store: &AdtServerStore) -> Option<String> {
         .map(|server| server.id.clone())
 }
 
-pub(crate) fn to_server_record(server: &StoredAdtServer) -> AdtServerRecord {
-    AdtServerRecord {
-        id: server.id.clone(),
-        name: server.name.clone(),
-        base_url: server.base_url.clone(),
-        client: server.client.clone(),
-        language: server.language.clone(),
-        username: server.username.clone(),
-        verify_tls: server.verify_tls,
-        active: server.active,
-    }
-}
-
-pub(crate) fn server_list_response(store: &AdtServerStore) -> AdtServerListResponse {
-    AdtServerListResponse {
-        servers: store.servers.iter().map(to_server_record).collect(),
-        selected_server_id: selected_server_id(store),
-    }
-}
-
 pub(crate) fn upsert_server(
     store: &mut AdtServerStore,
-    request: AdtServerUpsertRequest,
-) -> Result<StoredAdtServer, NeuroRuntimeError> {
+    request: AdtServerUpsertInput,
+) -> Result<StoredAdtServer, NeuroAdtError> {
     let id = normalize_required_field("id", request.id.as_str())?;
     let name = normalize_required_field("name", request.name.as_str())?;
     let base_url = normalize_required_field("base_url", request.base_url.as_str())?;
@@ -180,8 +153,8 @@ pub(crate) fn upsert_server(
         .find(|entry| entry.id == id)
         .cloned()
         .ok_or_else(|| {
-            runtime_error(
-                NeuroRuntimeErrorCode::RuntimeInitError,
+            NeuroAdtError::new(
+                NeuroAdtErrorCode::RuntimeInitError,
                 format!("failed to persist ADT server `{id}`"),
                 None,
             )
@@ -191,14 +164,12 @@ pub(crate) fn upsert_server(
 pub(crate) fn select_server(
     store: &mut AdtServerStore,
     server_id: &str,
-) -> Result<(), NeuroRuntimeError> {
+) -> Result<(), NeuroAdtError> {
     let found = store.servers.iter().any(|server| server.id == server_id);
     if !found {
-        return Err(runtime_error(
-            NeuroRuntimeErrorCode::InvalidArgument,
-            format!("ADT server `{server_id}` is not configured"),
-            None,
-        ));
+        return Err(NeuroAdtError::invalid_argument(format!(
+            "ADT server `{server_id}` is not configured"
+        )));
     }
 
     for server in &mut store.servers {
@@ -221,10 +192,9 @@ pub(crate) fn remove_server(store: &mut AdtServerStore, server_id: &str) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::neuro_runtime::StoredAdtExplorerState;
 
-    fn sample_request(id: &str) -> AdtServerUpsertRequest {
-        AdtServerUpsertRequest {
+    fn sample_request(id: &str) -> AdtServerUpsertInput {
+        AdtServerUpsertInput {
             id: id.to_string(),
             name: format!("Server {id}"),
             base_url: format!("https://{id}.local"),
@@ -242,7 +212,7 @@ mod tests {
         let mut store = AdtServerStore::default();
         upsert_server(
             &mut store,
-            AdtServerUpsertRequest {
+            AdtServerUpsertInput {
                 password: Some("secret".to_string()),
                 active: Some(true),
                 ..sample_request("srv_a")
@@ -252,7 +222,7 @@ mod tests {
 
         let updated = upsert_server(
             &mut store,
-            AdtServerUpsertRequest {
+            AdtServerUpsertInput {
                 name: "  Updated  ".to_string(),
                 base_url: "  https://updated.local  ".to_string(),
                 password: None,
@@ -334,7 +304,7 @@ mod tests {
         upsert_server(&mut store, sample_request("srv_a")).expect("upsert should work");
 
         let error = select_server(&mut store, "srv_missing").expect_err("must fail");
-        assert_eq!(error.code, NeuroRuntimeErrorCode::InvalidArgument);
+        assert_eq!(error.code, NeuroAdtErrorCode::InvalidArgument);
         assert!(error.message.contains("srv_missing"));
     }
 

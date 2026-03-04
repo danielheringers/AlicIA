@@ -19,8 +19,23 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::State;
 
+pub use crate::application::neuro_adt::contracts::{
+    AdtServerConnectResponse, AdtServerListResponse, AdtServerRecord, AdtServerRemoveResponse,
+    AdtServerSelectResponse, AdtServerUpsertRequest,
+};
+use crate::application::neuro_adt::ports::{AdtServerConnectivity, NeuroAdtFuture, NeuroAdtPort};
 use crate::application::neuro_adt::use_cases as neuro_adt_use_cases;
+use crate::domain::neuro_adt::error::NeuroAdtError;
 use crate::domain::neuro_adt::server_store as neuro_server_domain;
+#[cfg(test)]
+use crate::domain::neuro_adt::types::AdtServerUpsertInput;
+pub(crate) use crate::domain::neuro_adt::types::ENV_DEFAULT_SERVER_ID;
+#[cfg(test)]
+pub(crate) use crate::domain::neuro_adt::types::NEURO_ADT_SERVER_STORE_PATH_ENV;
+pub use crate::domain::neuro_adt::types::{
+    AdtFavoriteObject, AdtFavoritePackage, AdtFavoritePackageKind,
+};
+use crate::domain::neuro_adt::types::{AdtServerStore, StoredAdtExplorerState, StoredAdtServer};
 use crate::infrastructure::filesystem::neuro_server_store as neuro_server_store_fs;
 use crate::AppState;
 
@@ -32,9 +47,7 @@ const DEFAULT_ADT_SEARCH_PATH: &str =
 const NEURO_COMMAND_TELEMETRY_EVENT: &str = "neuro.command";
 const NEURO_RUNTIME_INIT_TELEMETRY_EVENT: &str = "neuro.runtime_init";
 const NEURO_RUNTIME_INIT_TELEMETRY_VERBOSE_ENV: &str = "NEURO_RUNTIME_INIT_TELEMETRY_VERBOSE";
-pub(crate) const ENV_DEFAULT_SERVER_ID: &str = "env_default";
-pub(crate) const DEFAULT_ADT_SERVER_STORE_RELATIVE_PATH: &str = "alicia/neuro/adt_servers.json";
-pub(crate) const NEURO_ADT_SERVER_STORE_PATH_ENV: &str = "NEURO_ADT_SERVER_STORE_PATH";
+
 const DEFAULT_PACKAGE_DISCOVERY_QUERY: &str = "*";
 const DEFAULT_NAMESPACE_DISCOVERY_QUERY: &str = "*";
 const DEFAULT_DISCOVERY_MAX_RESULTS: u32 = 5000;
@@ -115,67 +128,6 @@ struct RuntimeInitTarget {
     resolved_server_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct AdtServerUpsertRequest {
-    pub id: String,
-    pub name: String,
-    pub base_url: String,
-    #[serde(default)]
-    pub client: Option<String>,
-    #[serde(default)]
-    pub language: Option<String>,
-    #[serde(default)]
-    pub username: Option<String>,
-    #[serde(default)]
-    pub password: Option<String>,
-    #[serde(default)]
-    pub verify_tls: Option<bool>,
-    #[serde(default)]
-    pub active: Option<bool>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AdtServerRecord {
-    pub id: String,
-    pub name: String,
-    pub base_url: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub language: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub username: Option<String>,
-    pub verify_tls: bool,
-    pub active: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AdtServerListResponse {
-    pub servers: Vec<AdtServerRecord>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub selected_server_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AdtServerSelectResponse {
-    pub selected_server_id: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AdtServerRemoveResponse {
-    pub removed: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub selected_server_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AdtServerConnectResponse {
-    pub server_id: String,
-    pub connected: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct AdtPackageSummary {
     pub name: String,
@@ -188,29 +140,6 @@ pub struct AdtNamespaceSummary {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub package_name: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AdtFavoritePackageKind {
-    Namespace,
-    Package,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub struct AdtFavoritePackage {
-    pub kind: AdtFavoritePackageKind,
-    pub name: String,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub struct AdtFavoriteObject {
-    pub uri: String,
-    pub name: String,
-    #[serde(default)]
-    pub object_type: Option<String>,
-    #[serde(default)]
-    pub package: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -482,51 +411,6 @@ impl AdtUpdateSourceCommandRequest {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub(crate) struct AdtServerStore {
-    #[serde(default)]
-    pub(crate) servers: Vec<StoredAdtServer>,
-    #[serde(default)]
-    pub(crate) explorer_state_by_server: BTreeMap<String, StoredAdtExplorerState>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct StoredAdtServer {
-    pub(crate) id: String,
-    pub(crate) name: String,
-    pub(crate) base_url: String,
-    #[serde(default)]
-    pub(crate) client: Option<String>,
-    #[serde(default)]
-    pub(crate) language: Option<String>,
-    #[serde(default)]
-    pub(crate) username: Option<String>,
-    #[serde(default)]
-    pub(crate) password: Option<String>,
-    #[serde(default = "default_verify_tls")]
-    pub(crate) verify_tls: bool,
-    #[serde(default)]
-    pub(crate) active: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub(crate) struct StoredAdtExplorerState {
-    #[serde(default)]
-    favorite_packages: Vec<AdtFavoritePackage>,
-    #[serde(default)]
-    favorite_objects: Vec<AdtFavoriteObject>,
-    #[serde(default)]
-    selected_work_package: Option<String>,
-    #[serde(default)]
-    package_scope_roots: Vec<String>,
-    #[serde(default)]
-    focused_object_uri: Option<String>,
-}
-
-fn default_verify_tls() -> bool {
-    true
-}
-
 pub struct NeuroRuntime {
     config: RuntimeConfig,
     engine: Arc<neuro_engine::NeuroEngine>,
@@ -621,8 +505,7 @@ impl NeuroRuntime {
 
 #[cfg(test)]
 pub(crate) fn shared_env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    crate::domain::neuro_adt::types::shared_env_lock()
 }
 
 #[cfg(test)]
@@ -912,7 +795,7 @@ fn normalize_server_store(store: &mut AdtServerStore) {
 }
 
 pub(crate) fn load_server_store() -> Result<AdtServerStore, NeuroRuntimeError> {
-    let mut parsed = neuro_server_store_fs::load_server_store()?;
+    let mut parsed = neuro_server_store_fs::load_server_store().map_err(map_neuro_adt_error)?;
     normalize_server_store(&mut parsed);
     Ok(parsed)
 }
@@ -920,7 +803,7 @@ pub(crate) fn load_server_store() -> Result<AdtServerStore, NeuroRuntimeError> {
 pub(crate) fn save_server_store(store: &AdtServerStore) -> Result<(), NeuroRuntimeError> {
     let mut normalized_store = store.clone();
     normalize_server_store(&mut normalized_store);
-    neuro_server_store_fs::save_server_store(&normalized_store)
+    neuro_server_store_fs::save_server_store(&normalized_store).map_err(map_neuro_adt_error)
 }
 #[cfg(test)]
 fn selected_server_id(store: &AdtServerStore) -> Option<String> {
@@ -1454,6 +1337,14 @@ pub(crate) fn runtime_error(
     }
 }
 
+fn map_neuro_adt_error(error: NeuroAdtError) -> NeuroRuntimeError {
+    runtime_error(error.runtime_code(), error.message, error.details)
+}
+
+fn map_runtime_error_to_adt(error: NeuroRuntimeError) -> NeuroAdtError {
+    NeuroAdtError::from_runtime_error(error)
+}
+
 fn map_adt_error(error: AdtClientError) -> NeuroRuntimeError {
     match error {
         AdtClientError::MissingCsrfToken => runtime_error(
@@ -1629,12 +1520,26 @@ fn upsert_server(
     store: &mut AdtServerStore,
     request: AdtServerUpsertRequest,
 ) -> Result<StoredAdtServer, NeuroRuntimeError> {
-    neuro_server_domain::upsert_server(store, request)
+    neuro_server_domain::upsert_server(
+        store,
+        AdtServerUpsertInput {
+            id: request.id,
+            name: request.name,
+            base_url: request.base_url,
+            client: request.client,
+            language: request.language,
+            username: request.username,
+            password: request.password,
+            verify_tls: request.verify_tls,
+            active: request.active,
+        },
+    )
+    .map_err(map_neuro_adt_error)
 }
 
 #[cfg(test)]
 fn select_server(store: &mut AdtServerStore, server_id: &str) -> Result<(), NeuroRuntimeError> {
-    neuro_server_domain::select_server(store, server_id)
+    neuro_server_domain::select_server(store, server_id).map_err(map_neuro_adt_error)
 }
 
 #[cfg(test)]
@@ -2092,11 +1997,56 @@ pub async fn neuro_update_source_impl(
     .await
 }
 
+struct NeuroRuntimeNeuroAdtPort;
+
+impl NeuroAdtPort for NeuroRuntimeNeuroAdtPort {
+    fn load_server_store(&self) -> Result<AdtServerStore, NeuroAdtError> {
+        load_server_store().map_err(map_runtime_error_to_adt)
+    }
+
+    fn save_server_store(&self, store: &AdtServerStore) -> Result<(), NeuroAdtError> {
+        save_server_store(store).map_err(map_runtime_error_to_adt)
+    }
+
+    fn normalize_optional_server_id(&self, server_id: Option<String>) -> Option<String> {
+        normalize_optional_server_id(server_id)
+    }
+
+    fn env_default_server_id(&self) -> &'static str {
+        ENV_DEFAULT_SERVER_ID
+    }
+
+    fn clear_runtime_cache<'a>(&'a self, state: &'a AppState) -> NeuroAdtFuture<'a, ()> {
+        Box::pin(async move {
+            clear_runtime_cache(state).await;
+        })
+    }
+
+    fn connect_server<'a>(
+        &'a self,
+        state: &'a AppState,
+        server_id: Option<&'a str>,
+    ) -> NeuroAdtFuture<'a, Result<AdtServerConnectivity, NeuroAdtError>> {
+        Box::pin(async move {
+            let runtime = get_or_init(state, server_id)
+                .await
+                .map_err(map_runtime_error_to_adt)?;
+            let (connected, message) = runtime.adt_http_connectivity().await;
+            Ok(AdtServerConnectivity {
+                selected_server_id: runtime.selected_server_id(),
+                connected,
+                message,
+            })
+        })
+    }
+}
+
 pub async fn neuro_adt_server_list_impl(
     _state: State<'_, AppState>,
 ) -> Result<AdtServerListResponse, NeuroRuntimeError> {
     run_with_neuro_command_telemetry("neuro_adt_server_list", async {
-        neuro_adt_use_cases::neuro_adt_server_list()
+        let port = NeuroRuntimeNeuroAdtPort;
+        neuro_adt_use_cases::neuro_adt_server_list(&port).map_err(map_neuro_adt_error)
     })
     .await
 }
@@ -2106,7 +2056,10 @@ pub async fn neuro_adt_server_upsert_impl(
     request: AdtServerUpsertRequest,
 ) -> Result<AdtServerRecord, NeuroRuntimeError> {
     run_with_neuro_command_telemetry("neuro_adt_server_upsert", async {
-        neuro_adt_use_cases::neuro_adt_server_upsert(state.inner(), request).await
+        let port = NeuroRuntimeNeuroAdtPort;
+        neuro_adt_use_cases::neuro_adt_server_upsert(state.inner(), request, &port)
+            .await
+            .map_err(map_neuro_adt_error)
     })
     .await
 }
@@ -2116,7 +2069,10 @@ pub async fn neuro_adt_server_remove_impl(
     server_id: String,
 ) -> Result<AdtServerRemoveResponse, NeuroRuntimeError> {
     run_with_neuro_command_telemetry("neuro_adt_server_remove", async {
-        neuro_adt_use_cases::neuro_adt_server_remove(state.inner(), server_id).await
+        let port = NeuroRuntimeNeuroAdtPort;
+        neuro_adt_use_cases::neuro_adt_server_remove(state.inner(), server_id, &port)
+            .await
+            .map_err(map_neuro_adt_error)
     })
     .await
 }
@@ -2126,7 +2082,10 @@ pub async fn neuro_adt_server_select_impl(
     server_id: String,
 ) -> Result<AdtServerSelectResponse, NeuroRuntimeError> {
     run_with_neuro_command_telemetry("neuro_adt_server_select", async {
-        neuro_adt_use_cases::neuro_adt_server_select(state.inner(), server_id).await
+        let port = NeuroRuntimeNeuroAdtPort;
+        neuro_adt_use_cases::neuro_adt_server_select(state.inner(), server_id, &port)
+            .await
+            .map_err(map_neuro_adt_error)
     })
     .await
 }
@@ -2136,7 +2095,10 @@ pub async fn neuro_adt_server_connect_impl(
     server_id: Option<String>,
 ) -> Result<AdtServerConnectResponse, NeuroRuntimeError> {
     run_with_neuro_command_telemetry("neuro_adt_server_connect", async {
-        neuro_adt_use_cases::neuro_adt_server_connect(state.inner(), server_id).await
+        let port = NeuroRuntimeNeuroAdtPort;
+        neuro_adt_use_cases::neuro_adt_server_connect(state.inner(), server_id, &port)
+            .await
+            .map_err(map_neuro_adt_error)
     })
     .await
 }
@@ -3411,6 +3373,47 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct ConnectFailurePort {
+        error: NeuroRuntimeError,
+    }
+
+    impl ConnectFailurePort {
+        fn new(error: NeuroRuntimeError) -> Self {
+            Self { error }
+        }
+    }
+
+    impl NeuroAdtPort for ConnectFailurePort {
+        fn load_server_store(&self) -> Result<AdtServerStore, NeuroAdtError> {
+            Ok(AdtServerStore::default())
+        }
+
+        fn save_server_store(&self, _store: &AdtServerStore) -> Result<(), NeuroAdtError> {
+            Ok(())
+        }
+
+        fn normalize_optional_server_id(&self, server_id: Option<String>) -> Option<String> {
+            normalize_optional_server_id(server_id)
+        }
+
+        fn env_default_server_id(&self) -> &'static str {
+            ENV_DEFAULT_SERVER_ID
+        }
+
+        fn clear_runtime_cache<'a>(&'a self, _state: &'a AppState) -> NeuroAdtFuture<'a, ()> {
+            Box::pin(async move {})
+        }
+
+        fn connect_server<'a>(
+            &'a self,
+            _state: &'a AppState,
+            _server_id: Option<&'a str>,
+        ) -> NeuroAdtFuture<'a, Result<AdtServerConnectivity, NeuroAdtError>> {
+            let error = self.error.clone();
+            Box::pin(async move { Err(map_runtime_error_to_adt(error)) })
+        }
+    }
     fn sample_object(
         uri: &str,
         name: &str,
@@ -4619,6 +4622,27 @@ mod tests {
         assert_eq!(event.get("errorMessage"), Some(&json!("ws is unavailable")));
     }
 
+    #[tokio::test]
+    async fn connect_failure_preserves_runtime_error_code_from_get_or_init_mapping() {
+        let expected_message = "auth failed while initializing runtime";
+        let expected_details = json!({ "statusCode": 403 });
+        let expected = runtime_error(
+            NeuroRuntimeErrorCode::AdtAuthError,
+            expected_message.to_string(),
+            Some(expected_details.clone()),
+        );
+        let port = ConnectFailurePort::new(expected);
+        let state = AppState::default();
+
+        let result = neuro_adt_use_cases::neuro_adt_server_connect(&state, None, &port)
+            .await
+            .map_err(map_neuro_adt_error);
+
+        let error = result.expect_err("connect should propagate failure");
+        assert_eq!(error.code, NeuroRuntimeErrorCode::AdtAuthError);
+        assert_eq!(error.message, expected_message);
+        assert_eq!(error.details, Some(expected_details));
+    }
     #[test]
     fn telemetry_latency_is_capped_to_u64_range() {
         let _guard = telemetry_lock().lock().expect("telemetry lock poisoned");

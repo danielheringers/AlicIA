@@ -2,11 +2,9 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use neuro_types::{NeuroRuntimeError, NeuroRuntimeErrorCode};
-
-use crate::neuro_runtime::{
-    runtime_error, AdtServerStore, DEFAULT_ADT_SERVER_STORE_RELATIVE_PATH,
-    NEURO_ADT_SERVER_STORE_PATH_ENV,
+use crate::domain::neuro_adt::error::NeuroAdtError;
+use crate::domain::neuro_adt::types::{
+    AdtServerStore, DEFAULT_ADT_SERVER_STORE_RELATIVE_PATH, NEURO_ADT_SERVER_STORE_PATH_ENV,
 };
 
 pub(crate) fn resolve_codex_home() -> PathBuf {
@@ -32,67 +30,47 @@ pub(crate) fn resolve_server_store_path() -> PathBuf {
     resolve_codex_home().join(DEFAULT_ADT_SERVER_STORE_RELATIVE_PATH)
 }
 
-pub(crate) fn load_server_store() -> Result<AdtServerStore, NeuroRuntimeError> {
+pub(crate) fn load_server_store() -> Result<AdtServerStore, NeuroAdtError> {
     let path = resolve_server_store_path();
     if !path.exists() {
         return Ok(AdtServerStore::default());
     }
 
     let raw = fs::read_to_string(&path).map_err(|error| {
-        runtime_error(
-            NeuroRuntimeErrorCode::RuntimeInitError,
-            format!(
-                "failed to read ADT server store at `{}`: {error}",
-                path.display()
-            ),
-            None,
-        )
+        NeuroAdtError::runtime_init_error(format!(
+            "failed to read ADT server store at `{}`: {error}",
+            path.display()
+        ))
     })?;
 
     serde_json::from_str(&raw).map_err(|error| {
-        runtime_error(
-            NeuroRuntimeErrorCode::RuntimeInitError,
-            format!(
-                "failed to parse ADT server store at `{}`: {error}",
-                path.display()
-            ),
-            None,
-        )
+        NeuroAdtError::runtime_init_error(format!(
+            "failed to parse ADT server store at `{}`: {error}",
+            path.display()
+        ))
     })
 }
 
-pub(crate) fn save_server_store(store: &AdtServerStore) -> Result<(), NeuroRuntimeError> {
+pub(crate) fn save_server_store(store: &AdtServerStore) -> Result<(), NeuroAdtError> {
     let path = resolve_server_store_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
-            runtime_error(
-                NeuroRuntimeErrorCode::RuntimeInitError,
-                format!(
-                    "failed to create ADT server store directory `{}`: {error}",
-                    parent.display()
-                ),
-                None,
-            )
+            NeuroAdtError::runtime_init_error(format!(
+                "failed to create ADT server store directory `{}`: {error}",
+                parent.display()
+            ))
         })?;
     }
 
     let payload = serde_json::to_string_pretty(store).map_err(|error| {
-        runtime_error(
-            NeuroRuntimeErrorCode::RuntimeInitError,
-            format!("failed to serialize ADT server store: {error}"),
-            None,
-        )
+        NeuroAdtError::runtime_init_error(format!("failed to serialize ADT server store: {error}"))
     })?;
 
     write_server_store_payload(path.as_path(), payload.as_str()).map_err(|error| {
-        runtime_error(
-            NeuroRuntimeErrorCode::RuntimeInitError,
-            format!(
-                "failed to write ADT server store at `{}`: {error}",
-                path.display()
-            ),
-            None,
-        )
+        NeuroAdtError::runtime_init_error(format!(
+            "failed to write ADT server store at `{}`: {error}",
+            path.display()
+        ))
     })
 }
 
@@ -120,14 +98,15 @@ fn write_server_store_payload(path: &Path, payload: &str) -> std::io::Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::neuro_runtime::StoredAdtServer;
+    use crate::domain::neuro_adt::error::NeuroAdtErrorCode;
+    use crate::domain::neuro_adt::types::StoredAdtServer;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn env_lock() -> &'static Mutex<()> {
-        crate::neuro_runtime::shared_env_lock()
+        crate::domain::neuro_adt::types::shared_env_lock()
     }
 
     fn unique_temp_path(label: &str) -> PathBuf {
@@ -256,7 +235,7 @@ mod tests {
                     .expect("invalid json payload should be written");
 
                 let error = load_server_store().expect_err("invalid payload must fail");
-                assert_eq!(error.code, NeuroRuntimeErrorCode::RuntimeInitError);
+                assert_eq!(error.code, NeuroAdtErrorCode::RuntimeInitError);
                 assert!(error.message.contains("failed to parse ADT server store"));
                 assert!(error
                     .message
