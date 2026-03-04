@@ -51,6 +51,7 @@ Excluido:
 - [x] (2026-03-04) Fase 4 (slice 12): extracao do roteamento slash-status para domain-application-infra.
 - [x] (2026-03-04) Fase 4 (slice 13): consolidacao de testes golden do contrato textual /status (backend+frontend).
 - [x] (2026-03-04) Fase 4 (slice 14): planificacao send_codex_input extraida para application (runtime executor).
+- [x] (2026-03-04) Fase 4 (slice 15): seam de efeitos em send_codex_input extraida no runtime com testes deterministas.
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
 
@@ -872,6 +873,48 @@ Revisao tecnica final:
 Resultado:
 1. Slice 14 da Fase 4 concluido sem blocker de merge.
 2. `send_codex_input` passou a seguir padrao plan-first com runtime executor e lock de config adiado para ramo `/status`.
+## Fase 4 Slice 15 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-04.
+2. Objetivo: introduzir um seam explicito de efeitos em `send_codex_input_impl`, isolando decisao de efeito e preservando side-effects/canais existentes.
+3. Escopo do slice:
+   - extrair helper local para resolver efeito a partir de `SendCodexInputPlan`
+   - manter `send_codex_input_impl` como executor dos side-effects
+   - adicionar testes unitarios deterministas dos ramos principais
+
+Entregas:
+1. Runtime com seam de efeitos:
+   - `backend/src/session_turn_runtime.rs`
+2. Novos testes unitarios no modulo de runtime:
+   - slash nao suportado -> `RejectUnsupportedSlash`
+   - `/status` -> `RenderStatus`
+   - prompt regular -> `ForwardTurnRun` com shape esperado de request (`item_type=text`, `output_schema=None`, texto normalizado)
+
+Validacao executada:
+1. `cd alicia/backend && cargo fmt --all -- --check` -> OK.
+2. `cd alicia/backend && cargo check` -> OK.
+3. `cd alicia/backend && cargo test` -> OK (`206 passed; 0 failed`).
+4. `cd alicia/backend && cargo clippy --all-targets --all-features -- -D warnings` -> OK.
+5. `node alicia/codex-bridge/generators/check-runtime-contract.mjs` -> OK (`runtimeMethods=51`, `tauriCommands=70`, `tauriEventChannels=6`).
+6. Verificacao de drift de contrato:
+   - sem drift em `backend/src/interface/tauri/commands/session_turn.rs`
+   - sem drift em `backend/src/interface/tauri/dto/session_turn.rs`
+   - sem alteracao em `alicia/codex-bridge/schema/runtime-contract.json`
+
+Revisao tecnica final:
+1. Sem findings de severidade alta/media/baixa.
+2. Contrato externo preservado:
+   - slash nao suportado -> `stderr + Ok`
+   - `/status` -> `stdout + Ok`
+   - prompt normal -> `schedule_turn_run`
+3. Riscos residuais baixos:
+   - falta teste de integracao fim-a-fim de `send_codex_input_impl` cobrindo side-effects no runtime;
+   - caso `thread_id=None` nao tem teste explicito neste slice.
+
+Resultado:
+1. Slice 15 da Fase 4 concluido sem blocker de merge.
+2. `send_codex_input_impl` passou a operar com decisao de efeito mais testavel e com shape de `turn.run` coberto por testes de unidade.
 ## Current Architecture Snapshot (Key Risks)
 
 1. Frontend com `god component` em `app/page.tsx` concentrando UI + fluxo + regras.
@@ -1234,4 +1277,15 @@ Fase 4 (slice 14):
    - warnings de rustfmt por config nightly seguem como divida de tooling.
 4. Ajuste para continuidade da Fase 4:
    - priorizar consolidacao de testes de integracao de `send_codex_input_impl` e avaliar padronizacao incremental de canais de erro/feedback sem quebrar UX.
+
+Fase 4 (slice 15):
+1. Resultado entregue: seam de efeitos em `send_codex_input_impl` extraido no runtime, com cobertura deterministica dos ramos principais sem alterar contrato externo.
+2. Incidentes/regressoes:
+   - sem findings de severidade alta/media/baixa na revisao final;
+   - validacao completa (fmt/check/test/clippy + contrato) passou sem drift.
+3. Riscos residuais:
+   - falta teste de integracao fim-a-fim do runtime para side-effects (`stdout`, `stderr`, `schedule_turn_run`);
+   - caso `thread_id=None` ainda sem teste dedicado no seam.
+4. Ajuste para continuidade da Fase 4:
+   - priorizar teste de integracao de `send_codex_input_impl` e manter incrementalmente a padronizacao de canais de erro/feedback com contrato estavel.
 

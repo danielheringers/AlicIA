@@ -1915,6 +1915,41 @@ pub(crate) async fn codex_user_input_respond_impl(
         decision: response_plan.decision,
     })
 }
+
+enum SendCodexInputEffect {
+    RejectUnsupportedSlash { message: String },
+    RenderStatus,
+    ForwardTurnRun { request: CodexTurnRunRequest },
+}
+
+fn resolve_send_codex_input_effect(
+    plan: session_turn_use_cases::SendCodexInputPlan,
+    thread_id: Option<String>,
+) -> SendCodexInputEffect {
+    match plan {
+        session_turn_use_cases::SendCodexInputPlan::RejectUnsupportedSlash { message } => {
+            SendCodexInputEffect::RejectUnsupportedSlash { message }
+        }
+        session_turn_use_cases::SendCodexInputPlan::RenderStatus => {
+            SendCodexInputEffect::RenderStatus
+        }
+        session_turn_use_cases::SendCodexInputPlan::ForwardTurnRun { prompt } => {
+            SendCodexInputEffect::ForwardTurnRun {
+                request: CodexTurnRunRequest {
+                    thread_id,
+                    input_items: vec![CodexInputItem {
+                        item_type: "text".to_string(),
+                        text: Some(prompt),
+                        path: None,
+                        image_url: None,
+                        name: None,
+                    }],
+                    output_schema: None,
+                },
+            }
+        }
+    }
+}
 pub(crate) async fn send_codex_input_impl(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -1922,7 +1957,7 @@ pub(crate) async fn send_codex_input_impl(
 ) -> Result<(), String> {
     let plan = session_turn_use_cases::plan_send_codex_input(&text)?;
 
-    let (session_id, pid, thread_id, cwd, binary, transport, slash_status_requested) = {
+    let (session_id, pid, thread_id, cwd, binary, transport, effect) = {
         let mut guard = lock_active_session(state.inner())?;
         let active = guard
             .as_mut()
@@ -1932,70 +1967,47 @@ pub(crate) async fn send_codex_input_impl(
             return Err("codex session is still processing the previous turn".to_string());
         }
 
-        match &plan {
-            session_turn_use_cases::SendCodexInputPlan::RejectUnsupportedSlash { message } => {
+        let effect = resolve_send_codex_input_effect(plan, active.thread_id.clone());
+
+        match &effect {
+            SendCodexInputEffect::RejectUnsupportedSlash { message } => {
                 emit_stderr(&app, active.session_id, message.clone());
                 return Ok(());
             }
-            session_turn_use_cases::SendCodexInputPlan::RenderStatus => (
+            SendCodexInputEffect::RenderStatus | SendCodexInputEffect::ForwardTurnRun { .. } => (
                 active.session_id,
                 active.pid,
                 active.thread_id.clone(),
                 active.cwd.clone(),
                 active.binary.clone(),
                 active.transport(),
-                true,
-            ),
-            session_turn_use_cases::SendCodexInputPlan::ForwardTurnRun { .. } => (
-                active.session_id,
-                active.pid,
-                active.thread_id.clone(),
-                active.cwd.clone(),
-                active.binary.clone(),
-                active.transport(),
-                false,
+                effect,
             ),
         }
     };
 
-    if slash_status_requested {
-        let runtime_config = lock_runtime_config(state.inner())?.clone();
-        let chunk = build_non_tui_status_snapshot(StatusSnapshotRequest {
-            session_id,
-            pid,
-            thread_id: thread_id.as_deref(),
-            cwd: &cwd,
-            runtime_config: &runtime_config,
-            transport,
-            binary: &binary,
-        });
-        emit_stdout(&app, session_id, chunk);
-        return Ok(());
+    match effect {
+        SendCodexInputEffect::RejectUnsupportedSlash { .. } => Ok(()),
+        SendCodexInputEffect::RenderStatus => {
+            let runtime_config = lock_runtime_config(state.inner())?.clone();
+            let chunk = build_non_tui_status_snapshot(StatusSnapshotRequest {
+                session_id,
+                pid,
+                thread_id: thread_id.as_deref(),
+                cwd: &cwd,
+                runtime_config: &runtime_config,
+                transport,
+                binary: &binary,
+            });
+            emit_stdout(&app, session_id, chunk);
+            Ok(())
+        }
+        SendCodexInputEffect::ForwardTurnRun { request } => {
+            let _ = cwd;
+            let _ = schedule_turn_run(app, state, request).await?;
+            Ok(())
+        }
     }
-
-    let prompt = match plan {
-        session_turn_use_cases::SendCodexInputPlan::ForwardTurnRun { prompt } => prompt,
-        session_turn_use_cases::SendCodexInputPlan::RenderStatus
-        | session_turn_use_cases::SendCodexInputPlan::RejectUnsupportedSlash { .. } => {
-            return Ok(());
-        }
-    };
-
-    let request = CodexTurnRunRequest {
-        thread_id,
-        input_items: vec![CodexInputItem {
-            item_type: "text".to_string(),
-            text: Some(prompt),
-            path: None,
-            image_url: None,
-            name: None,
-        }],
-        output_schema: None,
-    };
-
-    let _ = cwd;
-    let _ = schedule_turn_run(app, state, request).await?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -2007,8 +2019,10 @@ mod tests {
         validate_approval_decision_before_lookup, validate_user_input_decision_before_lookup,
         ALICIA_NATIVE_INTERNAL_PROFILE,
     };
+    use super::{resolve_send_codex_input_effect, SendCodexInputEffect};
     #[cfg(feature = "native-codex-runtime")]
     use crate::application::session_thread_review::use_cases as session_thread_review_use_cases;
+    use crate::application::session_turn::use_cases as session_turn_use_cases;
     #[cfg(feature = "native-codex-runtime")]
     use crate::{NativeApprovalKind, NativePendingApproval, NativePendingUserInput};
     #[cfg(feature = "native-codex-runtime")]
@@ -2019,6 +2033,69 @@ mod tests {
     use std::collections::HashMap;
     #[cfg(feature = "native-codex-runtime")]
     use std::path::PathBuf;
+
+    #[test]
+    fn send_codex_input_effect_rejects_unsupported_slash() {
+        let plan = session_turn_use_cases::plan_send_codex_input("/foo bar")
+            .expect("plan should classify slash command");
+
+        let effect = resolve_send_codex_input_effect(plan, Some("thread-1".to_string()));
+
+        match effect {
+            SendCodexInputEffect::RejectUnsupportedSlash { message } => {
+                assert_eq!(
+                    message,
+                    "slash command `/foo` is not available in the current runtime. Supported command: /status"
+                );
+            }
+            SendCodexInputEffect::RenderStatus | SendCodexInputEffect::ForwardTurnRun { .. } => {
+                panic!("unexpected effect for unsupported slash")
+            }
+        }
+    }
+
+    #[test]
+    fn send_codex_input_effect_renders_status_for_status_slash() {
+        let plan = session_turn_use_cases::plan_send_codex_input(" /STATUS ")
+            .expect("plan should classify status slash");
+
+        let effect = resolve_send_codex_input_effect(plan, Some("thread-1".to_string()));
+
+        match effect {
+            SendCodexInputEffect::RenderStatus => {}
+            SendCodexInputEffect::RejectUnsupportedSlash { .. }
+            | SendCodexInputEffect::ForwardTurnRun { .. } => {
+                panic!("unexpected effect for /status")
+            }
+        }
+    }
+
+    #[test]
+    fn send_codex_input_effect_forwards_turn_run_with_expected_request_shape() {
+        let plan = session_turn_use_cases::plan_send_codex_input("hello world\r\n")
+            .expect("plan should classify normal prompt");
+
+        let effect = resolve_send_codex_input_effect(plan, Some("thread-42".to_string()));
+
+        match effect {
+            SendCodexInputEffect::ForwardTurnRun { request } => {
+                assert_eq!(request.thread_id, Some("thread-42".to_string()));
+                assert_eq!(request.input_items.len(), 1);
+                assert!(request.output_schema.is_none());
+
+                let item = &request.input_items[0];
+                assert_eq!(item.item_type, "text");
+                assert_eq!(item.text.as_deref(), Some("hello world"));
+                assert!(item.path.is_none());
+                assert!(item.image_url.is_none());
+                assert!(item.name.is_none());
+            }
+            SendCodexInputEffect::RejectUnsupportedSlash { .. }
+            | SendCodexInputEffect::RenderStatus => {
+                panic!("unexpected effect for regular prompt")
+            }
+        }
+    }
 
     #[cfg(feature = "native-codex-runtime")]
     #[test]
