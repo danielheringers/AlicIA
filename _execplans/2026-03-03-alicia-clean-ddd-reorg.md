@@ -56,6 +56,7 @@ Excluido:
 - [x] (2026-03-04) Fase 4 (slice 17): testes de integracao de send_codex_input_impl para stderr/stdout/schedule com robustez anti-flake.
 - [x] (2026-03-04) Fase 4 (slice 18): extracao da matriz de efeitos de send_codex_input para runtime_bridge com runtime orquestrador.
 - [x] (2026-03-04) Fase 4 (slice 19): plano send_codex_input migrado para domain removendo acoplamento infrastructure->application.
+- [x] (2026-03-04) Fase 4 (slice 20): acesso/resolucao de thread nativa extraido para runtime_bridge.
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
 
@@ -1088,6 +1089,46 @@ Revisao tecnica final:
 Resultado:
 1. Slice 19 da Fase 4 concluido sem blocker de merge.
 2. Acoplamento `infrastructure -> application` no fluxo `send_codex_input` foi removido, reforcando limites Clean/DDD no backend.
+## Fase 4 Slice 20 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-04.
+2. Objetivo: reduzir concentracao de orquestracao em `session_turn_runtime.rs` extraindo gateway de acesso/resolucao de thread nativa para `runtime_bridge`.
+3. Escopo do slice:
+   - mover normalizacao/resolucao/criacao/carregamento de thread para modulo dedicado
+   - manter em `session_turn_runtime.rs` apenas orquestracao dos fluxos mutaveis
+   - preservar contrato externo de comandos/DTOs/eventos
+
+Entregas:
+1. Novo modulo backend:
+   - `backend/src/infrastructure/runtime_bridge/session_thread_runtime_access.rs`
+2. Registro do modulo no runtime bridge:
+   - `backend/src/infrastructure/runtime_bridge/mod.rs`
+3. Delegacao aplicada no runtime:
+   - `backend/src/session_turn_runtime.rs`
+4. Fluxos migrados sem alteracao de semantica: `turn.run`, `review.start`, `thread.open`, `thread.compact`, `thread.rollback`, `turn.steer`, `turn.interrupt`.
+
+Validacao executada:
+1. `cd alicia/backend && cargo fmt --all -- --check` -> OK.
+2. `cd alicia/backend && cargo check` -> OK.
+3. `cd alicia/backend && cargo test` -> OK (`211 passed; 0 failed`).
+4. `cd alicia/backend && cargo clippy --all-targets --all-features -- -D warnings` -> OK.
+5. `node alicia/codex-bridge/generators/check-runtime-contract.mjs` -> OK (`runtimeMethods=51`, `tauriCommands=70`, `tauriEventChannels=6`).
+6. `rg -n "session_thread_runtime_access" alicia/backend/src` -> ocorrencias esperadas em `session_turn_runtime.rs` e `runtime_bridge/mod.rs`.
+7. Verificacao de drift de contrato:
+   - sem drift em `backend/src/interface/tauri/commands/session_turn.rs`
+   - sem drift em `backend/src/interface/tauri/dto/session_turn.rs`
+   - sem alteracao em `alicia/codex-bridge/schema/runtime-contract.json`
+
+Revisao tecnica final:
+1. Rodada final sem findings de severidade critica/alta/media/baixa.
+2. Preservacao de logica critica confirmada (cache threads, fallback rollout, checks de session_id pos-await, recache de aliases).
+3. Fluxo de eventos e contrato externo preservados nos pontos delegados.
+4. Sem blocker de merge.
+
+Resultado:
+1. Slice 20 da Fase 4 concluido sem blocker de merge.
+2. `session_turn_runtime.rs` reduziu significativamente o bloco de acesso a thread nativa, reforcando separacao de responsabilidades no backend.
 ## Current Architecture Snapshot (Key Risks)
 
 1. Frontend com `god component` em `app/page.tsx` concentrando UI + fluxo + regras.
@@ -1505,4 +1546,15 @@ Fase 4 (slice 19):
    - warnings recorrentes de rustfmt (config nightly) seguem como divida de tooling.
 4. Ajuste para continuidade da Fase 4:
    - priorizar novo recorte pequeno para reduzir concentracao de orquestracao em `session_turn_runtime.rs` mantendo os limites de camada estabilizados nos slices 18-19.
+
+Fase 4 (slice 20):
+1. Resultado entregue: gateway de acesso/resolucao de thread nativa extraido para `runtime_bridge`, com `session_turn_runtime.rs` mais focado em orquestracao.
+2. Incidentes/regressoes:
+   - nao houve findings na revisao final;
+   - suite backend completa e checker de contrato permaneceram verdes.
+3. Riscos residuais:
+   - apesar da extracao, `session_turn_runtime.rs` ainda concentra varios fluxos mutaveis e pode exigir novos recortes incrementais;
+   - warnings recorrentes de rustfmt (config nightly) seguem como divida de tooling.
+4. Ajuste para continuidade da Fase 4:
+   - selecionar proximo recorte pequeno sobre fluxos mutaveis remanescentes de `session_turn_runtime.rs` (sem alterar contrato) para continuar a reducao de complexidade ciclomática.
 
