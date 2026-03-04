@@ -9,12 +9,15 @@ use tokio::sync::Mutex as AsyncMutex;
 
 mod account_runtime;
 mod app_server_runtime;
+mod application;
 mod codex_event_translator;
 mod codex_native_runtime;
 mod command_runtime;
 mod config_runtime;
+mod domain;
 mod events_runtime;
 mod generated;
+mod infrastructure;
 mod interface;
 mod launch_runtime;
 mod mcp_runtime;

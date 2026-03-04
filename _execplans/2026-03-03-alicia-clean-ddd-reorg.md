@@ -37,6 +37,7 @@ Excluido:
 - [x] (2026-03-03) Fase 3 (slice 3): handlers Account/MCP/App migrados para `interface/tauri`.
 - [x] (2026-03-03) Fase 3 (slice 4): bloco neuro/native/models migrado; `main.rs` sem handlers Tauri locais.
 - [x] (2026-03-03) Fase 3: extracao de interface Tauri no backend (conclusao completa).
+- [x] (2026-03-04) Fase 4 (slice 1): contexto Workspace Filesystem extraido para application/domain/infrastructure.
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
 
@@ -265,12 +266,53 @@ Resultado:
 1. Slice 4 da Fase 3 concluido sem blocker para fluxo default.
 2. Fase 3 marcada como concluida (extração de interface Tauri no backend finalizada).
 
+## Fase 4 Slice 1 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-04.
+2. Objetivo: iniciar separacao por bounded context no backend, extraindo o contexto `Workspace Filesystem` para `application/domain/infrastructure` sem alterar contrato Tauri.
+3. Escopo do slice:
+   - migracao de `codex_workspace_*_impl` e helpers de path/filesystem para camadas internas
+   - `command_runtime.rs` convertido em fachada/delegacao para workspace
+   - hardening de seguranca em write com symlink dangling e comportamento deterministico em `has_children`
+
+Entregas:
+1. Estrutura Clean criada para workspace:
+   - `backend/src/application/workspace/{mod.rs,use_cases.rs}`
+   - `backend/src/domain/workspace/{mod.rs,path_policy.rs}`
+   - `backend/src/infrastructure/filesystem/{mod.rs,workspace_fs.rs}`
+   - modulos-raiz: `backend/src/{application,domain,infrastructure}/mod.rs`
+2. Delegacao em `command_runtime.rs`:
+   - `codex_workspace_read_file_impl`
+   - `codex_workspace_write_file_impl`
+   - `codex_workspace_create_directory_impl`
+   - `codex_workspace_list_directory_impl`
+   - `codex_workspace_rename_entry_impl`
+3. Fixes de seguranca/regressao aplicados no slice:
+   - bloqueio de write via symlink dangling no target
+   - validacao deterministica de symlinks em `has_children`
+4. Testes novos adicionados:
+   - `workspace_write_rejects_dangling_symlink_target`
+   - `has_children_rejects_outside_symlink_with_mixed_children_deterministically`
+
+Validacao executada:
+1. `cd alicia/backend && cargo fmt --all -- --check` -> OK.
+2. `cd alicia/backend && cargo check` -> OK.
+3. `cd alicia/backend && cargo test` -> OK (`123 passed; 0 failed`).
+4. `cd alicia/backend && cargo clippy --all-targets --all-features -- -D warnings` -> OK.
+5. Verificacao de paridade: 5 comandos workspace seguem registrados no `generate_handler!`.
+6. Revisao tecnica final: findings ALTA/MEDIA resolvidos; sem blocker de merge para este slice.
+
+Resultado:
+1. Slice 1 da Fase 4 concluido sem blocker de merge.
+2. Fase 4 completa permanece em aberto para separacao dos demais contexts (`Session/Thread/Review`, `Account/MCP`, `ADT/Neuro`).
+
 ## Current Architecture Snapshot (Key Risks)
 
 1. Frontend com `god component` em `app/page.tsx` concentrando UI + fluxo + regras.
 2. Componentes de UI sem import direto de `tauri-bridge` nos painéis priorizados da Fase 2; ainda existe acoplamento residual via adapter concreto em alguns fluxos.
 3. `main.rs` agora esta focado em bootstrap/estado/registro de handlers; comandos e DTOs foram movidos para `interface/tauri`.
-4. Modulos backend monoliticos (`command_runtime.rs`, `session_turn_runtime.rs`, `neuro_runtime.rs`).
+4. `session_turn_runtime.rs` e `neuro_runtime.rs` seguem monoliticos; `command_runtime.rs` iniciou decomposicao com o contexto Workspace.
 5. Contrato runtime duplicado entre frontend e backend.
 
 ## Target Architecture
@@ -483,3 +525,12 @@ Fase 3 (slices 1-4):
    - faltam testes dedicados de serializacao para DTOs migrados (ex.: `dto/models.rs`, `dto/session_turn.rs`).
 4. Ajuste para Fase 4:
    - iniciar separacao interna por bounded context (`application/domain/infrastructure`) sobre a base ja desacoplada de interface.
+
+Fase 4 (slice 1):
+1. Resultado entregue: contexto Workspace Filesystem extraido para `application/domain/infrastructure` com `command_runtime` atuando como fachada.
+2. Incidentes/regressoes: findings de seguranca iniciais (symlink dangling write e nao determinismo em `has_children`) foram corrigidos no mesmo slice com testes adicionais.
+3. Riscos residuais:
+   - TOCTOU de filesystem ainda existe como risco baixo em operacoes de write/create/rename;
+   - acoplamento de `application/workspace` com `tauri::State` e DTOs de interface ainda precisa ser reduzido em slices seguintes.
+4. Ajuste para continuidade da Fase 4:
+   - separar proximo contexto (`Session/Thread/Review` ou `Account/MCP`) com o mesmo padrao de extracao incremental e testes de regressao.
