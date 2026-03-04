@@ -49,6 +49,7 @@ Excluido:
 - [x] (2026-03-04) Fase 4 (slice 10): extracao do pipeline comum de eventos/lifecycle para turn-run-review-start.
 - [x] (2026-03-04) Fase 4 (slice 11): extracao do parsing/normalizacao de review-start para application.
 - [x] (2026-03-04) Fase 4 (slice 12): extracao do roteamento slash-status para domain-application-infra.
+- [x] (2026-03-04) Fase 4 (slice 13): consolidacao de testes golden do contrato textual /status (backend+frontend).
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
 
@@ -785,6 +786,47 @@ Revisao tecnica final:
 Resultado:
 1. Slice 12 da Fase 4 concluido sem blocker de merge.
 2. `session_turn_runtime` ficou menor no caminho de slash/status, com fronteiras mais claras entre domain/application/infrastructure.
+## Fase 4 Slice 13 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-04.
+2. Objetivo: consolidar testes golden do contrato textual `/status` para reduzir risco de drift entre formatter backend e parser frontend.
+3. Escopo do slice:
+   - ampliar cobertura de testes em `status_runtime` (backend)
+   - adicionar cenarios frontend para parser `/status` (incluindo ramo unavailable)
+   - manter mudancas restritas a testes (sem alterar producao/contrato Tauri/schema)
+
+Entregas:
+1. Testes backend ampliados:
+   - `backend/src/status_runtime/format.rs`
+   - `backend/src/status_runtime/rate_limit_snapshot.rs`
+2. Teste frontend novo/expandido:
+   - `frontend/tests/status-snapshot-parser.test.ts`
+3. Sem mudanca em:
+   - `backend/src/interface/tauri/**`
+   - `alicia/codex-bridge/schema/runtime-contract.json`
+
+Validacao executada:
+1. `cd alicia/backend && cargo fmt --all -- --check` -> OK.
+2. `cd alicia/backend && cargo check` -> OK.
+3. `cd alicia/backend && cargo test` -> OK (`201 passed; 0 failed`).
+4. `cd alicia/backend && cargo clippy --all-targets --all-features -- -D warnings` -> OK.
+5. `cd alicia/frontend && pnpm test -- status-snapshot-parser` -> OK (`4 tests passed`).
+6. `node alicia/codex-bridge/generators/check-runtime-contract.mjs` -> OK (`runtimeMethods=51`, `tauriCommands=70`, `tauriEventChannels=6`).
+7. Verificacao de contrato/assinaturas:
+   - sem drift em `backend/src/interface/tauri/commands/session_turn.rs`
+   - sem drift em `backend/src/interface/tauri/dto/session_turn.rs`
+   - sem alteracao em `alicia/codex-bridge/schema/runtime-contract.json`
+
+Revisao tecnica final:
+1. Findings iniciais de cobertura (2 medios + 1 baixo) foram corrigidos no proprio slice.
+2. Rodada final sem findings de severidade alta/media/baixa.
+3. Riscos residuais baixos:
+   - ainda falta teste E2E ponta-a-ponta backend->frontend no mesmo processo, apesar da cobertura golden cruzada ter aumentado.
+
+Resultado:
+1. Slice 13 da Fase 4 concluido sem blocker de merge.
+2. Contrato textual `/status` ficou protegido por testes determinísticos nos dois lados (backend e frontend).
 ## Current Architecture Snapshot (Key Risks)
 
 1. Frontend com `god component` em `app/page.tsx` concentrando UI + fluxo + regras.
@@ -1127,4 +1169,14 @@ Fase 4 (slice 12):
    - caminho `/status` continua dependente de chamada ao app-server para rate limits (latencia preexistente).
 4. Ajuste para continuidade da Fase 4:
    - priorizar recorte de padronizacao de erros/side-effects em `send_codex_input` e consolidacao de testes de integracao dos ramos slash.
+Fase 4 (slice 13):
+1. Resultado entregue: testes golden do contrato textual `/status` consolidados em backend e frontend, sem alterar codigo de producao.
+2. Incidentes/regressoes:
+   - findings de cobertura identificados na revisao inicial foram corrigidos no mesmo slice;
+   - rodada final sem findings de severidade alta/media/baixa.
+3. Riscos residuais:
+   - falta teste de integracao E2E backend->frontend executando formatter e parser no mesmo fluxo de runtime;
+   - ruido de warnings de rustfmt (config nightly) permanece como divida de tooling.
+4. Ajuste para continuidade da Fase 4:
+   - retomar recorte funcional de padronizacao de erros/side-effects em `send_codex_input` com seguranca de contrato ja reforcada.
 

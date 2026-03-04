@@ -120,3 +120,151 @@ pub(crate) fn extract_rate_limits_from_app_server_message(
 
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn parses_account_rate_limits_updated_message() {
+        let message = json!({
+            "method": "account/rateLimits/updated",
+            "params": {
+                "rateLimits": {
+                    "limitId": "codex-pro",
+                    "limitName": "Codex Pro",
+                    "primary": {
+                        "usedPercent": 35.0,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1_700_000_000
+                    },
+                    "secondary": {
+                        "used_percent": 50.0,
+                        "window_minutes": 10080,
+                        "resets_at": 1_700_060_000
+                    }
+                }
+            }
+        });
+
+        let snapshot = extract_rate_limits_from_app_server_message(&message)
+            .expect("expected snapshot from update notification");
+
+        assert_eq!(snapshot.limit_id.as_deref(), Some("codex-pro"));
+        assert_eq!(snapshot.limit_name.as_deref(), Some("Codex Pro"));
+
+        let primary = snapshot.primary.expect("expected primary window");
+        assert_eq!(primary.used_percent, 35.0);
+        assert_eq!(primary.window_minutes, Some(300));
+        assert_eq!(primary.resets_at, Some(1_700_000_000));
+
+        let secondary = snapshot.secondary.expect("expected secondary window");
+        assert_eq!(secondary.used_percent, 50.0);
+        assert_eq!(secondary.window_minutes, Some(10080));
+        assert_eq!(secondary.resets_at, Some(1_700_060_000));
+    }
+
+    #[test]
+    fn parses_alicia_rate_limits_response_and_prefers_codex_limit() {
+        let message = json!({
+            "id": "alicia-rate-limits",
+            "result": {
+                "rateLimitsByLimitId": {
+                    "acme-basic": {
+                        "limitName": "Acme Basic",
+                        "primary": {
+                            "usedPercent": 15.0,
+                            "windowDurationMins": 60,
+                            "resetsAt": 1_700_000_000
+                        }
+                    },
+                    "codex-plus": {
+                        "limit_name": "Codex Plus",
+                        "primary": {
+                            "used_percent": 20.0,
+                            "window_minutes": 300,
+                            "resets_at": 1_700_010_000
+                        }
+                    }
+                }
+            }
+        });
+
+        let snapshot = extract_rate_limits_from_app_server_message(&message)
+            .expect("expected snapshot from alicia-rate-limits result");
+
+        assert_eq!(snapshot.limit_id.as_deref(), Some("codex-plus"));
+        assert_eq!(snapshot.limit_name.as_deref(), Some("Codex Plus"));
+
+        let primary = snapshot.primary.expect("expected primary window");
+        assert_eq!(primary.used_percent, 20.0);
+        assert_eq!(primary.window_minutes, Some(300));
+        assert_eq!(primary.resets_at, Some(1_700_010_000));
+        assert!(snapshot.secondary.is_none());
+    }
+
+    #[test]
+    fn parses_alicia_rate_limits_response_falls_back_to_first_valid_snapshot() {
+        let message = json!({
+            "id": "alicia-rate-limits",
+            "result": {
+                "rateLimitsByLimitId": {
+                    "a-basic": {
+                        "limitName": "A Basic",
+                        "primary": {
+                            "usedPercent": 12.0,
+                            "windowDurationMins": 60,
+                            "resetsAt": 1_700_000_000
+                        }
+                    },
+                    "z-pro": {
+                        "limitName": "Z Pro",
+                        "primary": {
+                            "usedPercent": 55.0,
+                            "windowDurationMins": 120,
+                            "resetsAt": 1_700_020_000
+                        }
+                    }
+                }
+            }
+        });
+
+        let snapshot = extract_rate_limits_from_app_server_message(&message)
+            .expect("expected fallback snapshot from first valid non-codex limit");
+
+        assert_eq!(snapshot.limit_id.as_deref(), Some("a-basic"));
+        assert_eq!(snapshot.limit_name.as_deref(), Some("A Basic"));
+
+        let primary = snapshot.primary.expect("expected primary window");
+        assert_eq!(primary.used_percent, 12.0);
+        assert_eq!(primary.window_minutes, Some(60));
+        assert_eq!(primary.resets_at, Some(1_700_000_000));
+    }
+
+    #[test]
+    fn returns_none_for_incompatible_rate_limit_messages() {
+        let invalid_result_payload = json!({
+            "id": "alicia-rate-limits",
+            "result": {
+                "rateLimitsByLimitId": {
+                    "codex-pro": {
+                        "limitName": "Codex Pro"
+                    }
+                }
+            }
+        });
+
+        assert!(extract_rate_limits_from_app_server_message(&invalid_result_payload).is_none());
+
+        let invalid_update_payload = json!({
+            "method": "account/rateLimits/updated",
+            "params": {
+                "rateLimits": "not-an-object"
+            }
+        });
+
+        assert!(extract_rate_limits_from_app_server_message(&invalid_update_payload).is_none());
+    }
+}
