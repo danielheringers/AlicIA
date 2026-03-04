@@ -37,8 +37,12 @@ use codex_protocol::user_input::UserInput;
 use codex_protocol::ThreadId;
 
 use crate::application::session_thread_review::use_cases as session_thread_review_use_cases;
+use crate::application::session_turn::use_cases as session_turn_use_cases;
 #[cfg(feature = "native-codex-runtime")]
 use crate::emit_codex_event;
+use crate::infrastructure::runtime_bridge::status_snapshot::{
+    build_non_tui_status_snapshot, StatusSnapshotRequest,
+};
 #[cfg(feature = "native-codex-runtime")]
 use crate::infrastructure::runtime_bridge::{
     session_thread_housekeeping, session_thread_shared, session_turn_event_pipeline,
@@ -56,7 +60,6 @@ use crate::interface::tauri::dto::{
     CodexTurnInterruptResponse, CodexTurnRunRequest, CodexTurnRunResponse, CodexTurnSteerRequest,
     CodexTurnSteerResponse, CodexUserInputRespondRequest, CodexUserInputRespondResponse,
 };
-use crate::status_runtime::{fetch_rate_limits_for_status, format_non_tui_status};
 use crate::{
     emit_stderr, emit_stdout, lock_active_session, lock_runtime_config, AppState,
     RuntimeCodexConfig,
@@ -687,29 +690,6 @@ async fn native_thread_summary_from_rollout_path(
         preferred_thread_id,
     )
     .await
-}
-
-fn unsupported_slash_command_message(command: &str) -> String {
-    let normalized = command.trim();
-    let display_command = if normalized.is_empty() {
-        "/"
-    } else {
-        normalized
-    };
-    format!(
-        "slash command `{display_command}` is not available in the current runtime. Supported command: /status"
-    )
-}
-fn parse_slash_command(prompt: &str) -> Option<(&str, &str)> {
-    let trimmed = prompt.trim();
-    if !trimmed.starts_with('/') {
-        return None;
-    }
-
-    let mut parts = trimmed.splitn(2, char::is_whitespace);
-    let command = parts.next()?;
-    let args = parts.next().unwrap_or("").trim();
-    Some((command, args))
 }
 
 #[cfg(feature = "native-codex-runtime")]
@@ -1946,7 +1926,7 @@ pub(crate) async fn send_codex_input_impl(
     }
 
     let runtime_config = lock_runtime_config(state.inner())?.clone();
-    let slash_command = parse_slash_command(&prompt);
+    let input_action = session_turn_use_cases::decide_send_codex_input_action(&prompt);
 
     let (session_id, pid, thread_id, cwd, binary, transport, slash_status_requested) = {
         let mut guard = lock_active_session(state.inner())?;
@@ -1958,27 +1938,17 @@ pub(crate) async fn send_codex_input_impl(
             return Err("codex session is still processing the previous turn".to_string());
         }
 
-        if let Some((command, _args)) = slash_command {
-            if command.eq_ignore_ascii_case("/status") {
-                (
-                    active.session_id,
-                    active.pid,
-                    active.thread_id.clone(),
-                    active.cwd.clone(),
-                    active.binary.clone(),
-                    active.transport(),
-                    true,
-                )
-            } else {
-                emit_stderr(
-                    &app,
-                    active.session_id,
-                    unsupported_slash_command_message(command),
-                );
-                return Ok(());
-            }
-        } else {
-            (
+        match &input_action {
+            session_turn_use_cases::SendCodexInputAction::RenderStatus => (
+                active.session_id,
+                active.pid,
+                active.thread_id.clone(),
+                active.cwd.clone(),
+                active.binary.clone(),
+                active.transport(),
+                true,
+            ),
+            session_turn_use_cases::SendCodexInputAction::ForwardTurnRun => (
                 active.session_id,
                 active.pid,
                 active.thread_id.clone(),
@@ -1986,25 +1956,27 @@ pub(crate) async fn send_codex_input_impl(
                 active.binary.clone(),
                 active.transport(),
                 false,
-            )
+            ),
+            session_turn_use_cases::SendCodexInputAction::RejectUnsupportedSlash { message } => {
+                emit_stderr(&app, active.session_id, message.clone());
+                return Ok(());
+            }
         }
     };
 
     if slash_status_requested {
-        let rate_limits = fetch_rate_limits_for_status(&binary, &cwd);
-        let chunk = format_non_tui_status(
+        let chunk = build_non_tui_status_snapshot(StatusSnapshotRequest {
             session_id,
             pid,
-            thread_id.as_deref(),
-            &cwd,
-            &runtime_config,
+            thread_id: thread_id.as_deref(),
+            cwd: &cwd,
+            runtime_config: &runtime_config,
             transport,
-            rate_limits.as_ref(),
-        );
+            binary: &binary,
+        });
         emit_stdout(&app, session_id, chunk);
         return Ok(());
     }
-
     let request = CodexTurnRunRequest {
         thread_id,
         input_items: vec![CodexInputItem {

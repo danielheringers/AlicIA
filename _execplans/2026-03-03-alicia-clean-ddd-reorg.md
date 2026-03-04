@@ -48,6 +48,7 @@ Excluido:
 - [x] (2026-03-04) Fase 4 (slice 9): extracao de housekeeping close/archive para runtime_bridge.
 - [x] (2026-03-04) Fase 4 (slice 10): extracao do pipeline comum de eventos/lifecycle para turn-run-review-start.
 - [x] (2026-03-04) Fase 4 (slice 11): extracao do parsing/normalizacao de review-start para application.
+- [x] (2026-03-04) Fase 4 (slice 12): extracao do roteamento slash-status para domain-application-infra.
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
 
@@ -738,6 +739,52 @@ Revisao tecnica final:
 Resultado:
 1. Slice 11 da Fase 4 concluido sem blocker de merge.
 2. Parsing de `review.start` removido do runtime e centralizado em application/use-cases.
+## Fase 4 Slice 12 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-04.
+2. Objetivo: extrair o roteamento de slash (`/status` e slash nao suportado) de `send_codex_input` para `domain + application + infrastructure`, preservando contrato textual existente.
+3. Escopo do slice:
+   - policy de classificacao de prompt slash em domain
+   - use-case de decisao de acao em application
+   - adapter infra para snapshot textual de status reaproveitando `status_runtime`
+   - `session_turn_runtime` reduzido para orquestracao/emissao e fallback para `turn.run`
+
+Entregas:
+1. Novos modulos domain/application:
+   - `backend/src/domain/session_turn/slash_command_policy.rs`
+   - `backend/src/domain/session_turn/mod.rs`
+   - `backend/src/application/session_turn/use_cases.rs`
+   - `backend/src/application/session_turn/mod.rs`
+2. Exports atualizados:
+   - `backend/src/domain/mod.rs`
+   - `backend/src/application/mod.rs`
+3. Novo adapter infra:
+   - `backend/src/infrastructure/runtime_bridge/status_snapshot.rs`
+   - `backend/src/infrastructure/runtime_bridge/mod.rs`
+4. Runtime simplificado:
+   - `backend/src/session_turn_runtime.rs`
+
+Validacao executada:
+1. `cd alicia/backend && cargo fmt --all -- --check` -> OK.
+2. `cd alicia/backend && cargo check` -> OK.
+3. `cd alicia/backend && cargo test` -> OK (`193 passed; 0 failed`).
+4. `cd alicia/backend && cargo clippy --all-targets --all-features -- -D warnings` -> OK.
+5. `node alicia/codex-bridge/generators/check-runtime-contract.mjs` -> OK (`runtimeMethods=51`, `tauriCommands=70`, `tauriEventChannels=6`).
+6. Verificacao de contrato/assinaturas:
+   - sem drift em `backend/src/interface/tauri/commands/session_turn.rs`
+   - sem drift em `backend/src/interface/tauri/dto/session_turn.rs`
+   - sem alteracao em `alicia/codex-bridge/schema/runtime-contract.json`
+
+Revisao tecnica final:
+1. Sem findings de severidade alta/media/baixa.
+2. Contrato textual de `/status` preservado (mesmo formatter e cabecalho esperado pelo parser frontend).
+3. Riscos residuais baixos:
+   - faltam testes de integracao E2E backend->frontend para contrato textual `/status` (golden).
+
+Resultado:
+1. Slice 12 da Fase 4 concluido sem blocker de merge.
+2. `session_turn_runtime` ficou menor no caminho de slash/status, com fronteiras mais claras entre domain/application/infrastructure.
 ## Current Architecture Snapshot (Key Risks)
 
 1. Frontend com `god component` em `app/page.tsx` concentrando UI + fluxo + regras.
@@ -1070,4 +1117,14 @@ Fase 4 (slice 11):
    - falta teste E2E Tauri com assert textual de erro fim-a-fim para target invalido.
 4. Ajuste para continuidade da Fase 4:
    - priorizar recorte de `/status` pathway para reduzir parsing/mensageria residual em runtime, sem quebrar parser frontend.
+Fase 4 (slice 12):
+1. Resultado entregue: roteamento de slash/status extraido para `domain + application + infrastructure`, com runtime focado em orquestracao e emissao.
+2. Incidentes/regressoes:
+   - sem findings de severidade alta/media/baixa na revisao final;
+   - contrato Tauri preservado sem drift em comandos/DTOs de session_turn e sem mudanca de schema no codex-bridge.
+3. Riscos residuais:
+   - faltam testes end-to-end para validar contrato textual `/status` contra parser frontend em pipeline completo;
+   - caminho `/status` continua dependente de chamada ao app-server para rate limits (latencia preexistente).
+4. Ajuste para continuidade da Fase 4:
+   - priorizar recorte de padronizacao de erros/side-effects em `send_codex_input` e consolidacao de testes de integracao dos ramos slash.
 
