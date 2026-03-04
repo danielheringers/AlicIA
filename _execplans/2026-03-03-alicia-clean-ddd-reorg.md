@@ -44,6 +44,7 @@ Excluido:
 - [x] (2026-03-04) Fase 4 (slice 5): extracao Session/Thread/Review (thread list/read + review validation) para clean layers.
 - [x] (2026-03-04) Fase 4 (slice 6): shared thread catalog extraido para runtime_bridge com desacoplamento de session_turn_runtime.
 - [x] (2026-03-04) Fase 4 (slice 7): extracao de approval.respond + user_input.respond para clean layers com fail-fast de decisao.
+- [x] (2026-03-04) Fase 4 (slice 8): extracao do scheduling comum de turn.run/review.start para domain+application.
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
 
@@ -570,6 +571,50 @@ Revisao tecnica final:
 Resultado:
 1. Slice 7 da Fase 4 concluido sem blocker de merge.
 2. Fluxos mutaveis de Session/Thread/Review avancaram para `application/domain` mantendo contrato externo estavel.
+## Fase 4 Slice 8 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-04.
+2. Objetivo: extrair o caminho comum de scheduling (`turn.run` + `review.start`) para `domain/session_thread_review` e `application/session_thread_review`, mantendo contrato Tauri inalterado.
+3. Escopo do slice:
+   - policy de normalizacao/resolucao de `thread_id` em domain
+   - reserva de slot da sessao e builders de resposta accepted em application
+   - `session_turn_runtime` simplificado para consumir plano comum e manter somente submit/stream especificos
+
+Entregas:
+1. Novo modulo de dominio:
+   - `backend/src/domain/session_thread_review/schedule_policy.rs`
+2. Exports de dominio atualizados:
+   - `backend/src/domain/session_thread_review/mod.rs`
+3. Use-cases de application expandidos:
+   - `backend/src/application/session_thread_review/use_cases.rs`
+4. Runtime simplificado:
+   - `backend/src/session_turn_runtime.rs`
+5. Testes adicionados/ajustados para:
+   - politica de scheduling de thread id
+   - shape de respostas accepted (`turn.run` e `review.start`)
+   - preservacao de contrato em runtime
+
+Validacao executada:
+1. `cd alicia/backend && cargo fmt --all -- --check` -> OK.
+2. `cd alicia/backend && cargo check` -> OK.
+3. `cd alicia/backend && cargo test` -> OK (`180 passed; 0 failed`).
+4. `cd alicia/backend && cargo clippy --all-targets --all-features -- -D warnings` -> OK.
+5. `node alicia/codex-bridge/generators/check-runtime-contract.mjs` -> OK (`runtimeMethods=51`, `tauriCommands=70`, `tauriEventChannels=6`).
+6. Verificacao de contrato/assinaturas:
+   - sem drift em `backend/src/interface/tauri/commands/session_turn.rs`
+   - sem drift em `backend/src/interface/tauri/dto/session_turn.rs`
+
+Revisao tecnica final:
+1. Sem findings de severidade alta/media/baixa na rodada final read-only.
+2. Ajuste de compatibilidade aplicado no slice:
+   - comportamento legado preservado para `requested_thread_id` em branco (nao faz fallback para `initial_thread_id`).
+3. Riscos residuais mantidos como baixo:
+   - falta de teste de integracao para disputa concorrente (`turn.run` vs `review.start`).
+
+Resultado:
+1. Slice 8 da Fase 4 concluido sem blocker de merge.
+2. Duplicacao de scheduling entre `schedule_turn_run_native` e `schedule_review_start_native` reduzida com fronteira clean mais clara.
 ## Current Architecture Snapshot (Key Risks)
 
 1. Frontend com `god component` em `app/page.tsx` concentrando UI + fluxo + regras.
@@ -862,4 +907,15 @@ Fase 4 (slice 7):
    - ainda faltam testes de integracao Tauri end-to-end cobrindo sequencia completa de pending actions.
 4. Ajuste para continuidade da Fase 4:
    - extrair caminho comum de agendamento/resolucao para `turn.run` e `review.start`, mantendo contratos e eventos inalterados.
+Fase 4 (slice 8):
+1. Resultado entregue: scheduling comum de `turn.run` e `review.start` extraido para `domain/application` com runtime reduzido para orquestracao especifica de `Op` e stream/eventos.
+2. Incidentes/regressoes:
+   - sem findings de severidade alta/media/baixa na revisao final;
+   - contrato Tauri preservado sem drift em comandos/DTOs de session_turn.
+3. Riscos residuais:
+   - faltam testes de integracao de concorrencia para disputa `turn.run` vs `review.start` com verificacao de liberacao de `busy`;
+   - faltam testes E2E para corrida entre scheduling e `thread.open` em producao.
+4. Ajuste para continuidade da Fase 4:
+   - priorizar extracao de caminhos mutaveis remanescentes (ex.: `review.update`/`turn.run` lifecycle internals) mantendo paridade de evento/erro.
+
 

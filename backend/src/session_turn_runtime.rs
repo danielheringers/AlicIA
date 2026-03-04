@@ -819,37 +819,25 @@ async fn schedule_turn_run_native(
     } = request;
     let output_schema_for_turn = output_schema.clone();
 
-    let (session_id, pid, cwd, initial_thread_id) = {
-        let mut guard = lock_active_session(state.inner())?;
-        let active = guard
-            .as_mut()
-            .ok_or_else(|| "no active codex session".to_string())?;
-
-        if active.busy {
-            return Err("codex session is still processing the previous turn".to_string());
-        }
-
-        active.busy = true;
-
-        (
-            active.session_id,
-            active.pid,
-            active.cwd.clone(),
-            active.thread_id.clone(),
-        )
-    };
-
-    let response = CodexTurnRunResponse {
-        accepted: true,
+    let schedule_plan =
+        session_thread_review_use_cases::plan_native_thread_schedule(&state, requested_thread_id)?;
+    let session_thread_review_use_cases::NativeThreadSchedulePlan {
+        reservation,
+        requested_thread_id,
+    } = schedule_plan;
+    let response = reservation.turn_run_accepted_response();
+    let session_thread_review_use_cases::NativeSessionSlotReservation {
         session_id,
-        thread_id: initial_thread_id.clone(),
-    };
+        pid,
+        cwd,
+        ..
+    } = reservation;
 
     let app_for_task = app.clone();
     let event_seq = Arc::clone(&state.next_event_seq);
     tauri::async_runtime::spawn(async move {
         let result: Result<String, String> = async {
-            let requested = normalize_runtime_thread_id(requested_thread_id.or(initial_thread_id));
+            let requested = requested_thread_id;
             let (thread_id, thread, created_thread) = resolve_native_thread(
                 &app_for_task,
                 session_id,
@@ -991,38 +979,25 @@ async fn schedule_review_start_native(
         delivery,
     } = request;
 
-    let (session_id, pid, cwd, initial_thread_id) = {
-        let mut guard = lock_active_session(state.inner())?;
-        let active = guard
-            .as_mut()
-            .ok_or_else(|| "no active codex session".to_string())?;
-
-        if active.busy {
-            return Err("codex session is still processing the previous turn".to_string());
-        }
-
-        active.busy = true;
-
-        (
-            active.session_id,
-            active.pid,
-            active.cwd.clone(),
-            active.thread_id.clone(),
-        )
-    };
-
-    let response = CodexReviewStartResponse {
-        accepted: true,
+    let schedule_plan =
+        session_thread_review_use_cases::plan_native_thread_schedule(&state, requested_thread_id)?;
+    let session_thread_review_use_cases::NativeThreadSchedulePlan {
+        reservation,
+        requested_thread_id,
+    } = schedule_plan;
+    let response = reservation.review_start_accepted_response();
+    let session_thread_review_use_cases::NativeSessionSlotReservation {
         session_id,
-        thread_id: initial_thread_id.clone(),
-        review_thread_id: initial_thread_id.clone(),
-    };
+        pid,
+        cwd,
+        ..
+    } = reservation;
 
     let app_for_task = app.clone();
     let event_seq = Arc::clone(&state.next_event_seq);
     tauri::async_runtime::spawn(async move {
         let result: Result<String, String> = async {
-            let requested = normalize_runtime_thread_id(requested_thread_id.or(initial_thread_id));
+            let requested = requested_thread_id;
             let (thread_id, thread, created_thread) = resolve_native_thread(
                 &app_for_task,
                 session_id,
@@ -2260,6 +2235,8 @@ mod tests {
     use serde_json::Value;
     #[cfg(feature = "native-codex-runtime")]
     use std::collections::HashMap;
+    #[cfg(feature = "native-codex-runtime")]
+    use std::path::PathBuf;
 
     #[cfg(feature = "native-codex-runtime")]
     #[test]
@@ -2314,6 +2291,31 @@ mod tests {
             Some(WebSearchModeConfig::Disabled)
         );
         assert_eq!(runtime_web_search_mode("invalid"), None);
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    #[test]
+    fn runtime_schedule_contract_keeps_accepted_response_shapes() {
+        let reservation = session_thread_review_use_cases::NativeSessionSlotReservation {
+            session_id: 13,
+            pid: Some(77),
+            cwd: PathBuf::from("C:/runtime"),
+            initial_thread_id: Some("thread-13".to_string()),
+        };
+
+        let turn_response = reservation.turn_run_accepted_response();
+        assert!(turn_response.accepted);
+        assert_eq!(turn_response.session_id, 13);
+        assert_eq!(turn_response.thread_id, Some("thread-13".to_string()));
+
+        let review_response = reservation.review_start_accepted_response();
+        assert!(review_response.accepted);
+        assert_eq!(review_response.session_id, 13);
+        assert_eq!(review_response.thread_id, Some("thread-13".to_string()));
+        assert_eq!(
+            review_response.review_thread_id,
+            Some("thread-13".to_string())
+        );
     }
 
     #[cfg(feature = "native-codex-runtime")]

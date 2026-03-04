@@ -8,12 +8,16 @@ use codex_protocol::request_user_input::{RequestUserInputAnswer, RequestUserInpu
 use serde_json::{json, Value};
 #[cfg(feature = "native-codex-runtime")]
 use std::collections::HashMap;
+#[cfg(feature = "native-codex-runtime")]
+use std::path::PathBuf;
 
-use crate::domain::session_thread_review::{interaction_policy, review_policy, thread_query};
+use crate::domain::session_thread_review::{
+    interaction_policy, review_policy, schedule_policy, thread_query,
+};
 use crate::infrastructure::runtime_bridge::session_thread_catalog::{self, ThreadListQuery};
 use crate::interface::tauri::dto::{
-    CodexReviewStartRequest, CodexThreadListRequest, CodexThreadListResponse,
-    CodexThreadReadRequest, CodexThreadReadResponse,
+    CodexReviewStartRequest, CodexReviewStartResponse, CodexThreadListRequest,
+    CodexThreadListResponse, CodexThreadReadRequest, CodexThreadReadResponse, CodexTurnRunResponse,
 };
 use crate::{lock_active_session, AppState};
 
@@ -40,6 +44,82 @@ pub(crate) struct UserInputResponsePlan {
     pub(crate) op: Op,
     pub(crate) resolved_event: Value,
     pub(crate) decision: String,
+}
+
+#[cfg(feature = "native-codex-runtime")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct NativeSessionSlotReservation {
+    pub(crate) session_id: u64,
+    pub(crate) pid: Option<u32>,
+    pub(crate) cwd: PathBuf,
+    pub(crate) initial_thread_id: Option<String>,
+}
+
+#[cfg(feature = "native-codex-runtime")]
+impl NativeSessionSlotReservation {
+    pub(crate) fn turn_run_accepted_response(&self) -> CodexTurnRunResponse {
+        CodexTurnRunResponse {
+            accepted: true,
+            session_id: self.session_id,
+            thread_id: self.initial_thread_id.clone(),
+        }
+    }
+
+    pub(crate) fn review_start_accepted_response(&self) -> CodexReviewStartResponse {
+        CodexReviewStartResponse {
+            accepted: true,
+            session_id: self.session_id,
+            thread_id: self.initial_thread_id.clone(),
+            review_thread_id: self.initial_thread_id.clone(),
+        }
+    }
+}
+
+#[cfg(feature = "native-codex-runtime")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct NativeThreadSchedulePlan {
+    pub(crate) reservation: NativeSessionSlotReservation,
+    pub(crate) requested_thread_id: Option<String>,
+}
+
+#[cfg(feature = "native-codex-runtime")]
+fn reserve_native_session_slot(
+    state: &State<'_, AppState>,
+) -> Result<NativeSessionSlotReservation, String> {
+    let mut guard = lock_active_session(state.inner())?;
+    let active = guard
+        .as_mut()
+        .ok_or_else(|| "no active codex session".to_string())?;
+
+    if active.busy {
+        return Err("codex session is still processing the previous turn".to_string());
+    }
+
+    active.busy = true;
+
+    Ok(NativeSessionSlotReservation {
+        session_id: active.session_id,
+        pid: active.pid,
+        cwd: active.cwd.clone(),
+        initial_thread_id: active.thread_id.clone(),
+    })
+}
+
+#[cfg(feature = "native-codex-runtime")]
+pub(crate) fn plan_native_thread_schedule(
+    state: &State<'_, AppState>,
+    requested_thread_id: Option<String>,
+) -> Result<NativeThreadSchedulePlan, String> {
+    let reservation = reserve_native_session_slot(state)?;
+    let requested_thread_id = schedule_policy::resolve_scheduled_thread_id(
+        requested_thread_id,
+        reservation.initial_thread_id.clone(),
+    );
+
+    Ok(NativeThreadSchedulePlan {
+        reservation,
+        requested_thread_id,
+    })
 }
 
 fn requested_page_size(limit: Option<u32>) -> usize {
@@ -308,13 +388,18 @@ mod tests {
     use super::requested_page_size;
 
     #[cfg(feature = "native-codex-runtime")]
-    use super::{plan_approval_response, plan_user_input_response, ApprovalPendingKind};
+    use super::{
+        plan_approval_response, plan_user_input_response, ApprovalPendingKind,
+        NativeSessionSlotReservation,
+    };
     #[cfg(feature = "native-codex-runtime")]
     use codex_protocol::protocol::Op;
     #[cfg(feature = "native-codex-runtime")]
     use serde_json::{json, Value};
     #[cfg(feature = "native-codex-runtime")]
     use std::collections::HashMap;
+    #[cfg(feature = "native-codex-runtime")]
+    use std::path::PathBuf;
 
     #[test]
     fn requested_page_size_defaults_to_twenty_five() {
@@ -329,6 +414,41 @@ mod tests {
     #[test]
     fn requested_page_size_clamps_to_maximum_when_limit_is_large() {
         assert_eq!(requested_page_size(Some(999)), 100);
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    #[test]
+    fn native_session_slot_reservation_turn_run_accepted_shape() {
+        let reservation = NativeSessionSlotReservation {
+            session_id: 7,
+            pid: Some(42),
+            cwd: PathBuf::from("C:/workspace"),
+            initial_thread_id: Some("thread-1".to_string()),
+        };
+
+        let response = reservation.turn_run_accepted_response();
+
+        assert!(response.accepted);
+        assert_eq!(response.session_id, 7);
+        assert_eq!(response.thread_id, Some("thread-1".to_string()));
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    #[test]
+    fn native_session_slot_reservation_review_start_accepted_shape() {
+        let reservation = NativeSessionSlotReservation {
+            session_id: 9,
+            pid: None,
+            cwd: PathBuf::from("C:/workspace"),
+            initial_thread_id: Some("thread-review".to_string()),
+        };
+
+        let response = reservation.review_start_accepted_response();
+
+        assert!(response.accepted);
+        assert_eq!(response.session_id, 9);
+        assert_eq!(response.thread_id, Some("thread-review".to_string()));
+        assert_eq!(response.review_thread_id, Some("thread-review".to_string()));
     }
 
     #[cfg(feature = "native-codex-runtime")]
