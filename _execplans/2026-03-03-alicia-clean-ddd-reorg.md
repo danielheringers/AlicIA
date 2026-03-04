@@ -58,6 +58,7 @@ Excluido:
 - [x] (2026-03-04) Fase 4 (slice 19): plano send_codex_input migrado para domain removendo acoplamento infrastructure->application.
 - [x] (2026-03-04) Fase 4 (slice 20): acesso/resolucao de thread nativa extraido para runtime_bridge.
 - [x] (2026-03-04) Fase 4 (slice 21): gateway de pending actions extraido para runtime_bridge com cobertura dedicada.
+- [x] (2026-03-04) Fase 4 (slice 22): gateway de shutdown/remove de thread extraido para runtime_bridge com cobertura de close/archive.
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
 
@@ -1175,6 +1176,50 @@ Revisao tecnica final:
 Resultado:
 1. Slice 21 da Fase 4 concluido sem blocker de merge.
 2. `session_turn_runtime.rs` deixou de mutar diretamente `pending_approvals` e `pending_user_inputs`, reforcando separacao de responsabilidades no backend.
+## Fase 4 Slice 22 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-04.
+2. Objetivo: extrair gateway de shutdown/remove de thread para `runtime_bridge`, reduzindo bloco mutavel remanescente em `session_turn_runtime.rs` sem alterar contrato.
+3. Escopo do slice:
+   - criar modulo dedicado para resolucao de `ThreadId` removivel e shutdown best-effort
+   - delegar `thread.close` e `thread.archive` para o novo gateway
+   - reforcar cobertura com cenarios de sucesso/erro/fallback nos fluxos de close/archive
+
+Entregas:
+1. Novo modulo backend:
+   - `backend/src/infrastructure/runtime_bridge/session_thread_shutdown_runtime_access.rs`
+2. Registro no runtime bridge:
+   - `backend/src/infrastructure/runtime_bridge/mod.rs`
+3. Runtime simplificado com delegacao:
+   - `backend/src/session_turn_runtime.rs`
+4. Cobertura adicionada:
+   - testes unitarios de resolucao de thread id (direto/fallback/none)
+   - testes de integracao para `thread.close`:
+     - thread existente (remove ok)
+     - alias com fallback quando runtime manager nao possui a thread
+     - alias invalido sem cache/fallback (not found)
+   - teste de integracao para `thread.archive` com move de rollout para archived e limpeza de cache
+
+Validacao executada:
+1. `cd alicia/backend && cargo fmt --all -- --check` -> OK.
+2. `cd alicia/backend && cargo test codex_thread_close_impl_existing_thread_returns_removed_true` -> OK.
+3. `cd alicia/backend && cargo test codex_thread_close_impl_alias_uses_fallback_when_runtime_thread_missing` -> OK.
+4. `cd alicia/backend && cargo test codex_thread_close_impl_invalid_alias_without_cache_returns_not_found` -> OK.
+5. `cd alicia/backend && cargo test codex_thread_archive_impl_moves_rollout_to_archived_directory` -> OK.
+6. `cd alicia/backend && cargo test session_thread_shutdown_runtime_access` -> OK (`3 passed; 0 failed`).
+7. `cd alicia/backend && cargo test` -> OK (`226 passed; 0 failed`).
+8. `cd alicia/codex-bridge && node generators/check-runtime-contract.mjs` -> OK (`runtimeMethods=51`, `tauriCommands=70`, `tauriEventChannels=6`).
+
+Revisao tecnica final:
+1. Rodada final sem findings de severidade critica/alta/media/baixa.
+2. Veredito: aprovado com ressalvas.
+3. Risco residual preservado por design: falha de `Op::Shutdown` segue best-effort e nao bloqueia sucesso de close/archive.
+4. Sem blocker de merge.
+
+Resultado:
+1. Slice 22 da Fase 4 concluido sem blocker de merge.
+2. `session_turn_runtime.rs` reduziu mais um bloco mutavel critico com cobertura de regressao ampliada para `thread.close`/`thread.archive`.
 ## Current Architecture Snapshot (Key Risks)
 
 1. Frontend com `god component` em `app/page.tsx` concentrando UI + fluxo + regras.
@@ -1614,4 +1659,16 @@ Fase 4 (slice 21):
    - warnings recorrentes de rustfmt (config nightly) seguem como divida de tooling.
 4. Ajuste para continuidade da Fase 4:
    - priorizar proximo recorte pequeno de extracao sobre bloco mutavel remanescente em `session_turn_runtime.rs` mantendo contrato externo estavel.
+
+
+Fase 4 (slice 22):
+1. Resultado entregue: gateway de shutdown/remove de thread extraido para `runtime_bridge` com delegacao de `thread.close` e `thread.archive` no runtime.
+2. Incidentes/regressoes:
+   - houve erro de compilacao pontual (`remove_thread` exigia referencia), corrigido no proprio slice;
+   - apos correcao, testes alvo e suite completa ficaram verdes sem regressao funcional.
+3. Riscos residuais:
+   - falhas de `Op::Shutdown` seguem sendo ignoradas por design best-effort;
+   - testes atuais nao afirmam explicitamente estado interno final do `thread_manager` apos todos os caminhos assincronos.
+4. Ajuste para continuidade da Fase 4:
+   - seguir com recorte incremental do proximo bloco mutavel remanescente em `session_turn_runtime.rs`, mantendo contrato externo estavel e reforcando observabilidade de falhas internas.
 

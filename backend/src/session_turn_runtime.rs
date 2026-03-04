@@ -48,7 +48,8 @@ use crate::infrastructure::runtime_bridge::status_snapshot::build_non_tui_status
 #[cfg(feature = "native-codex-runtime")]
 use crate::infrastructure::runtime_bridge::{
     session_pending_action_runtime_access, session_thread_housekeeping,
-    session_thread_runtime_access, session_thread_shared, session_turn_event_pipeline,
+    session_thread_runtime_access, session_thread_shared, session_thread_shutdown_runtime_access,
+    session_turn_event_pipeline,
 };
 #[cfg(feature = "native-codex-runtime")]
 use crate::interface::tauri::dto::CodexThreadSummary;
@@ -725,29 +726,24 @@ pub(crate) async fn codex_thread_close_impl(
         (Arc::clone(&native.runtime), removed_from_cache)
     };
 
-    let mut removed_thread = removed_from_cache;
-    let removable_thread_id = ThreadId::from_string(&thread_id).ok().or_else(|| {
-        removed_thread
+    let removable_thread_id = session_thread_shutdown_runtime_access::resolve_removable_thread_id(
+        thread_id.as_str(),
+        removed_from_cache
             .as_ref()
             .and_then(|thread| thread.rollout_path())
-            .as_deref()
-            .and_then(infer_thread_id_from_rollout_path)
-            .and_then(|value| ThreadId::from_string(&value).ok())
-    });
-    if let Some(removable_thread_id) = removable_thread_id {
-        if let Some(thread) = runtime
-            .thread_manager
-            .remove_thread(&removable_thread_id)
-            .await
-        {
-            removed_thread = Some(thread);
-        }
-    }
+            .as_deref(),
+    );
+    let removed_thread =
+        session_thread_shutdown_runtime_access::remove_and_shutdown_thread_best_effort(
+            &runtime,
+            removable_thread_id,
+            removed_from_cache,
+        )
+        .await;
 
-    let Some(thread) = removed_thread else {
+    if removed_thread.is_none() {
         return Err(format!("thread not found: {thread_id}"));
-    };
-    let _ = thread.submit(Op::Shutdown).await;
+    }
 
     Ok(CodexThreadCloseResponse {
         thread_id,
@@ -866,15 +862,12 @@ pub(crate) async fn codex_thread_archive_impl(
     }
     let file_name = file_name.to_owned();
 
-    if let Some(resolved_thread_id) = resolved_thread_id {
-        if let Some(thread) = runtime
-            .thread_manager
-            .remove_thread(&resolved_thread_id)
-            .await
-        {
-            let _ = thread.submit(Op::Shutdown).await;
-        }
-    }
+    session_thread_shutdown_runtime_access::remove_and_shutdown_thread_best_effort(
+        &runtime,
+        resolved_thread_id,
+        None,
+    )
+    .await;
 
     {
         let mut guard = lock_active_session(state.inner())?;
@@ -1727,6 +1720,7 @@ pub(crate) async fn send_codex_input_impl(
 mod tests {
     #[cfg(feature = "native-codex-runtime")]
     use super::{
+        codex_thread_archive_impl, codex_thread_close_impl, codex_thread_open_impl,
         runtime_model_override, runtime_profile_or_internal, runtime_profile_override,
         runtime_web_search_mode, validate_approval_decision_before_lookup,
         validate_user_input_decision_before_lookup, ALICIA_NATIVE_INTERNAL_PROFILE,
@@ -1748,16 +1742,18 @@ mod tests {
         SendCodexInputEffectContext, SendCodexInputSideEffect,
     };
     #[cfg(feature = "native-codex-runtime")]
+    use crate::interface::tauri::dto::{CodexThreadArchiveRequest, CodexThreadCloseRequest};
+    #[cfg(feature = "native-codex-runtime")]
     use crate::{NativeApprovalKind, NativePendingApproval, NativePendingUserInput};
     #[cfg(feature = "native-codex-runtime")]
-    use codex_protocol::config_types::WebSearchMode as WebSearchModeConfig;
+    use codex_protocol::{config_types::WebSearchMode as WebSearchModeConfig, ThreadId};
     #[cfg(feature = "native-codex-runtime")]
     use serde_json::Value;
     #[cfg(feature = "native-codex-runtime")]
     use std::collections::HashMap;
     use std::path::PathBuf;
     #[cfg(feature = "native-codex-runtime")]
-    use std::sync::{mpsc, Mutex, OnceLock};
+    use std::sync::{mpsc, Arc, Mutex, OnceLock};
     #[cfg(feature = "native-codex-runtime")]
     use std::time::Duration;
     #[cfg(feature = "native-codex-runtime")]
@@ -1973,6 +1969,31 @@ mod tests {
     }
 
     #[cfg(feature = "native-codex-runtime")]
+    async fn open_send_codex_input_test_thread(app: &tauri::App) -> String {
+        let opened = codex_thread_open_impl(
+            app.handle().clone(),
+            app.handle().state::<crate::AppState>(),
+            None,
+        )
+        .await
+        .expect("test thread should open");
+        opened.thread_id
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    fn with_native_session_handles_mut<R>(
+        app: &tauri::App,
+        f: impl FnOnce(&mut crate::NativeSessionHandles, &mut Option<String>) -> R,
+    ) -> R {
+        let state = app.handle().state::<crate::AppState>();
+        let mut guard =
+            crate::lock_active_session(state.inner()).expect("active session lock should succeed");
+        let active = guard.as_mut().expect("active session should exist");
+        let crate::ActiveSessionTransport::Native(native) = &mut active.transport;
+        f(native, &mut active.thread_id)
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
     fn listen_stream_channel(
         app: &tauri::App,
         channel: &str,
@@ -2141,6 +2162,196 @@ mod tests {
         });
     }
 
+    #[cfg(feature = "native-codex-runtime")]
+    #[test]
+    fn codex_thread_close_impl_existing_thread_returns_removed_true() {
+        let _integration_lock = send_codex_input_integration_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+
+        tauri::async_runtime::block_on(async {
+            let app = build_send_codex_input_test_app();
+            let _session_id = start_send_codex_input_test_session(&app).await;
+            let thread_id = open_send_codex_input_test_thread(&app).await;
+
+            let response = codex_thread_close_impl(
+                app.handle().state::<crate::AppState>(),
+                CodexThreadCloseRequest {
+                    thread_id: thread_id.clone(),
+                },
+            )
+            .await
+            .expect("thread close should succeed for existing thread");
+
+            assert!(response.removed);
+            assert_eq!(response.thread_id, thread_id.clone());
+
+            let still_cached = with_native_session_handles_mut(&app, |native, _| {
+                native.threads.contains_key(thread_id.as_str())
+            });
+            assert!(!still_cached);
+
+            stop_send_codex_input_test_session(&app).await;
+        });
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    #[test]
+    fn codex_thread_close_impl_alias_uses_fallback_when_runtime_thread_missing() {
+        let _integration_lock = send_codex_input_integration_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+
+        tauri::async_runtime::block_on(async {
+            let app = build_send_codex_input_test_app();
+            let _session_id = start_send_codex_input_test_session(&app).await;
+            let thread_id = open_send_codex_input_test_thread(&app).await;
+            let alias_thread_id = "thread-local-alias".to_string();
+
+            let runtime = with_native_session_handles_mut(&app, |native, active_thread_id| {
+                let thread = native
+                    .threads
+                    .get(thread_id.as_str())
+                    .cloned()
+                    .expect("thread should be cached before alias setup");
+                native
+                    .threads
+                    .insert(alias_thread_id.clone(), Arc::clone(&thread));
+                *active_thread_id = Some(alias_thread_id.clone());
+                Arc::clone(&native.runtime)
+            });
+
+            let parsed_thread_id =
+                ThreadId::from_string(&thread_id).expect("opened thread id should be valid uuid");
+            let removed_by_setup = runtime
+                .thread_manager
+                .remove_thread(&parsed_thread_id)
+                .await;
+            assert!(
+                removed_by_setup.is_some(),
+                "setup should remove thread from runtime manager"
+            );
+
+            let response = codex_thread_close_impl(
+                app.handle().state::<crate::AppState>(),
+                CodexThreadCloseRequest {
+                    thread_id: alias_thread_id.clone(),
+                },
+            )
+            .await
+            .expect("thread close should succeed via fallback thread path");
+
+            assert!(response.removed);
+            assert_eq!(response.thread_id, alias_thread_id.clone());
+
+            let (has_alias, has_primary) = with_native_session_handles_mut(&app, |native, _| {
+                (
+                    native.threads.contains_key(alias_thread_id.as_str()),
+                    native.threads.contains_key(thread_id.as_str()),
+                )
+            });
+            assert!(!has_alias);
+            assert!(!has_primary);
+
+            stop_send_codex_input_test_session(&app).await;
+        });
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    #[test]
+    fn codex_thread_close_impl_invalid_alias_without_cache_returns_not_found() {
+        let _integration_lock = send_codex_input_integration_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+
+        tauri::async_runtime::block_on(async {
+            let app = build_send_codex_input_test_app();
+            let _session_id = start_send_codex_input_test_session(&app).await;
+            let missing_thread_id = "thread-local-alias".to_string();
+
+            let error = codex_thread_close_impl(
+                app.handle().state::<crate::AppState>(),
+                CodexThreadCloseRequest {
+                    thread_id: missing_thread_id.clone(),
+                },
+            )
+            .await
+            .expect_err("thread close should fail when no cache/fallback exists");
+            assert_eq!(error, format!("thread not found: {missing_thread_id}"));
+
+            stop_send_codex_input_test_session(&app).await;
+        });
+    }
+
+    #[cfg(feature = "native-codex-runtime")]
+    #[test]
+    fn codex_thread_archive_impl_moves_rollout_to_archived_directory() {
+        let _integration_lock = send_codex_input_integration_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+
+        tauri::async_runtime::block_on(async {
+            let app = build_send_codex_input_test_app();
+            let _session_id = start_send_codex_input_test_session(&app).await;
+            let thread_id = open_send_codex_input_test_thread(&app).await;
+
+            let (runtime, rollout_path) = with_native_session_handles_mut(&app, |native, _| {
+                let thread = native
+                    .threads
+                    .get(thread_id.as_str())
+                    .expect("thread should be cached before archive");
+                let rollout_path = thread
+                    .rollout_path()
+                    .expect("thread should expose rollout path for archive");
+                (Arc::clone(&native.runtime), rollout_path)
+            });
+
+            if let Some(parent) = rollout_path.parent() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .expect("rollout parent should be created");
+            }
+            tokio::fs::write(&rollout_path, "{}\n")
+                .await
+                .expect("rollout fixture should be written");
+
+            let response = codex_thread_archive_impl(
+                app.handle().state::<crate::AppState>(),
+                CodexThreadArchiveRequest {
+                    thread_id: thread_id.clone(),
+                },
+            )
+            .await
+            .expect("archive should succeed for existing thread rollout");
+
+            assert!(response.archived);
+            assert_eq!(response.id, thread_id.clone());
+            assert_eq!(response.codex_thread_id, thread_id.clone());
+
+            let archived_rollout = super::find_archived_thread_path_by_id_str(
+                runtime.codex_home.as_path(),
+                thread_id.as_str(),
+            )
+            .await
+            .expect("archived thread lookup should succeed")
+            .expect("archived rollout path should exist");
+            assert!(
+                tokio::fs::metadata(&archived_rollout).await.is_ok(),
+                "archived rollout should exist"
+            );
+            assert!(
+                tokio::fs::metadata(&rollout_path).await.is_err(),
+                "original rollout path should be moved"
+            );
+
+            let still_cached = with_native_session_handles_mut(&app, |native, _| {
+                native.threads.contains_key(thread_id.as_str())
+            });
+            assert!(!still_cached);
+
+            stop_send_codex_input_test_session(&app).await;
+        });
+    }
     #[cfg(feature = "native-codex-runtime")]
     #[test]
     fn runtime_model_override_discards_default_value() {
