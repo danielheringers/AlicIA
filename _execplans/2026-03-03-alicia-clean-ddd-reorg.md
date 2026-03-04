@@ -45,6 +45,7 @@ Excluido:
 - [x] (2026-03-04) Fase 4 (slice 6): shared thread catalog extraido para runtime_bridge com desacoplamento de session_turn_runtime.
 - [x] (2026-03-04) Fase 4 (slice 7): extracao de approval.respond + user_input.respond para clean layers com fail-fast de decisao.
 - [x] (2026-03-04) Fase 4 (slice 8): extracao do scheduling comum de turn.run/review.start para domain+application.
+- [x] (2026-03-04) Fase 4 (slice 9): extracao de housekeeping close/archive para runtime_bridge.
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
 
@@ -615,6 +616,47 @@ Revisao tecnica final:
 Resultado:
 1. Slice 8 da Fase 4 concluido sem blocker de merge.
 2. Duplicacao de scheduling entre `schedule_turn_run_native` e `schedule_review_start_native` reduzida com fronteira clean mais clara.
+## Fase 4 Slice 9 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-04.
+2. Objetivo: extrair o housekeeping duplicado de `thread.close` e `thread.archive` para `infrastructure/runtime_bridge`, preservando comportamento e contrato externo.
+3. Escopo do slice:
+   - modulo unico para remocao de thread/aliases por `Arc::ptr_eq`
+   - limpeza de `active_turns` e pendencias (`pending_approvals`/`pending_user_inputs`) limitada aos thread ids removidos
+   - regra de reset de `active.thread_id` preservada
+
+Entregas:
+1. Novo modulo de infraestrutura:
+   - `backend/src/infrastructure/runtime_bridge/session_thread_housekeeping.rs`
+2. Exports atualizados:
+   - `backend/src/infrastructure/runtime_bridge/mod.rs`
+3. Runtime simplificado:
+   - `backend/src/session_turn_runtime.rs` com delegacao para helper unico em `thread.close`/`thread.archive`
+4. Testes unitarios adicionados no helper para:
+   - filtro de aliases por ponteiro
+   - limpeza seletiva de pendencias
+   - regra de reset de thread ativa
+
+Validacao executada:
+1. `cd alicia/backend && cargo fmt --all -- --check` -> OK.
+2. `cd alicia/backend && cargo check` -> OK.
+3. `cd alicia/backend && cargo test` -> OK (`184 passed; 0 failed`).
+4. `cd alicia/backend && cargo clippy --all-targets --all-features -- -D warnings` -> OK.
+5. `node alicia/codex-bridge/generators/check-runtime-contract.mjs` -> OK (`runtimeMethods=51`, `tauriCommands=70`, `tauriEventChannels=6`).
+6. Verificacao de contrato/assinaturas:
+   - sem drift em `backend/src/interface/tauri/commands/session_turn.rs`
+   - sem drift em `backend/src/interface/tauri/dto/session_turn.rs`
+
+Revisao tecnica final:
+1. Sem findings de severidade alta/media/baixa.
+2. Sem alteracao de contrato externo de `thread.close` e `thread.archive`.
+3. Risco residual baixo:
+   - faltam testes E2E cobrindo fluxo real Tauri para close/archive com estado de sessao completo.
+
+Resultado:
+1. Slice 9 da Fase 4 concluido sem blocker de merge.
+2. Duplicacao de housekeeping close/archive removida de `session_turn_runtime` com fronteira interna mais clara.
 ## Current Architecture Snapshot (Key Risks)
 
 1. Frontend com `god component` em `app/page.tsx` concentrando UI + fluxo + regras.
@@ -917,5 +959,14 @@ Fase 4 (slice 8):
    - faltam testes E2E para corrida entre scheduling e `thread.open` em producao.
 4. Ajuste para continuidade da Fase 4:
    - priorizar extracao de caminhos mutaveis remanescentes (ex.: `review.update`/`turn.run` lifecycle internals) mantendo paridade de evento/erro.
-
+Fase 4 (slice 9):
+1. Resultado entregue: housekeeping de `thread.close` e `thread.archive` centralizado em `infrastructure/runtime_bridge`, removendo duplicacao de limpeza de cache/aliases/pending actions em runtime.
+2. Incidentes/regressoes:
+   - sem findings de severidade alta/media/baixa na revisao final;
+   - contrato Tauri preservado sem drift em comandos/DTOs de session_turn.
+3. Riscos residuais:
+   - faltam cenarios E2E para close/archive com estado real de sessao e pendencias ativas;
+   - helper centralizado agora concentra logica de limpeza para dois caminhos criticos.
+4. Ajuste para continuidade da Fase 4:
+   - priorizar extracao incremental do proximo recorte mutavel (`review.update/status` ou lifecycle/event translation) com testes de sequencia de evento.
 

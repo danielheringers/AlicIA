@@ -44,7 +44,7 @@ use crate::codex_event_translator::NativeCodexEventTranslator;
 #[cfg(feature = "native-codex-runtime")]
 use crate::emit_codex_event;
 #[cfg(feature = "native-codex-runtime")]
-use crate::infrastructure::runtime_bridge::session_thread_shared;
+use crate::infrastructure::runtime_bridge::{session_thread_housekeeping, session_thread_shared};
 #[cfg(feature = "native-codex-runtime")]
 use crate::interface::tauri::dto::CodexThreadSummary;
 use crate::interface::tauri::dto::{
@@ -687,26 +687,6 @@ fn resolve_native_active_turn_for_thread(
 }
 
 #[cfg(feature = "native-codex-runtime")]
-fn clear_native_pending_actions_for_threads(
-    native: &mut crate::NativeSessionHandles,
-    thread_ids: &[String],
-) {
-    if thread_ids.is_empty() {
-        return;
-    }
-    let thread_id_set = thread_ids
-        .iter()
-        .cloned()
-        .collect::<std::collections::HashSet<_>>();
-    native
-        .pending_approvals
-        .retain(|_, pending| !thread_id_set.contains(pending.thread_id.as_str()));
-    native
-        .pending_user_inputs
-        .retain(|_, pending| !thread_id_set.contains(pending.thread_id.as_str()));
-}
-
-#[cfg(feature = "native-codex-runtime")]
 fn parse_native_review_request(
     target: Option<Value>,
     delivery: Option<String>,
@@ -1166,32 +1146,12 @@ pub(crate) async fn codex_thread_close_impl(
 
         let crate::ActiveSessionTransport::Native(native) = &mut active.transport;
 
-        let removed_from_cache = native.threads.remove(&thread_id);
-        let mut removed_thread_ids = vec![thread_id.clone()];
-        native.active_turns.remove(&thread_id);
-        if let Some(removed) = removed_from_cache.as_ref() {
-            let alias_ids = native
-                .threads
-                .iter()
-                .filter_map(|(candidate_id, candidate)| {
-                    Arc::ptr_eq(candidate, removed).then_some(candidate_id.clone())
-                })
-                .collect::<Vec<_>>();
-            for alias_id in alias_ids {
-                native.threads.remove(alias_id.as_str());
-                native.active_turns.remove(alias_id.as_str());
-                removed_thread_ids.push(alias_id);
-            }
-        }
-        clear_native_pending_actions_for_threads(native, &removed_thread_ids);
-        let removed_cache_entry = removed_from_cache.is_some();
-
-        if active.thread_id.as_deref().is_some_and(|active_id| {
-            active_id == thread_id
-                || (removed_cache_entry && !native.threads.contains_key(active_id))
-        }) {
-            active.thread_id = None;
-        }
+        let removed_from_cache =
+            session_thread_housekeeping::apply_native_thread_close_archive_housekeeping(
+                native,
+                &mut active.thread_id,
+                thread_id.as_str(),
+            );
 
         (Arc::clone(&native.runtime), removed_from_cache)
     };
@@ -1354,31 +1314,11 @@ pub(crate) async fn codex_thread_archive_impl(
             .ok_or_else(|| "no active codex session".to_string())?;
 
         let crate::ActiveSessionTransport::Native(native) = &mut active.transport;
-        let removed_from_cache = native.threads.remove(&thread_id);
-        let mut removed_thread_ids = vec![thread_id.clone()];
-        native.active_turns.remove(&thread_id);
-        if let Some(removed) = removed_from_cache.as_ref() {
-            let alias_ids = native
-                .threads
-                .iter()
-                .filter_map(|(candidate_id, candidate)| {
-                    Arc::ptr_eq(candidate, removed).then_some(candidate_id.clone())
-                })
-                .collect::<Vec<_>>();
-            for alias_id in alias_ids {
-                native.threads.remove(alias_id.as_str());
-                native.active_turns.remove(alias_id.as_str());
-                removed_thread_ids.push(alias_id);
-            }
-        }
-        clear_native_pending_actions_for_threads(native, &removed_thread_ids);
-
-        if active.thread_id.as_deref().is_some_and(|active_id| {
-            active_id == thread_id
-                || (removed_from_cache.is_some() && !native.threads.contains_key(active_id))
-        }) {
-            active.thread_id = None;
-        }
+        session_thread_housekeeping::apply_native_thread_close_archive_housekeeping(
+            native,
+            &mut active.thread_id,
+            thread_id.as_str(),
+        );
     }
 
     let archive_dir = runtime.codex_home.join(ARCHIVED_SESSIONS_SUBDIR);
