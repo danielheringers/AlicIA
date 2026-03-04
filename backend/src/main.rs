@@ -27,12 +27,12 @@ mod session_turn_runtime;
 mod status_runtime;
 mod terminal_runtime;
 mod workspace_runtime;
-use crate::account_runtime::{
-    AccountLoginStartRequest, AccountLoginStartResponse, AccountLogoutResponse,
-    AccountRateLimitsReadResponse, AccountReadRequest, AccountReadResponse, AppListRequest,
-    AppListResponse,
-};
 use crate::interface::tauri::commands::{
+    account_mcp::{
+        codex_account_login_start, codex_account_logout, codex_account_rate_limits_read,
+        codex_account_read, codex_app_list, codex_mcp_list, codex_mcp_login, codex_mcp_reload,
+        codex_wait_for_mcp_startup,
+    },
     runtime_config::{
         codex_config_get, codex_config_set, codex_runtime_capabilities, codex_runtime_status,
         load_codex_default_config, update_codex_config,
@@ -51,10 +51,6 @@ use crate::interface::tauri::commands::{
         codex_workspace_read_file, codex_workspace_rename_entry, codex_workspace_write_file,
         git_commit_approved_review, git_workspace_changes, run_codex_command,
     },
-};
-use crate::mcp_runtime::{
-    McpLoginRequest, McpLoginResponse, McpReloadResponse, McpServerListResponse,
-    McpStartupWarmupResponse,
 };
 #[cfg(feature = "native-codex-runtime")]
 use codex_core::CodexThread;
@@ -559,74 +555,6 @@ async fn neuro_invoke_tool(
 fn codex_models_list(state: State<'_, AppState>) -> Result<CodexModelListResponse, String> {
     crate::command_runtime::codex_models_list_impl(state)
 }
-#[tauri::command]
-async fn codex_wait_for_mcp_startup(
-    state: State<'_, AppState>,
-) -> Result<McpStartupWarmupResponse, String> {
-    crate::command_runtime::codex_wait_for_mcp_startup_impl(state).await
-}
-#[tauri::command]
-async fn codex_app_list(
-    state: State<'_, AppState>,
-    request: Option<AppListRequest>,
-) -> Result<AppListResponse, String> {
-    crate::command_runtime::codex_app_list_impl(
-        state,
-        request.unwrap_or(AppListRequest {
-            cursor: None,
-            limit: None,
-            thread_id: None,
-            force_refetch: false,
-        }),
-    )
-    .await
-}
-
-#[tauri::command]
-async fn codex_account_read(
-    state: State<'_, AppState>,
-    request: Option<AccountReadRequest>,
-) -> Result<AccountReadResponse, String> {
-    crate::command_runtime::codex_account_read_impl(state, request.unwrap_or_default()).await
-}
-
-#[tauri::command]
-async fn codex_account_login_start(
-    state: State<'_, AppState>,
-    request: AccountLoginStartRequest,
-) -> Result<AccountLoginStartResponse, String> {
-    crate::command_runtime::codex_account_login_start_impl(state, request).await
-}
-
-#[tauri::command]
-async fn codex_account_logout(state: State<'_, AppState>) -> Result<AccountLogoutResponse, String> {
-    crate::command_runtime::codex_account_logout_impl(state).await
-}
-
-#[tauri::command]
-async fn codex_account_rate_limits_read(
-    state: State<'_, AppState>,
-) -> Result<AccountRateLimitsReadResponse, String> {
-    crate::command_runtime::codex_account_rate_limits_read_impl(state).await
-}
-#[tauri::command]
-async fn codex_mcp_list(state: State<'_, AppState>) -> Result<McpServerListResponse, String> {
-    crate::command_runtime::codex_mcp_list_impl(state).await
-}
-
-#[tauri::command]
-async fn codex_mcp_login(
-    state: State<'_, AppState>,
-    request: McpLoginRequest,
-) -> Result<McpLoginResponse, String> {
-    crate::command_runtime::codex_mcp_login_impl(state, request).await
-}
-
-#[tauri::command]
-async fn codex_mcp_reload(state: State<'_, AppState>) -> Result<McpReloadResponse, String> {
-    crate::command_runtime::codex_mcp_reload_impl(state).await
-}
-
 fn main() {
     tauri::Builder::default()
         .manage(AppState::default())

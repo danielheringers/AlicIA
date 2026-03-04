@@ -34,6 +34,7 @@ Excluido:
 - [x] (2026-03-03) Fase 2: extracao de portas/casos de uso no frontend.
 - [x] (2026-03-03) Fase 3 (slice 1): camada `interface/tauri` criada e comandos low/medium migrados.
 - [x] (2026-03-03) Fase 3 (slice 2): comandos Session/Thread/Review migrados para `interface/tauri`.
+- [x] (2026-03-03) Fase 3 (slice 3): handlers Account/MCP/App migrados para `interface/tauri`.
 - [ ] (2026-03-03) Fase 3: extracao de interface Tauri no backend (conclusao completa).
 - [ ] (2026-03-03) Fase 4: separacao de contextos no backend.
 - [ ] (2026-03-03) Fase 5: enforcement de fronteiras + limpeza de legados.
@@ -198,11 +199,41 @@ Resultado:
 1. Slice 2 da Fase 3 concluido sem blocker de merge.
 2. Fase 3 completa permanece em aberto para os grupos fora deste slice (principalmente `neuro_*` e comandos de runtime nao migrados).
 
+## Fase 3 Slice 3 Entrega e Evidencias
+
+Metadata:
+1. Data: 2026-03-03.
+2. Objetivo: extrair handlers do contexto Account/MCP/App para `interface/tauri`, reduzindo ainda mais o `main.rs`.
+3. Escopo do slice:
+   - migracao de handlers `codex_wait_for_mcp_startup`, `codex_app_list`, `codex_account_*`, `codex_mcp_*`
+   - preservacao do contrato de comando e defaults de request (`unwrap_or`/`unwrap_or_default`)
+   - manutencao dos grupos fora de escopo (`codex_models_list`, `codex_native_runtime_diagnose`, `neuro_*`)
+
+Entregas:
+1. Novo modulo de handlers:
+   - `backend/src/interface/tauri/commands/account_mcp.rs`
+2. Exports atualizados:
+   - `backend/src/interface/tauri/commands/mod.rs`
+3. `main.rs` reduzido para import + registro dos handlers migrados, sem handlers locais desse contexto.
+
+Validacao executada:
+1. `cd alicia/backend && cargo fmt --all -- --check` -> OK (warnings conhecidos de nightly-only no rustfmt config).
+2. `cd alicia/backend && cargo check` -> OK.
+3. `cd alicia/backend && cargo test` -> OK (`121 passed; 0 failed`).
+4. `cd alicia/backend && cargo clippy --all-targets --all-features -- -D warnings` -> OK.
+5. Verificacao de paridade:
+   - 9 comandos migrados removidos como handlers locais em `main.rs` e mantidos no `generate_handler!`;
+   - comandos fora de escopo (`codex_models_list`, `codex_native_runtime_diagnose`, `neuro_*`) preservados no registro.
+
+Resultado:
+1. Slice 3 da Fase 3 concluido sem blocker de merge.
+2. Fase 3 completa permanece em aberto para migracao do bloco `neuro_*` e ajustes finais do `main.rs`.
+
 ## Current Architecture Snapshot (Key Risks)
 
 1. Frontend com `god component` em `app/page.tsx` concentrando UI + fluxo + regras.
 2. Componentes de UI sem import direto de `tauri-bridge` nos painéis priorizados da Fase 2; ainda existe acoplamento residual via adapter concreto em alguns fluxos.
-3. `main.rs` ja perdeu os grupos migrados (utility/runtime/workspace/terminal/session/session-thread-review), mas ainda concentra wiring e comandos de contexts restantes (`account`, `mcp`, `models`, `neuro`).
+3. `main.rs` ja perdeu utility/runtime/workspace/terminal/session-thread-review/account-mcp, mas ainda concentra wiring e comandos dos contexts restantes (`models`, `neuro`, `native diagnose`).
 4. Modulos backend monoliticos (`command_runtime.rs`, `session_turn_runtime.rs`, `neuro_runtime.rs`).
 5. Contrato runtime duplicado entre frontend e backend.
 
@@ -406,11 +437,11 @@ Fase 2:
 4. Ajuste para Fase 3:
    - extrair interface Tauri no backend, reduzindo `main.rs` para bootstrap/registro e alinhando portas por contexto.
 
-Fase 3 (slices 1-2):
-1. Resultado entregue: camada `interface/tauri` consolidada para comandos de baixo/medio risco e contexto Session/Thread/Review, com `main.rs` significativamente reduzido.
+Fase 3 (slices 1-3):
+1. Resultado entregue: camada `interface/tauri` consolidada para comandos de baixo/medio risco, Session/Thread/Review e Account/MCP/App, com `main.rs` progressivamente reduzido.
 2. Incidentes/regressoes: nenhum blocker detectado em check/test/clippy e revisao read-only.
 3. Riscos residuais:
-   - faltam testes dedicados de serializacao/contrato dos DTOs centralizados em `dto/session_turn.rs`;
-   - faltam testes de integracao para garantir registro/invocacao Tauri pos-refactor.
+   - faltam testes dedicados de serializacao/contrato para DTOs centralizados (ex.: `dto/session_turn.rs`);
+   - faltam testes de integracao para validar automaticamente registro/invocacao dos comandos Tauri no `generate_handler!`.
 4. Ajuste para continuidade da Fase 3:
-   - migrar comandos restantes de maior acoplamento (especialmente `neuro_*`) para `interface/tauri`, mantendo paridade no `generate_handler!`.
+   - migrar comandos restantes de maior acoplamento (`neuro_*`, `codex_native_runtime_diagnose` e bloco residual de `main.rs`) para `interface/tauri` mantendo paridade total.
