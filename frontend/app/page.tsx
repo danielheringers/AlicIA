@@ -1,18 +1,13 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Bot, Minimize2 } from "lucide-react"
+import { Minimize2 } from "lucide-react"
 import { TitleBar } from "@/components/alicia/title-bar"
 import { Sidebar } from "@/components/alicia/sidebar"
 import { ConversationPane } from "@/components/alicia/conversation-pane"
 import { StatusBar } from "@/components/alicia/status-bar"
-import { ModelPicker } from "@/components/alicia/model-picker"
-import { PermissionsPanel } from "@/components/alicia/permissions-panel"
-import { McpPanel } from "@/components/alicia/mcp-panel"
-import { AppsPanel } from "@/components/alicia/apps-panel"
-import { AdtPanel } from "@/components/alicia/adt-panel"
-import { SessionPicker } from "@/components/alicia/session-picker"
-import { ReviewMode } from "@/components/alicia/review-mode"
+import { PageActivePanels } from "@/components/alicia/page-active-panels"
+import { PageInitializingView } from "@/components/alicia/page-initializing-view"
 import { TerminalPane } from "@/components/alicia/terminal-pane"
 import { SourceEditorPanel } from "@/components/alicia/source-editor-panel"
 import { AliciaDesktopShell } from "@/components/ide/desktop-shell"
@@ -36,10 +31,7 @@ import {
   pickMentionFile,
   gitCommitApprovedReview,
   codexWorkspaceChanges,
-  codexWorkspaceCreateDirectory,
-  codexWorkspaceListDirectory,
   codexWorkspaceReadFile,
-  codexWorkspaceRenameEntry,
   codexWorkspaceWriteFile,
   neuroAdtExplorerStateGet,
   neuroAdtExplorerStatePatch,
@@ -54,7 +46,6 @@ import {
   terminalWrite,
   type ApprovalDecision,
   type CodexModel,
-  type CodexWorkspaceDirectoryEntry,
   type NeuroAdtExplorerState,
   type NeuroAdtFavoritePackageItem,
   type NeuroAdtListObjectsRequest,
@@ -90,7 +81,10 @@ import { useAliciaTerminalRuntime } from "@/hooks/use-alicia-terminal-runtime"
 import { useAliciaActions } from "@/hooks/use-alicia-actions"
 import { useAliciaBootstrap } from "@/hooks/use-alicia-bootstrap"
 import { useAliciaRuntimeCore } from "@/hooks/use-alicia-runtime-core"
+import { useConversationAutoscroll } from "@/hooks/use-conversation-autoscroll"
 import { useIsMobile } from "@/hooks/use-mobile"
+import { useReviewChannelState } from "@/hooks/use-review-channel-state"
+import { useWorkspaceExplorerController } from "@/hooks/use-workspace-explorer-controller"
 import {
   parseReasoningSystemMessage,
   parseUsageSystemMessage,
@@ -152,8 +146,6 @@ const INITIAL_SOURCE_EDITOR_STATE: SourceEditorState = {
 
 type MainContentTab = "chat" | "editor" | "terminal"
 
-type ExplorerDirectoryPathMap = Record<string, CodexWorkspaceDirectoryEntry[]>
-type ExplorerDirectoryStatusMap = Record<string, boolean>
 type SapObjectMap = Record<string, NeuroAdtObjectSummary[]>
 type SapLoadingMap = Record<string, boolean>
 type SapObjectMapByServer = Record<string, SapObjectMap>
@@ -161,7 +153,6 @@ type SapLoadingMapByServer = Record<string, SapLoadingMap>
 type SapPackageRootsByServer = Record<string, string[]>
 type SapPackageRootInputByServer = Record<string, string>
 
-const EXPLORER_ROOT_KEY = "__root__"
 const SAP_TMP_PACKAGE = "$TMP"
 const SAP_PACKAGE_SCOPE_PRESETS = ["/S4TAX/", "/1BEA/", "Z*", "Y*", SAP_TMP_PACKAGE]
 const INITIAL_SAP_LOADING_STATE = {
@@ -193,15 +184,6 @@ function pathBasename(path: string): string {
   const normalized = normalizeExplorerPath(path)
   const parts = normalized.split("/").filter(Boolean)
   return parts.at(-1) ?? normalized
-}
-
-function pathDirname(path: string): string {
-  const normalized = normalizeExplorerPath(path)
-  const separator = normalized.lastIndexOf("/")
-  if (separator < 0) {
-    return ""
-  }
-  return normalized.slice(0, separator)
 }
 
 function normalizeSapPackageScopeRoot(raw: string): string | null {
@@ -284,17 +266,6 @@ function mergeSapNamespaces(
   )
 }
 
-function sortExplorerEntries(
-  entries: CodexWorkspaceDirectoryEntry[],
-): CodexWorkspaceDirectoryEntry[] {
-  return [...entries].sort((left, right) => {
-    if (left.kind !== right.kind) {
-      return left.kind === "directory" ? -1 : 1
-    }
-    return left.name.localeCompare(right.name, "pt-BR", { sensitivity: "base" })
-  })
-}
-
 export default function AliciaTerminal() {
   const isMobile = useIsMobile()
   const [initializing, setInitializing] = useState(true)
@@ -303,7 +274,6 @@ export default function AliciaTerminal() {
   )
   const [bootLogs, setBootLogs] = useState<string[]>([])
   const [messages, setMessages] = useState<Message[]>([])
-  const [reviewMessages, setReviewMessages] = useState<Message[]>([])
   const [isThinking, setIsThinking] = useState(false)
   const [pendingApprovals, setPendingApprovals] = useState<ApprovalRequestState[]>([])
   const [pendingUserInput, setPendingUserInput] = useState<UserInputRequestState | null>(null)
@@ -360,18 +330,6 @@ export default function AliciaTerminal() {
   const [desktopViewMode, setDesktopViewMode] = useState<IdeViewMode>("split")
   const [desktopTerminalVisible, setDesktopTerminalVisible] = useState(true)
   const [desktopShellMode, setDesktopShellMode] = useState<IdeShellMode>("normal")
-  const [explorerRootPath, setExplorerRootPath] = useState("")
-  const [explorerRootEntries, setExplorerRootEntries] = useState<
-    CodexWorkspaceDirectoryEntry[]
-  >([])
-  const [explorerChildrenByPath, setExplorerChildrenByPath] =
-    useState<ExplorerDirectoryPathMap>({})
-  const [explorerLoadedPaths, setExplorerLoadedPaths] =
-    useState<ExplorerDirectoryStatusMap>({})
-  const [explorerLoadingPaths, setExplorerLoadingPaths] =
-    useState<ExplorerDirectoryStatusMap>({})
-  const [explorerTreeVersion, setExplorerTreeVersion] = useState(0)
-  const [explorerRootLoading, setExplorerRootLoading] = useState(false)
   const [switchingWorkspaceFolder, setSwitchingWorkspaceFolder] = useState(false)
   const [runtime, setRuntime] = useState<RuntimeState>({
     connected: isTauriRuntime(),
@@ -382,15 +340,11 @@ export default function AliciaTerminal() {
   })
 
   const idRef = useRef(1)
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const shouldAutoScrollRef = useRef(true)
   const terminalContainerRef = useRef<HTMLDivElement>(null)
   const codexUnlistenRef = useRef<(() => void) | null>(null)
   const terminalUnlistenRef = useRef<(() => void) | null>(null)
   const runtimeConfigRef = useRef<RuntimeCodexConfig | null>(null)
   const threadIdRef = useRef<string | null>(null)
-  const reviewMessagesBySessionRef = useRef<Map<string, Message[]>>(new Map())
-  const activeReviewSessionKeyRef = useRef<string | null>(null)
   const terminalBuffersRef = useRef<Map<number, string>>(new Map())
   const activeTerminalRef = useRef<number | null>(null)
   const xtermRef = useRef<import("xterm").Terminal | null>(null)
@@ -401,7 +355,6 @@ export default function AliciaTerminal() {
   const autoTerminalCreatedRef = useRef(false)
   const reviewRoutingRef = useRef(false)
   const turnDiffFilesRef = useRef<DiffFileView[]>([])
-  const wasReviewThinkingRef = useRef(false)
   const sourceOperationSeqRef = useRef(0)
   const sourceBaselineRef = useRef("")
   const sourceEditorRef = useRef<SourceEditorState>(INITIAL_SOURCE_EDITOR_STATE)
@@ -413,9 +366,6 @@ export default function AliciaTerminal() {
     sidebarVisible: true,
     terminalVisible: true,
   })
-
-  const [isReviewComplete, setIsReviewComplete] = useState(false)
-
   useEffect(() => {
     const cached = readModelsCache()
     if (!cached || cached.data.length === 0) {
@@ -425,17 +375,6 @@ export default function AliciaTerminal() {
     setModelsCachedAt(cached.cachedAt)
     setModelsFromCache(true)
   }, [])
-
-  useEffect(() => {
-    const nowThinking = isThinking && reviewRoutingRef.current
-    if (nowThinking) {
-      wasReviewThinkingRef.current = true
-      setIsReviewComplete(false)
-    } else if (wasReviewThinkingRef.current && !isThinking) {
-      wasReviewThinkingRef.current = false
-      setIsReviewComplete(true)
-    }
-  }, [isThinking])
 
   useEffect(() => {
     activeAdtServerIdRef.current = activeAdtServerId
@@ -566,6 +505,18 @@ export default function AliciaTerminal() {
     return idRef.current
   }, [])
 
+  const activeSessionId = useMemo(
+    () => aliciaState.sessions.find((session) => session.active)?.id ?? null,
+    [aliciaState.sessions],
+  )
+  const activeReviewSessionKey = threadIdRef.current ?? activeSessionId ?? "__sessionless__"
+  const { reviewMessages, setReviewMessages, isReviewComplete } =
+    useReviewChannelState({
+      activeReviewSessionKey,
+      isThinking,
+      reviewRoutingRef,
+    })
+
   const addMessage = useCallback(
     (
       type: Message["type"],
@@ -638,243 +589,14 @@ export default function AliciaTerminal() {
         ]
       })
     },
-    [nextMessageId],
+    [nextMessageId, setReviewMessages],
   )
 
   const turnDiffFiles = useMemo(
     () => parseUnifiedDiffFiles(turnDiff?.diff ?? ""),
     [turnDiff],
   )
-  const activeSessionId = useMemo(
-    () => aliciaState.sessions.find((session) => session.active)?.id ?? null,
-    [aliciaState.sessions],
-  )
-  const activeReviewSessionKey = threadIdRef.current ?? activeSessionId ?? "__sessionless__"
 
-  useEffect(() => {
-    if (activeReviewSessionKeyRef.current === null) {
-      activeReviewSessionKeyRef.current = activeReviewSessionKey
-      const initialMessages =
-        reviewMessagesBySessionRef.current.get(activeReviewSessionKey) ?? []
-      setReviewMessages(initialMessages)
-      return
-    }
-
-    if (activeReviewSessionKeyRef.current === activeReviewSessionKey) {
-      return
-    }
-
-    const previousKey = activeReviewSessionKeyRef.current
-    if (previousKey) {
-      reviewMessagesBySessionRef.current.set(previousKey, reviewMessages)
-    }
-
-    activeReviewSessionKeyRef.current = activeReviewSessionKey
-    const nextMessages =
-      reviewMessagesBySessionRef.current.get(activeReviewSessionKey) ?? []
-    setReviewMessages(nextMessages)
-  }, [activeReviewSessionKey, reviewMessages])
-
-  useEffect(() => {
-    reviewMessagesBySessionRef.current.set(activeReviewSessionKey, reviewMessages)
-  }, [activeReviewSessionKey, reviewMessages])
-
-  const normalizeWorkspaceDirectoryEntries = useCallback(
-    (entries: unknown): CodexWorkspaceDirectoryEntry[] => {
-      if (!Array.isArray(entries)) {
-        return []
-      }
-
-      const normalized: CodexWorkspaceDirectoryEntry[] = []
-      for (const entry of entries) {
-        if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-          continue
-        }
-        const record = entry as Record<string, unknown>
-        const kind = record.kind === "directory" ? "directory" : "file"
-        const rawPath =
-          typeof record.path === "string" && record.path.trim().length > 0
-            ? record.path
-            : typeof record.name === "string"
-              ? record.name
-              : ""
-        const path = normalizeExplorerPath(rawPath)
-        if (!path) {
-          continue
-        }
-        const name =
-          typeof record.name === "string" && record.name.trim().length > 0
-            ? record.name.trim()
-            : pathBasename(path)
-        if (typeof record.hasChildren === "boolean") {
-          normalized.push({
-            name,
-            path,
-            kind,
-            hasChildren: record.hasChildren,
-          })
-          continue
-        }
-        normalized.push({
-          name,
-          path,
-          kind,
-        })
-      }
-
-      return sortExplorerEntries(normalized)
-    },
-    [],
-  )
-
-  const upsertExplorerEntry = useCallback(
-    (parentPath: string, nextEntry: CodexWorkspaceDirectoryEntry) => {
-      const normalizedParentPath = normalizeExplorerPath(parentPath)
-      if (!normalizedParentPath) {
-        setExplorerRootEntries((previous) => {
-          const merged = [...previous.filter((entry) => entry.path !== nextEntry.path), nextEntry]
-          return sortExplorerEntries(merged)
-        })
-        return
-      }
-
-      setExplorerChildrenByPath((previous) => {
-        const currentEntries = previous[normalizedParentPath] ?? []
-        const merged = [
-          ...currentEntries.filter((entry) => entry.path !== nextEntry.path),
-          nextEntry,
-        ]
-        return {
-          ...previous,
-          [normalizedParentPath]: sortExplorerEntries(merged),
-        }
-      })
-    },
-    [],
-  )
-
-  const markExplorerDirectoryHasChildren = useCallback((directoryPath: string) => {
-    const normalizedPath = normalizeExplorerPath(directoryPath)
-    if (!normalizedPath) {
-      return
-    }
-
-    const updateEntry = (entry: CodexWorkspaceDirectoryEntry) =>
-      entry.path === normalizedPath ? { ...entry, hasChildren: true } : entry
-
-    setExplorerRootEntries((previous) => previous.map(updateEntry))
-    setExplorerChildrenByPath((previous) => {
-      const next: ExplorerDirectoryPathMap = {}
-      for (const [path, entries] of Object.entries(previous)) {
-        next[path] = entries.map(updateEntry)
-      }
-      return next
-    })
-  }, [])
-
-  const loadWorkspaceDirectory = useCallback(
-    async (
-      path?: string,
-      options: {
-        silent?: boolean
-        asRoot?: boolean
-      } = {},
-    ) => {
-      if (
-        !isRuntimeMethodSupported(
-          aliciaState.runtimeCapabilities,
-          "workspace.directory.list",
-        )
-      ) {
-        if (!options.silent) {
-          addMessage(
-            "system",
-            '[explorer] Listagem de diretorio indisponivel neste runtime. Metodo nao suportado: workspace.directory.list.',
-          )
-        }
-        return null
-      }
-
-      const requestPath = normalizeExplorerPath(path)
-      const asRoot = options.asRoot === true
-      const loadingKey = !requestPath || asRoot ? EXPLORER_ROOT_KEY : requestPath
-
-      setExplorerLoadingPaths((previous) => ({ ...previous, [loadingKey]: true }))
-      if (!requestPath || asRoot) {
-        setExplorerRootLoading(true)
-      }
-
-      try {
-        const response = await codexWorkspaceListDirectory(
-          requestPath ? { path: requestPath } : undefined,
-        )
-        const responsePath = normalizeExplorerPath(response.path)
-        const entries = normalizeWorkspaceDirectoryEntries(response.entries)
-
-        if (!requestPath || asRoot) {
-          const nextRootPath = asRoot ? requestPath || responsePath : responsePath
-          setExplorerRootPath(nextRootPath)
-          setExplorerRootEntries(entries)
-          setExplorerChildrenByPath({})
-          setExplorerLoadedPaths({
-            [EXPLORER_ROOT_KEY]: true,
-          })
-          setExplorerTreeVersion((previous) => previous + 1)
-        } else {
-          setExplorerChildrenByPath((previous) => ({
-            ...previous,
-            [requestPath]: entries,
-          }))
-          setExplorerLoadedPaths((previous) => ({
-            ...previous,
-            [loadingKey]: true,
-          }))
-        }
-
-        if (typeof response.cwd === "string" && response.cwd.trim().length > 0) {
-          const nextWorkspace = response.cwd.trim()
-          setRuntime((previous) =>
-            previous.workspace === nextWorkspace
-              ? previous
-              : {
-                  ...previous,
-                  workspace: nextWorkspace,
-                },
-          )
-        }
-
-        return response
-      } catch (error) {
-        if (!options.silent) {
-          addMessage(
-            "system",
-            `[explorer] Falha ao carregar diretorio: ${String(error)}`,
-          )
-        }
-        return null
-      } finally {
-        setExplorerLoadingPaths((previous) => ({ ...previous, [loadingKey]: false }))
-        if (!requestPath || asRoot) {
-          setExplorerRootLoading(false)
-        }
-      }
-    },
-    [addMessage, aliciaState.runtimeCapabilities, normalizeWorkspaceDirectoryEntries],
-  )
-
-  const refreshExplorerRoot = useCallback(
-    async (options: { silent?: boolean } = {}) => {
-      return loadWorkspaceDirectory(undefined, options)
-    },
-    [loadWorkspaceDirectory],
-  )
-
-  const handleLoadExplorerDirectory = useCallback(
-    async (path: string) => {
-      await loadWorkspaceDirectory(path)
-    },
-    [loadWorkspaceDirectory],
-  )
 
   const refreshWorkspaceChanges = useCallback(async () => {
     const normalizeStatus = (value: unknown): AliciaState["fileChanges"][number]["status"] => {
@@ -953,12 +675,7 @@ export default function AliciaTerminal() {
     void refreshWorkspaceChanges()
   }, [turnDiffFiles, refreshWorkspaceChanges])
 
-  useEffect(() => {
-    if (!runtime.connected) {
-      return
-    }
-    void refreshExplorerRoot({ silent: true })
-  }, [runtime.connected, runtime.workspace, refreshExplorerRoot])
+
 
   const statusSignals = useMemo(() => {
     let usage: UsageStats | null = null
@@ -983,62 +700,14 @@ export default function AliciaTerminal() {
 
     return { usage, reasoning }
   }, [messages])
-  const isNearBottom = useCallback((container: HTMLDivElement) => {
-    const thresholdPx = 96
-    const remaining =
-      container.scrollHeight - container.scrollTop - container.clientHeight
-    return remaining <= thresholdPx
-  }, [])
-
-  const scrollConversationToBottom = useCallback((force = false) => {
-    const container = scrollRef.current
-    if (!container) {
-      return
-    }
-
-    if (!force && !shouldAutoScrollRef.current) {
-      return
-    }
-
-    container.scrollTop = container.scrollHeight
-    shouldAutoScrollRef.current = true
-  }, [])
-
-  useEffect(() => {
-    const container = scrollRef.current
-    if (!container) {
-      return
-    }
-
-    const syncAutoScroll = () => {
-      shouldAutoScrollRef.current = isNearBottom(container)
-    }
-
-    scrollConversationToBottom(true)
-    syncAutoScroll()
-    container.addEventListener("scroll", syncAutoScroll, { passive: true })
-
-    return () => {
-      container.removeEventListener("scroll", syncAutoScroll)
-    }
-  }, [initializing, isNearBottom, scrollConversationToBottom])
-
-  useEffect(() => {
-    const frameId = window.requestAnimationFrame(() => {
-      scrollConversationToBottom()
-    })
-
-    return () => {
-      window.cancelAnimationFrame(frameId)
-    }
-  }, [
+  const { scrollRef } = useConversationAutoscroll({
+    initializing,
     messages,
     isThinking,
-    pendingApprovals.length,
-    turnDiff?.turnId,
-    turnPlan?.turnId,
-    scrollConversationToBottom,
-  ])
+    pendingApprovalsCount: pendingApprovals.length,
+    turnDiffTurnId: turnDiff?.turnId ?? null,
+    turnPlanTurnId: turnPlan?.turnId ?? null,
+  })
 
   const appendBootLog = useCallback((message: string) => {
     const now = new Date()
@@ -2455,185 +2124,43 @@ export default function AliciaTerminal() {
     [handleOpenSourceFromRef, isMobile],
   )
 
-  const handleCreateWorkspaceFile = useCallback(
-    async (relativePath: string) => {
-      if (!ensureWorkspaceWriteReady("criar arquivos no workspace", ["workspace.file.write"])) {
-        return false
-      }
+  const setRuntimeWorkspace = useCallback((workspace: string) => {
+    setRuntime((previous) =>
+      previous.workspace === workspace
+        ? previous
+        : {
+            ...previous,
+            workspace,
+          },
+    )
+  }, [])
 
-      let normalizedPath = ""
-      try {
-        normalizedPath = normalizeRelativeWorkspacePath(relativePath)
-      } catch (error) {
-        addMessage(
-          "system",
-          `[explorer] Caminho invalido para novo arquivo: ${toEditorErrorMessage(error)}`,
-        )
-        return false
-      }
-
-      try {
-        await codexWorkspaceWriteFile({
-          path: normalizedPath,
-          content: "",
-        })
-        const parentPath = pathDirname(normalizedPath)
-        upsertExplorerEntry(parentPath, {
-          name: pathBasename(normalizedPath),
-          path: normalizedPath,
-          kind: "file",
-          hasChildren: false,
-        })
-        markExplorerDirectoryHasChildren(parentPath)
-        await refreshWorkspaceChanges()
-        addMessage("system", `[explorer] Arquivo criado: ${normalizedPath}`)
-        onOpenInEditor(normalizedPath)
-        return true
-      } catch (error) {
-        addMessage(
-          "system",
-          `[explorer] Falha ao criar arquivo "${normalizedPath}": ${toEditorErrorMessage(error)}`,
-        )
-        return false
-      }
-    },
-    [
-      addMessage,
-      ensureWorkspaceWriteReady,
-      markExplorerDirectoryHasChildren,
-      normalizeRelativeWorkspacePath,
-      onOpenInEditor,
-      refreshWorkspaceChanges,
-      upsertExplorerEntry,
-      toEditorErrorMessage,
-    ],
-  )
-
-  const handleCreateWorkspaceFolder = useCallback(
-    async (relativePath: string) => {
-      if (
-        !ensureWorkspaceWriteReady("criar pastas no workspace", [
-          "workspace.directory.create",
-        ])
-      ) {
-        return false
-      }
-
-      let normalizedPath = ""
-      try {
-        normalizedPath = normalizeRelativeWorkspacePath(relativePath)
-      } catch (error) {
-        addMessage(
-          "system",
-          `[explorer] Caminho invalido para nova pasta: ${toEditorErrorMessage(error)}`,
-        )
-        return false
-      }
-
-      try {
-        await codexWorkspaceCreateDirectory({
-          path: normalizedPath,
-        })
-        const parentPath = pathDirname(normalizedPath)
-        upsertExplorerEntry(parentPath, {
-          name: pathBasename(normalizedPath),
-          path: normalizedPath,
-          kind: "directory",
-          hasChildren: false,
-        })
-        markExplorerDirectoryHasChildren(parentPath)
-        await refreshWorkspaceChanges()
-        addMessage("system", `[explorer] Pasta criada: ${normalizedPath}`)
-        return true
-      } catch (error) {
-        addMessage(
-          "system",
-          `[explorer] Falha ao criar pasta "${normalizedPath}": ${toEditorErrorMessage(error)}`,
-        )
-        return false
-      }
-    },
-    [
-      addMessage,
-      ensureWorkspaceWriteReady,
-      markExplorerDirectoryHasChildren,
-      normalizeRelativeWorkspacePath,
-      refreshWorkspaceChanges,
-      upsertExplorerEntry,
-      toEditorErrorMessage,
-    ],
-  )
-
-  const handleRenameWorkspaceEntry = useCallback(
-    async (path: string, newName: string) => {
-      if (
-        !ensureWorkspaceWriteReady("renomear itens no workspace", [
-          "workspace.entry.rename",
-        ])
-      ) {
-        return false
-      }
-
-      let normalizedPath = ""
-      try {
-        normalizedPath = normalizeRelativeWorkspacePath(path)
-      } catch (error) {
-        addMessage(
-          "system",
-          `[explorer] Caminho invalido para renomear item: ${toEditorErrorMessage(error)}`,
-        )
-        return false
-      }
-
-      const trimmedName = newName.trim()
-      if (!trimmedName) {
-        addMessage("system", "[explorer] Informe um novo nome para renomear.")
-        return false
-      }
-      if (trimmedName === "." || trimmedName === "..") {
-        addMessage("system", "[explorer] Nome invalido para renomeacao.")
-        return false
-      }
-      if (trimmedName.includes("/") || trimmedName.includes("\\")) {
-        addMessage(
-          "system",
-          "[explorer] Renomeacao so permite alterar o nome dentro do mesmo diretorio.",
-        )
-        return false
-      }
-
-      const currentName = pathBasename(normalizedPath)
-      if (trimmedName === currentName) {
-        return normalizedPath
-      }
-
-      try {
-        const response = await codexWorkspaceRenameEntry({
-          path: normalizedPath,
-          newName: trimmedName,
-        })
-        const nextPath = normalizeRelativeWorkspacePath(response.newPath)
-        await refreshExplorerRoot({ silent: true })
-        await refreshWorkspaceChanges()
-        addMessage("system", `[explorer] Item renomeado: ${normalizedPath} -> ${nextPath}`)
-        return nextPath
-      } catch (error) {
-        addMessage(
-          "system",
-          `[explorer] Falha ao renomear "${normalizedPath}": ${toEditorErrorMessage(error)}`,
-        )
-        return false
-      }
-    },
-    [
-      addMessage,
-      ensureWorkspaceWriteReady,
-      normalizeRelativeWorkspacePath,
-      refreshExplorerRoot,
-      refreshWorkspaceChanges,
-      toEditorErrorMessage,
-    ],
-  )
+  const {
+    explorerRootPath,
+    explorerRootEntries,
+    explorerChildrenByPath,
+    explorerLoadedPaths,
+    explorerLoadingPaths,
+    explorerTreeVersion,
+    explorerRootLoading,
+    resetWorkspaceExplorerState,
+    refreshExplorerRoot,
+    handleLoadExplorerDirectory,
+    handleCreateWorkspaceFile,
+    handleCreateWorkspaceFolder,
+    handleRenameWorkspaceEntry,
+  } = useWorkspaceExplorerController({
+    runtimeConnected: runtime.connected,
+    runtimeWorkspace: runtime.workspace,
+    runtimeCapabilities: aliciaState.runtimeCapabilities,
+    setRuntimeWorkspace,
+    addMessage,
+    refreshWorkspaceChanges,
+    ensureWorkspaceWriteReady,
+    normalizeRelativeWorkspacePath,
+    toEditorErrorMessage,
+    onOpenInEditor,
+  })
 
   const handleReloadSource = useCallback(async () => {
     const currentEditor = sourceEditorRef.current
@@ -3053,10 +2580,7 @@ export default function AliciaTerminal() {
       sourceOperationSeqRef.current += 1
       sourceBaselineRef.current = ""
       setSourceEditorWithRef(INITIAL_SOURCE_EDITOR_STATE)
-      setExplorerRootPath("")
-      setExplorerRootEntries([])
-      setExplorerChildrenByPath({})
-      setExplorerLoadedPaths({})
+      resetWorkspaceExplorerState()
 
       const started = await codexRuntimeSessionStart({
         cwd: nextWorkspace,
@@ -3071,14 +2595,12 @@ export default function AliciaTerminal() {
         workspace: nextWorkspace,
       }))
 
-      const loaded = await loadWorkspaceDirectory(undefined, { asRoot: true })
-      if (!loaded) {
-        return
-      }
-
       await syncRuntimeStatus()
       await refreshWorkspaceChanges()
-      addMessage("system", `[workspace] Pasta ativa alterada para: ${nextWorkspace}`)
+      addMessage(
+        "system",
+        `[workspace] Pasta ativa alterada para: ${nextWorkspace}. Carregando estrutura do workspace em segundo plano...`,
+      )
     } catch (error) {
       await syncRuntimeStatus()
       await refreshThreadList({ notifyOnError: false })
@@ -3092,10 +2614,10 @@ export default function AliciaTerminal() {
   }, [
     addMessage,
     aliciaState.model,
-    loadWorkspaceDirectory,
     refreshThreadList,
     resetSessionUiState,
     refreshWorkspaceChanges,
+    resetWorkspaceExplorerState,
     runtime.sessionId,
     setActiveSessionEntry,
     setSourceEditorWithRef,
@@ -3267,27 +2789,10 @@ export default function AliciaTerminal() {
 
   if (initializing) {
     return (
-      <div className="alicia-shell-root flex items-center justify-center bg-[var(--ide-app-bg)] p-4">
-        <div className="w-full max-w-3xl rounded-md border border-[var(--ide-border-strong)] bg-[var(--ide-surface-1)] shadow-lg shadow-black/30">
-          <div className="flex items-center gap-2 border-b border-[var(--ide-border-subtle)] px-4 py-3 text-sm text-terminal-fg/90">
-            <Bot className="w-4 h-4 text-terminal-green spin-slow" />
-            {initializingStatus}
-          </div>
-          <div className="p-4 font-mono text-xs text-terminal-fg/75 max-h-64 overflow-y-auto">
-            {bootLogs.length === 0 ? (
-              <div className="text-terminal-fg/45">
-                Aguardando logs de inicializacao...
-              </div>
-            ) : (
-              bootLogs.map((line, index) => (
-                <div key={`boot-log-${index}`} className="leading-relaxed">
-                  {line}
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      </div>
+      <PageInitializingView
+        initializingStatus={initializingStatus}
+        bootLogs={bootLogs}
+      />
     )
   }
 
@@ -3511,95 +3016,62 @@ export default function AliciaTerminal() {
           </button>
         </div>
       ) : null}
-      {aliciaState.activePanel === "model" && (
-        <ModelPicker
-          currentModel={aliciaState.model}
-          currentEffort={aliciaState.reasoningEffort}
-          models={availableModels}
-          loading={modelsLoading}
-          error={modelsError}
-          cachedAt={modelsCachedAt}
-          stale={modelsFromCache}
-          onRetry={() => {
-            void refreshModelsCatalog(true)
-          }}
-          onSelect={handleModelSelect}
-          onClose={() => setAliciaState((prev) => ({ ...prev, activePanel: null }))}
-        />
-      )}
-      {aliciaState.activePanel === "permissions" && (
-        <PermissionsPanel
-          currentPreset={aliciaState.approvalPreset}
-          currentSandbox={aliciaState.sandboxMode}
-          onSelect={handlePermissionSelect}
-          onClose={() => setAliciaState((prev) => ({ ...prev, activePanel: null }))}
-        />
-      )}
-      {aliciaState.activePanel === "mcp" && (
-        <McpPanel
-          servers={aliciaState.mcpServers}
-          onRefresh={refreshMcpServers}
-          onClose={() => setAliciaState((prev) => ({ ...prev, activePanel: null }))}
-        />
-      )}
-      {aliciaState.activePanel === "adt" && (
-        <AdtPanel
-          activeServerId={activeAdtServerId}
-          onActiveServerIdChange={(nextServerId) => {
-            handleAdtServerSelectionChange(nextServerId, {
-              refreshExplorer: true,
-            })
-          }}
-          onOpenInEditor={onOpenInEditor}
-          onClose={() => setAliciaState((prev) => ({ ...prev, activePanel: null }))}
-        />
-      )}
-      {aliciaState.activePanel === "apps" && (
-        <AppsPanel
-          apps={aliciaState.apps}
-          account={aliciaState.account}
-          rateLimits={aliciaState.rateLimits}
-          rateLimitsByLimitId={aliciaState.rateLimitsByLimitId}
-          onRefresh={refreshAppsAndAuth}
-          onClose={() => setAliciaState((prev) => ({ ...prev, activePanel: null }))}
-        />
-      )}
-      {aliciaState.activePanel === "review" && (
-        <ReviewMode
-          fileChanges={aliciaState.fileChanges}
-          turnDiffFiles={turnDiffFiles}
-          pendingApprovals={pendingApprovals}
-          reviewMessages={reviewMessages}
-          isReviewThinking={isThinking && reviewRoutingRef.current}
-          isReviewComplete={isReviewComplete}
-          onRunReview={() => {
-            void refreshWorkspaceChanges()
-            void handleSlashCommand("/review")
-          }}
-          onRunReviewFile={(selectedPath) => {
-            void refreshWorkspaceChanges()
-            const escapedPath = selectedPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')
-            void handleSlashCommand(`/review-file "${escapedPath}"`)
-          }}
-          onCommitApproved={handleCommitApprovedReview}
-          onOpenInEditor={onOpenInEditor}
-          onClose={() => setAliciaState((prev) => ({ ...prev, activePanel: null }))}
-        />
-      )}
-      {aliciaState.activePanel === "sessions" && (
-        <SessionPicker
-          sessions={aliciaState.sessions}
-          mode={sessionPickerMode}
-          loading={sessionsPanelLoading}
-          busyAction={sessionActionPending}
-          onSelect={handleSessionSelect}
-          onNewSession={handleStartSession}
-          onClose={() => setAliciaState((prev) => ({ ...prev, activePanel: null }))}
-        />
-      )}
+      <PageActivePanels
+        activePanel={aliciaState.activePanel}
+        currentModel={aliciaState.model}
+        currentEffort={aliciaState.reasoningEffort}
+        models={availableModels}
+        modelsLoading={modelsLoading}
+        modelsError={modelsError}
+        modelsCachedAt={modelsCachedAt}
+        modelsFromCache={modelsFromCache}
+        onRetryModels={() => {
+          void refreshModelsCatalog(true)
+        }}
+        onSelectModel={handleModelSelect}
+        currentPreset={aliciaState.approvalPreset}
+        currentSandbox={aliciaState.sandboxMode}
+        onSelectPermission={handlePermissionSelect}
+        mcpServers={aliciaState.mcpServers}
+        onRefreshMcpServers={refreshMcpServers}
+        activeAdtServerId={activeAdtServerId}
+        onAdtServerSelectionChange={handleAdtServerSelectionChange}
+        onOpenInEditor={onOpenInEditor}
+        apps={aliciaState.apps}
+        account={aliciaState.account}
+        rateLimits={aliciaState.rateLimits}
+        rateLimitsByLimitId={aliciaState.rateLimitsByLimitId}
+        onRefreshAppsAndAuth={refreshAppsAndAuth}
+        fileChanges={aliciaState.fileChanges}
+        turnDiffFiles={turnDiffFiles}
+        pendingApprovals={pendingApprovals}
+        reviewMessages={reviewMessages}
+        isReviewThinking={isThinking && reviewRoutingRef.current}
+        isReviewComplete={isReviewComplete}
+        onRunReview={() => {
+          void refreshWorkspaceChanges()
+          void handleSlashCommand("/review")
+        }}
+        onRunReviewFile={(selectedPath) => {
+          void refreshWorkspaceChanges()
+          const escapedPath = selectedPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')
+          void handleSlashCommand(`/review-file "${escapedPath}"`)
+        }}
+        onCommitApprovedReview={handleCommitApprovedReview}
+        sessions={aliciaState.sessions}
+        sessionPickerMode={sessionPickerMode}
+        sessionsPanelLoading={sessionsPanelLoading}
+        sessionActionPending={sessionActionPending}
+        onSessionSelect={handleSessionSelect}
+        onStartSession={handleStartSession}
+        onClosePanel={() =>
+          setAliciaState((previous) => ({ ...previous, activePanel: null }))
+        }
+      />
     </div>
   )
 }
+
 
 
 
